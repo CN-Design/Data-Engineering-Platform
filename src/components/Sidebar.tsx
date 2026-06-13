@@ -109,15 +109,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               color: 'var(--text-primary)',
               fontSize: '13px',
               outline: 'none',
-              boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2), 0 0 0 1px transparent',
+              boxShadow: 'var(--shadow-input-inner), 0 0 0 1px transparent',
               transition: 'all 0.2s ease'
             }}
             onFocus={(e) => {
-              e.currentTarget.style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,0.1), 0 0 0 2px rgba(59, 130, 246, 0.5)';
+              e.currentTarget.style.boxShadow = 'var(--shadow-input-inner-focus), 0 0 0 2px rgba(59, 130, 246, 0.5)';
               e.currentTarget.style.borderColor = '#3b82f6';
             }}
             onBlur={(e) => {
-              e.currentTarget.style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,0.2), 0 0 0 1px transparent';
+              e.currentTarget.style.boxShadow = 'var(--shadow-input-inner), 0 0 0 1px transparent';
               e.currentTarget.style.borderColor = 'var(--border-glass)';
             }}
           />

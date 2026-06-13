@@ -40,7 +40,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1000px', margin: '0 auto' }}>
 
       {/* Sub tabs header */}
-      <div style={{
+      <div className="scrollable-tabs" style={{
         display: 'flex',
         flexWrap: 'wrap',
         justifyContent: 'center',
@@ -48,7 +48,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         padding: '6px',
         borderRadius: '12px',
         border: '1px solid var(--border-glass)',
-        boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.1)',
+        boxShadow: 'var(--shadow-inset-tabs)',
         gap: '8px'
       }}>
         <button
