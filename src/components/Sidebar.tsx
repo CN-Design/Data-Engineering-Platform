@@ -30,7 +30,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   });
 
-  const categories = ['sql', 'pyspark', 'databricks', 'data-engineering', 'python'];
+  const categories = ['data-engineering', 'sql', 'python', 'pyspark', 'databricks'];
   const levels = ['beginner', 'intermediate', 'advanced'];
 
   const toggleCategory = (cat: string) => {

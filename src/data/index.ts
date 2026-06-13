@@ -24,18 +24,18 @@ export {
 };
 
 export const allTopics = [
-  ...sqlTopics,
-  ...pysparkTopics,
-  ...databricksTopics,
   ...deTopics,
-  ...pythonTopics
+  ...sqlTopics,
+  ...pythonTopics,
+  ...pysparkTopics,
+  ...databricksTopics
 ];
 
 export const allQuestions = [
+  ...deQuestions,
   ...sqlQuestions,
   ...pysparkQuestions,
-  ...databricksQuestions,
-  ...deQuestions
+  ...databricksQuestions
 ];
 
 export const allChallenges = codingChallenges;
