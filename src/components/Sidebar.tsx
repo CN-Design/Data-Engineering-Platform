@@ -82,7 +82,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="sidebar-header" style={{ display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
           <h1 className="logo-text" style={{ margin: 0 }}>
-            <Database size={24} />
             <span>CN-DESIGN</span>
           </h1>
           {onClose && (
