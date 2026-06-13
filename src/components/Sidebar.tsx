@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import type { Topic } from '../data/types';
-import { BookOpen, CheckCircle, Database, Search, Star, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { BookOpen, CheckCircle, Search, Star, ChevronDown, ChevronRight, X } from 'lucide-react';
 
 interface SidebarProps {
   topics: Topic[];
