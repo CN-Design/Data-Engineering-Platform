@@ -92,23 +92,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
 
-        {/* Search Bar */}
-        <div style={{ position: 'relative', marginTop: '16px' }}>
+        {/* Search Bar Spotlight */}
+        <div style={{ position: 'relative', marginTop: '20px' }}>
           <Search size={16} className="text-muted" style={{ position: 'absolute', left: '12px', top: '12px' }} />
           <input
             type="text"
-            placeholder="Search topics, tracks..."
+            placeholder="Search topics..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             style={{
               width: '100%',
-              background: 'var(--bg-inner)',
+              background: 'rgba(255, 255, 255, 0.03)',
               border: '1px solid var(--border-glass)',
-              borderRadius: '8px',
-              padding: '10px 12px 10px 36px',
+              borderRadius: '10px',
+              padding: '10px 12px 10px 38px',
               color: 'var(--text-primary)',
               fontSize: '13px',
-              outline: 'none'
+              outline: 'none',
+              boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.2), 0 0 0 1px transparent',
+              transition: 'all 0.2s ease'
+            }}
+            onFocus={(e) => {
+              e.currentTarget.style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,0.1), 0 0 0 2px rgba(59, 130, 246, 0.5)';
+              e.currentTarget.style.borderColor = '#3b82f6';
+            }}
+            onBlur={(e) => {
+              e.currentTarget.style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,0.2), 0 0 0 1px transparent';
+              e.currentTarget.style.borderColor = 'var(--border-glass)';
             }}
           />
         </div>
@@ -160,11 +170,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   cursor: 'pointer',
-                  padding: '8px 4px',
-                  borderRadius: '6px',
-                  background: 'var(--bg-inner)',
-                  marginBottom: '8px'
+                  padding: '10px 8px',
+                  borderRadius: '8px',
+                  background: 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
+                  border: '1px solid var(--border-glass)',
+                  marginBottom: '10px',
+                  transition: 'background 0.2s ease'
                 }}
+                onMouseOver={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)'}
+                onMouseOut={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)'}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
