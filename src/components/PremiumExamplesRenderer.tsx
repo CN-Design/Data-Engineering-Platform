@@ -1,6 +1,6 @@
 import React from 'react';
 import type { PremiumTopicData } from '../data/types';
-import { FileText, Code, Settings } from 'lucide-react';
+import { Code, Settings } from 'lucide-react';
 import { formatText } from '../utils/textFormatting';
 
 interface PremiumExamplesRendererProps {

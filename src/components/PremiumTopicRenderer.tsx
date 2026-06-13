@@ -1,6 +1,6 @@
 import React from 'react';
 import type { PremiumTopicData } from '../data/types';
-import { Book, Server, GitBranch, Activity, Lightbulb, CheckCircle2 } from 'lucide-react';
+import { Book, Server, GitBranch, Activity, CheckCircle2 } from 'lucide-react';
 import { formatText } from '../utils/textFormatting';
 
 interface PremiumTopicRendererProps {
@@ -122,22 +122,24 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
               </h3>
               <div style={{ paddingLeft: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0, lineHeight: 1.6 }}>{formatText(comp.definition)}</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, auto) 1fr', gap: '12px 24px', marginTop: '16px', padding: '16px 20px', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Purpose</div>
-                  <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.purpose)}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', marginTop: '16px' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 24px', padding: '12px 0', borderTop: '1px solid var(--border-glass)' }}>
+                    <div style={{ flex: '0 0 120px', fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Purpose</div>
+                    <div style={{ flex: '1 1 200px', fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.purpose)}</div>
+                  </div>
                   
                   {comp.responsibilities && (
-                    <>
-                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Responsibilities</div>
-                      <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.responsibilities)}</div>
-                    </>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 24px', padding: '12px 0', borderTop: '1px solid var(--border-glass)' }}>
+                      <div style={{ flex: '0 0 120px', fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Responsibilities</div>
+                      <div style={{ flex: '1 1 200px', fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.responsibilities)}</div>
+                    </div>
                   )}
                   
                   {comp.examples && (
-                    <>
-                      <div style={{ fontSize: '12px', color: '#3b82f6', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Examples</div>
-                      <div style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.6 }}>{formatText(comp.examples)}</div>
-                    </>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 24px', padding: '12px 0', borderTop: '1px solid var(--border-glass)' }}>
+                      <div style={{ flex: '0 0 120px', fontSize: '12px', color: '#3b82f6', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Examples</div>
+                      <div style={{ flex: '1 1 200px', fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.6 }}>{formatText(comp.examples)}</div>
+                    </div>
                   )}
                 </div>
               </div>
