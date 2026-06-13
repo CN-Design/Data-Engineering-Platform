@@ -6,6 +6,9 @@ import {
 } from 'lucide-react';
 import type { PremiumTopicData } from '../data/types';
 import { PremiumTopicRenderer } from './PremiumTopicRenderer';
+import { PremiumExamplesRenderer } from './PremiumExamplesRenderer';
+import { PremiumTipsRenderer } from './PremiumTipsRenderer';
+import { PremiumInterviewRenderer } from './PremiumInterviewRenderer';
 
 interface LearnTabProps {
   topic: Topic | null;
@@ -206,224 +209,242 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
 
         {/* TAB 2: EXAMPLES & CODE */}
         {activeSubTab === 'examples' && (
-          <>
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <FileText size={18} />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Detailed Example Breakdown</h3>
-              </div>
-              <div className="section-body">
-                <div className="pipeline-flow" style={{ 
-                  display: 'flex', 
-                  flexDirection: 'row', 
-                  alignItems: 'center', 
-                  gap: '12px',
-                  background: 'var(--bg-inner)',
-                  padding: '20px',
-                  borderRadius: '12px',
-                  border: '1px solid var(--border-glass)',
-                  overflowX: 'auto'
-                }}>
-                  {/* Step 1 */}
-                  <div style={{ flex: 1, minWidth: '150px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                      <span style={{ background: '#3b82f6', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>1</span>
-                      <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Input</strong>
-                    </div>
-                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.input}</p>
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {premiumData ? (
+              <PremiumExamplesRenderer data={premiumData} />
+            ) : (
+              <>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <FileText size={18} />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Detailed Example Breakdown</h3>
                   </div>
-                  
-                  <ArrowRight className="pipeline-arrow" size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+                  <div className="section-body">
+                    <div className="pipeline-flow" style={{ 
+                      display: 'flex', 
+                      flexDirection: 'row', 
+                      alignItems: 'center', 
+                      gap: '12px',
+                      background: 'var(--bg-inner)',
+                      padding: '20px',
+                      borderRadius: '12px',
+                      border: '1px solid var(--border-glass)',
+                      overflowX: 'auto'
+                    }}>
+                      {/* Step 1 */}
+                      <div style={{ flex: 1, minWidth: '150px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                          <span style={{ background: '#3b82f6', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>1</span>
+                          <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Input</strong>
+                        </div>
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.input}</p>
+                      </div>
+                      
+                      <ArrowRight className="pipeline-arrow" size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
 
-                  {/* Step 2 */}
-                  <div style={{ flex: 1, minWidth: '150px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                      <span style={{ background: '#f59e0b', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>2</span>
-                      <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Processing Flow</strong>
+                      {/* Step 2 */}
+                      <div style={{ flex: 1, minWidth: '150px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                          <span style={{ background: '#f59e0b', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>2</span>
+                          <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Processing Flow</strong>
+                        </div>
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.processing}</p>
+                      </div>
+
+                      <ArrowRight className="pipeline-arrow" size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+
+                      {/* Step 3 */}
+                      <div style={{ flex: 1, minWidth: '150px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                          <span style={{ background: '#10b981', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>3</span>
+                          <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Output Results</strong>
+                        </div>
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.output}</p>
+                      </div>
                     </div>
-                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.processing}</p>
-                  </div>
-
-                  <ArrowRight className="pipeline-arrow" size={20} color="var(--text-muted)" style={{ flexShrink: 0 }} />
-
-                  {/* Step 3 */}
-                  <div style={{ flex: 1, minWidth: '150px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                      <span style={{ background: '#10b981', color: '#fff', width: '20px', height: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', fontSize: '11px', fontWeight: 'bold' }}>3</span>
-                      <strong style={{ fontSize: '12px', color: 'var(--text-primary)', textTransform: 'uppercase' }}>Output Results</strong>
-                    </div>
-                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>{concept.detailedExample.output}</p>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <Code size={18} />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Working Code Implementation</h3>
-              </div>
-              <div className="section-body">
-                <pre className="code-block">
-                  <code>{concept.codeExample}</code>
-                </pre>
-                <div style={{ marginTop: '16px' }}>
-                  <strong style={{ display: 'block', marginBottom: '8px' }}>Line-by-Line Breakdown:</strong>
-                  <div style={{
-                    fontSize: '13px',
-                    lineHeight: '1.6',
-                    whiteSpace: 'pre-wrap',
-                    background: 'var(--bg-inner)',
-                    padding: '12px 16px',
-                    borderRadius: '8px',
-                    border: '1px dashed var(--border-glass)'
-                  }}>{concept.stepByStepBreakdown}</div>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <Code size={18} />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Working Code Implementation</h3>
+                  </div>
+                  <div className="section-body">
+                    <pre className="code-block">
+                      <code>{concept.codeExample}</code>
+                    </pre>
+                    <div style={{ marginTop: '16px' }}>
+                      <strong style={{ display: 'block', marginBottom: '8px' }}>Line-by-Line Breakdown:</strong>
+                      <div style={{
+                        fontSize: '13px',
+                        lineHeight: '1.6',
+                        whiteSpace: 'pre-wrap',
+                        background: 'var(--bg-inner)',
+                        padding: '12px 16px',
+                        borderRadius: '8px',
+                        border: '1px dashed var(--border-glass)'
+                      }}>{concept.stepByStepBreakdown}</div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          </>
+              </>
+            )}
+          </div>
         )}
 
         {/* TAB 4: PRODUCTION TIPS */}
         {activeSubTab === 'bestpractices' && (
-          <div className="grid-two-columns">
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <ShieldCheck size={18} color="#10b981" />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Production Best Practices</h3>
-              </div>
-              <div className="section-body">
-                <ul style={{ paddingLeft: '18px', margin: 0 }}>
-                  {concept.bestPractices.map((bp, i) => (
-                    <li key={i} style={{ marginBottom: '10px' }}>{bp}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {premiumData ? (
+              <PremiumTipsRenderer data={premiumData} />
+            ) : (
+              <div className="grid-two-columns">
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <ShieldCheck size={18} color="#10b981" />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Production Best Practices</h3>
+                  </div>
+                  <div className="section-body">
+                    <ul style={{ paddingLeft: '18px', margin: 0 }}>
+                      {concept.bestPractices.map((bp, i) => (
+                        <li key={i} style={{ marginBottom: '10px' }}>{bp}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
 
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <AlertTriangle size={18} color="#ef4444" />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Common Mistakes to Avoid</h3>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <AlertTriangle size={18} color="#ef4444" />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Common Mistakes to Avoid</h3>
+                  </div>
+                  <div className="section-body">
+                    <ul style={{ paddingLeft: '18px', margin: 0 }}>
+                      {concept.commonMistakes.map((cm, i) => (
+                        <li key={i} style={{ marginBottom: '10px' }}>{cm}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               </div>
-              <div className="section-body">
-                <ul style={{ paddingLeft: '18px', margin: 0 }}>
-                  {concept.commonMistakes.map((cm, i) => (
-                    <li key={i} style={{ marginBottom: '10px' }}>{cm}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+            )}
           </div>
         )}
 
         {/* TAB 5: INTERVIEW PREP */}
         {activeSubTab === 'interview' && (
-          <>
-            {/* Quick Review Cheat Sheet */}
-            <div className="glass-panel section-card grid-two-columns" style={{ background: 'rgba(168, 85, 247, 0.03)' }}>
-              <div>
-                <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#a855f7', marginBottom: '8px' }}>Interview Cheat Sheet</h3>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
-                  <span><strong>Def:</strong> {concept.cheatSheet.definition}</span>
-                  <span><strong>Common Mistake:</strong> {concept.cheatSheet.commonMistake}</span>
-                  <span><strong>Best Practice:</strong> {concept.cheatSheet.bestPractice}</span>
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {premiumData ? (
+              <PremiumInterviewRenderer data={premiumData} />
+            ) : (
+              <>
+                {/* Quick Review Cheat Sheet */}
+                <div className="glass-panel section-card grid-two-columns" style={{ background: 'rgba(168, 85, 247, 0.03)' }}>
+                  <div>
+                    <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#a855f7', marginBottom: '8px' }}>Interview Cheat Sheet</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
+                      <span><strong>Def:</strong> {concept.cheatSheet.definition}</span>
+                      <span><strong>Common Mistake:</strong> {concept.cheatSheet.commonMistake}</span>
+                      <span><strong>Best Practice:</strong> {concept.cheatSheet.bestPractice}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: '13px', display: 'block', color: 'var(--text-primary)', marginBottom: '6px' }}>Key Takeaways:</strong>
+                    <ul style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {concept.summaryNotes.map((note, i) => (
+                        <li key={i} style={{ marginBottom: '4px' }}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
-              </div>
-              <div>
-                <strong style={{ fontSize: '13px', display: 'block', color: 'var(--text-primary)', marginBottom: '6px' }}>Key Takeaways:</strong>
-                <ul style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {concept.summaryNotes.map((note, i) => (
-                    <li key={i} style={{ marginBottom: '4px' }}>{note}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
 
-            {/* Questions list */}
-            <div>
-              <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '12px' }}>Topic Interview Q&As</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {concept.interviewQuestions.map((q, idx) => {
-                  const isRev = !!revealedQs[idx];
-                  return (
-                    <div
-                      key={idx}
-                      className="glass-panel question-card"
-                      onClick={() => toggleQ(idx)}
-                      style={{ padding: '16px' }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                          <HelpCircle size={18} color="#3b82f6" />
-                          <span style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text-primary)' }}>
-                            <span style={{ 
-                              color: q.difficulty === 'beginner' ? '#10b981' : q.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444',
-                              marginRight: '6px',
-                              fontSize: '12px',
-                              textTransform: 'uppercase',
-                              border: '1px solid currentColor',
-                              padding: '2px 6px',
-                              borderRadius: '4px'
-                            }}>
-                              {q.difficulty}
-                            </span>
-                            {q.question}
-                          </span>
-                        </div>
-                        {isRev ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                      </div>
-
-                      {isRev && (
-                        <div className="animate-slide-up" style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '16px', fontSize: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                          <div style={{ background: 'rgba(59, 130, 246, 0.05)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #3b82f6' }}>
-                            <strong style={{ color: 'var(--text-primary)' }}>Answer:</strong>
-                            <p style={{ margin: '6px 0 0 0', color: 'var(--text-secondary)', lineHeight: '1.6' }}>{q.answer}</p>
-                          </div>
-                          <div className="grid-two-columns" style={{ gap: '16px', background: 'var(--bg-inner)', padding: '12px', borderRadius: '8px' }}>
-                            <div>
-                              <strong style={{ color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}><CheckCircle2 size={14}/> Why asked:</strong>
-                              <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)' }}>{q.whyAsked}</p>
+                {/* Questions list */}
+                <div>
+                  <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '12px' }}>Topic Interview Q&As</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {concept.interviewQuestions.map((q, idx) => {
+                      const isRev = !!revealedQs[idx];
+                      return (
+                        <div
+                          key={idx}
+                          className="glass-panel question-card"
+                          onClick={() => toggleQ(idx)}
+                          style={{ padding: '16px' }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                              <HelpCircle size={18} color="#3b82f6" />
+                              <span style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text-primary)' }}>
+                                <span style={{ 
+                                  color: q.difficulty === 'beginner' ? '#10b981' : q.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444',
+                                  marginRight: '6px',
+                                  fontSize: '12px',
+                                  textTransform: 'uppercase',
+                                  border: '1px solid currentColor',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px'
+                                }}>
+                                  {q.difficulty}
+                                </span>
+                                {q.question}
+                              </span>
                             </div>
-                            <div>
-                              <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px' }}><AlertTriangle size={14}/> Wrong answer to avoid:</strong>
-                              <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)' }}>{q.wrongAnswer}</p>
-                            </div>
+                            {isRev ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
 
-                {/* Scenario Questions */}
-                {concept.scenarioQuestions.map((sq, idx) => {
-                  const sIdx = idx + 100;
-                  const isRev = !!revealedQs[sIdx];
-                  return (
-                    <div
-                      key={`sec-${idx}`}
-                      className="glass-panel question-card"
-                      onClick={() => toggleQ(sIdx)}
-                      style={{ padding: '16px', borderLeft: '3px solid #a855f7' }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: 600, fontSize: '14px', color: '#a855f7' }}>Scenario: {sq.question}</span>
-                        {isRev ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                      </div>
-
-                      {isRev && (
-                        <div style={{ marginTop: '12px', borderTop: '1px dashed var(--border-glass)', paddingTop: '12px', fontSize: '13px' }}>
-                          <strong style={{ color: 'var(--text-primary)' }}>Solution Approach:</strong>
-                          <p style={{ margin: '4px 0 0 0', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{sq.solution}</p>
+                          {isRev && (
+                            <div className="animate-slide-up" style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '16px', fontSize: '14px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                              <div style={{ background: 'rgba(59, 130, 246, 0.05)', padding: '12px', borderRadius: '8px', borderLeft: '3px solid #3b82f6' }}>
+                                <strong style={{ color: 'var(--text-primary)' }}>Answer:</strong>
+                                <p style={{ margin: '6px 0 0 0', color: 'var(--text-secondary)', lineHeight: '1.6' }}>{q.answer}</p>
+                              </div>
+                              <div className="grid-two-columns" style={{ gap: '16px', background: 'var(--bg-inner)', padding: '12px', borderRadius: '8px' }}>
+                                <div>
+                                  <strong style={{ color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}><CheckCircle2 size={14}/> Why asked:</strong>
+                                  <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)' }}>{q.whyAsked}</p>
+                                </div>
+                                <div>
+                                  <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px' }}><AlertTriangle size={14}/> Wrong answer to avoid:</strong>
+                                  <p style={{ margin: '4px 0 0 0', color: 'var(--text-muted)' }}>{q.wrongAnswer}</p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </>
+                      );
+                    })}
+
+                    {/* Scenario Questions */}
+                    {concept.scenarioQuestions.map((sq, idx) => {
+                      const sIdx = idx + 100;
+                      const isRev = !!revealedQs[sIdx];
+                      return (
+                        <div
+                          key={`sec-${idx}`}
+                          className="glass-panel question-card"
+                          onClick={() => toggleQ(sIdx)}
+                          style={{ padding: '16px', borderLeft: '3px solid #a855f7' }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600, fontSize: '14px', color: '#a855f7' }}>Scenario: {sq.question}</span>
+                            {isRev ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </div>
+
+                          {isRev && (
+                            <div style={{ marginTop: '12px', borderTop: '1px dashed var(--border-glass)', paddingTop: '12px', fontSize: '13px' }}>
+                              <strong style={{ color: 'var(--text-primary)' }}>Solution Approach:</strong>
+                              <p style={{ margin: '4px 0 0 0', color: 'var(--text-secondary)', whiteSpace: 'pre-wrap' }}>{sq.solution}</p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         )}
       </div>
 
