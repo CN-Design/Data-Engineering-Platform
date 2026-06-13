@@ -161,7 +161,8 @@ export default function App() {
                     display: 'flex',
                     flexDirection: 'column',
                     padding: '8px',
-                    gap: '4px'
+                    gap: '4px',
+                    background: 'var(--bg-primary)'
                   }}
                 >
                   {[
