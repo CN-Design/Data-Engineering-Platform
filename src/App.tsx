@@ -149,22 +149,30 @@ export default function App() {
 
               {/* Custom Dropdown Menu */}
               {isMobileMenuOpen && (
-                <div
-                  className="glass-panel animate-slide-up"
-                  style={{
-                    position: 'absolute',
-                    top: '100%',
-                    left: 0,
-                    marginTop: '8px',
-                    width: 'calc(100% - 56px)', // Accounting for the gap and toggle button width
-                    zIndex: 100,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    padding: '8px',
-                    gap: '4px',
-                    background: 'var(--bg-primary)'
-                  }}
-                >
+                <>
+                  <div 
+                    style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 90 }} 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMobileMenuOpen(false);
+                    }}
+                  />
+                  <div
+                    className="glass-panel animate-slide-up"
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      marginTop: '8px',
+                      width: 'calc(100% - 56px)', // Accounting for the gap and toggle button width
+                      zIndex: 100,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      padding: '8px',
+                      gap: '4px',
+                      background: 'var(--bg-primary)'
+                    }}
+                  >
                   {[
                     { id: 'learn', label: 'Learn', icon: BookOpen },
                     { id: 'interview', label: 'Interview Prep', icon: GraduationCap },
@@ -199,6 +207,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                </>
               )}
 
               <button

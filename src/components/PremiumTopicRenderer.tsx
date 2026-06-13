@@ -8,7 +8,7 @@ interface PremiumTopicRendererProps {
 }
 
 export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data }) => {
-  const { coreConcept } = data;
+  const { coreConcept, industryUseCases, comparisonSection } = data;
   if (!coreConcept) return null;
 
   return (
@@ -122,10 +122,23 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
               </h3>
               <div style={{ paddingLeft: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0, lineHeight: 1.6 }}>{formatText(comp.definition)}</p>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' }}>
-                  <span style={{ fontSize: '13px', padding: '4px 10px', borderRadius: '4px', background: 'var(--bg-primary)', color: 'var(--text-muted)', border: '1px solid var(--border-glass)' }}>
-                    <strong>Purpose:</strong> {formatText(comp.purpose)}
-                  </span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, auto) 1fr', gap: '12px 24px', marginTop: '16px', padding: '16px 20px', background: 'var(--bg-primary)', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Purpose</div>
+                  <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.purpose)}</div>
+                  
+                  {comp.responsibilities && (
+                    <>
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Responsibilities</div>
+                      <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(comp.responsibilities)}</div>
+                    </>
+                  )}
+                  
+                  {comp.examples && (
+                    <>
+                      <div style={{ fontSize: '12px', color: '#3b82f6', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, paddingTop: '2px' }}>Examples</div>
+                      <div style={{ fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.6 }}>{formatText(comp.examples)}</div>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -175,6 +188,112 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
           </div>
         </div>
       </section>
+
+      {/* Industry Use Cases */}
+      {industryUseCases && industryUseCases.length > 0 && (
+        <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+          <h2 style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '12px', 
+            color: 'var(--text-primary)', 
+            margin: '0 0 24px 0',
+            fontSize: '20px',
+            fontWeight: 600,
+            letterSpacing: '-0.01em'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '8px', background: 'var(--bg-primary)' }}>
+              <Activity size={20} style={{ color: '#10b981' }} /> 
+            </div>
+            Industry Implementations
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '24px' }}>
+            {industryUseCases.map((uc, i) => (
+              <div key={i} style={{ 
+                background: 'var(--bg-secondary)', 
+                padding: '24px', 
+                borderRadius: '12px', 
+                border: '1px solid var(--border-glass)',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.05)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '16px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }}></div>
+                  <strong style={{ color: 'var(--text-primary)', fontSize: '16px', letterSpacing: '0.01em' }}>
+                    {uc.company}
+                  </strong>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px 16px', borderRadius: '8px', borderLeft: '2px solid var(--border-glass)' }}>
+                    <strong style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.05em', marginBottom: '4px' }}>The Challenge</strong>
+                    <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{formatText(uc.problem)}</p>
+                  </div>
+                  
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px 16px', borderRadius: '8px', borderLeft: '2px solid #3b82f6' }}>
+                    <strong style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', color: 'var(--text-muted)', letterSpacing: '0.05em', marginBottom: '4px' }}>The Solution</strong>
+                    <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{formatText(uc.solution)}</p>
+                  </div>
+                  
+                  <div style={{ background: 'var(--bg-primary)', padding: '12px 16px', borderRadius: '8px', borderLeft: '2px solid #10b981' }}>
+                    <strong style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', color: '#10b981', letterSpacing: '0.05em', marginBottom: '4px' }}>Business Impact</strong>
+                    <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-primary)', lineHeight: 1.5 }}>{formatText(uc.benefits)}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Comparison Section */}
+      {comparisonSection && comparisonSection.length > 0 && (
+        <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+          <h2 style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '12px', 
+            color: 'var(--text-primary)', 
+            margin: '0 0 24px 0',
+            fontSize: '20px',
+            fontWeight: 600,
+            letterSpacing: '-0.01em'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '8px', background: 'var(--bg-primary)' }}>
+              <GitBranch size={20} style={{ color: '#f59e0b' }} /> 
+            </div>
+            Comparative Analysis
+          </h2>
+          <div style={{ overflowX: 'auto', background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-glass)', boxShadow: '0 4px 24px rgba(0,0,0,0.05)' }}>
+            <table style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-glass)' }}>
+                  <th style={{ padding: '18px 24px', color: 'var(--text-primary)', fontWeight: 600, letterSpacing: '0.02em', width: '18%' }}>Dimension</th>
+                  <th style={{ padding: '18px 24px', color: '#60a5fa', fontWeight: 600, letterSpacing: '0.02em', width: '27%' }}>Option A</th>
+                  <th style={{ padding: '18px 24px', color: '#c084fc', fontWeight: 600, letterSpacing: '0.02em', width: '27%' }}>Option B</th>
+                  <th style={{ padding: '18px 24px', color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.02em' }}>Context</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparisonSection.map((comp, i) => (
+                  <tr key={i} style={{ 
+                    borderBottom: i === comparisonSection.length - 1 ? 'none' : '1px solid var(--border-glass)',
+                    background: i % 2 === 0 ? 'transparent' : 'var(--bg-primary)',
+                    transition: 'background 0.2s ease',
+                  }}>
+                    <td style={{ padding: '20px 24px', color: 'var(--text-primary)', fontWeight: 500, verticalAlign: 'top' }}>{comp.feature}</td>
+                    <td style={{ padding: '20px 24px', color: 'var(--text-secondary)', verticalAlign: 'top', lineHeight: 1.6 }}>{formatText(comp.optionA)}</td>
+                    <td style={{ padding: '20px 24px', color: 'var(--text-secondary)', verticalAlign: 'top', lineHeight: 1.6 }}>{formatText(comp.optionB)}</td>
+                    <td style={{ padding: '20px 24px', color: 'var(--text-muted)', fontSize: '13px', verticalAlign: 'top', lineHeight: 1.6, fontStyle: 'italic' }}>{formatText(comp.explanation)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
     </div>
   );
