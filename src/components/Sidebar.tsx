@@ -1,19 +1,23 @@
 import React, { useState } from 'react';
 import type { Topic } from '../data/types';
-import { BookOpen, CheckCircle, Database, Search, Star, ChevronDown, ChevronRight } from 'lucide-react';
+import { BookOpen, CheckCircle, Database, Search, Star, ChevronDown, ChevronRight, X } from 'lucide-react';
 
 interface SidebarProps {
   topics: Topic[];
   activeTopic: Topic | null;
   setActiveTopic: (topic: Topic) => void;
   completedTopics: Record<string, boolean>;
+  isOpen?: boolean;
+  onClose?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   topics,
   activeTopic,
   setActiveTopic,
-  completedTopics
+  completedTopics,
+  isOpen = false,
+  onClose
 }) => {
   const [search, setSearch] = useState('');
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
@@ -31,6 +35,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const toggleCategory = (cat: string) => {
     setCollapsedCategories(prev => ({ ...prev, [cat]: !prev[cat] }));
+  };
+
+  const handleTopicClick = (topic: Topic) => {
+    setActiveTopic(topic);
+    if (onClose) {
+      onClose();
+    }
   };
 
   const toggleBookmark = (topicId: string, e: React.MouseEvent) => {
@@ -67,12 +78,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const bookmarkedList = topics.filter(t => bookmarks[t.id]);
 
   return (
-    <div className="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div className="sidebar-header">
-        <h1 className="logo-text">
-          <Database size={24} />
-          <span>CN-DESIGN</span>
-        </h1>
+    <div className={`sidebar ${isOpen ? 'open' : ''}`} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div className="sidebar-header" style={{ display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <h1 className="logo-text" style={{ margin: 0 }}>
+            <Database size={24} />
+            <span>CN-DESIGN</span>
+          </h1>
+          {onClose && (
+            <button className="sidebar-close-btn" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <X size={20} />
+            </button>
+          )}
+        </div>
 
         {/* Search Bar */}
         <div style={{ position: 'relative', marginTop: '16px' }}>
@@ -109,7 +127,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <div
                   key={`fav-${topic.id}`}
                   className={`topic-item ${isActive ? 'active' : ''}`}
-                  onClick={() => setActiveTopic(topic)}
+                  onClick={() => handleTopicClick(topic)}
                 >
                   <div className="topic-info">
                     <span className="topic-name">{topic.title}</span>
@@ -198,7 +216,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <div
                               key={topic.id}
                               className={`topic-item ${isActive ? 'active' : ''}`}
-                              onClick={() => setActiveTopic(topic)}
+                              onClick={() => handleTopicClick(topic)}
                               style={{ padding: '8px 10px' }}
                             >
                               <div className="topic-info">

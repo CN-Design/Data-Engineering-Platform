@@ -35,6 +35,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
       {/* Sub tabs header */}
       <div style={{
         display: 'flex',
+        flexWrap: 'wrap',
         borderBottom: '1px solid var(--border-glass)',
         paddingBottom: '8px',
         gap: '12px'
@@ -109,7 +110,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr', gap: '20px' }}>
+            <div className="grid-concept">
               <div className="glass-panel section-card">
                 <div className="section-header">
                   <Award size={18} color="#3b82f6" />
@@ -164,7 +165,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
                 <FileText size={18} />
                 <h3 style={{ margin: 0, fontSize: '16px' }}>Detailed Example Breakdown</h3>
               </div>
-              <div className="section-body" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+              <div className="section-body grid-example-breakdown">
                 <div style={{ background: 'var(--bg-inner)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
                   <strong style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>1. Inputs</strong>
                   <p style={{ marginTop: '8px', fontSize: '13px' }}>{concept.detailedExample.input}</p>
@@ -208,7 +209,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
 
         {/* TAB 3: PRODUCTION TIPS */}
         {activeSubTab === 'bestpractices' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          <div className="grid-two-columns">
             <div className="glass-panel section-card">
               <div className="section-header">
                 <ShieldCheck size={18} color="#10b981" />
@@ -243,7 +244,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         {activeSubTab === 'interview' && (
           <>
             {/* Quick Review Cheat Sheet */}
-            <div className="glass-panel section-card" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', background: 'rgba(168, 85, 247, 0.03)' }}>
+            <div className="glass-panel section-card grid-two-columns" style={{ background: 'rgba(168, 85, 247, 0.03)' }}>
               <div>
                 <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#a855f7', marginBottom: '8px' }}>Interview Cheat Sheet</h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px' }}>
@@ -289,7 +290,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
                             <strong style={{ color: 'var(--text-primary)' }}>Answer:</strong>
                             <p style={{ margin: '4px 0 0 0', color: 'var(--text-secondary)' }}>{q.answer}</p>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '11px', background: 'var(--bg-inner)', padding: '8px', borderRadius: '4px' }}>
+                          <div className="grid-two-columns" style={{ gap: '16px', background: 'var(--bg-inner)', padding: '8px', borderRadius: '4px' }}>
                             <div>
                               <strong style={{ color: '#10b981' }}>Why asked:</strong>
                               <p style={{ margin: '2px 0 0 0', color: 'var(--text-muted)' }}>{q.whyAsked}</p>

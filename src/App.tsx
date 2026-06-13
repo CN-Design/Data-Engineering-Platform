@@ -7,12 +7,13 @@ import { PracticeTab } from './components/PracticeTab';
 import { PlaygroundTab } from './components/PlaygroundTab';
 import { GeminiTab } from './components/GeminiTab';
 import type { Topic } from './data/types';
-import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon } from 'lucide-react';
+import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu } from 'lucide-react';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Sync theme with document element and localStorage
   useEffect(() => {
@@ -67,6 +68,11 @@ export default function App() {
 
   return (
     <div className="app-container">
+      <div 
+        className={`sidebar-backdrop ${isSidebarOpen ? 'active' : ''}`} 
+        onClick={() => setIsSidebarOpen(false)} 
+      />
+
       <Sidebar
         topics={allTopics}
         activeTopic={activeTopic}
@@ -75,17 +81,28 @@ export default function App() {
           setActiveTab('learn');
         }}
         completedTopics={completedTopics}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
       />
 
       <main className="main-content">
         <header className="main-header">
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 600 }}>
-              {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
-            </h1>
-            <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-              {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : activeTopic ? `Difficulty: ${activeTopic.difficulty}` : ''}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <button 
+              className="menu-toggle-btn" 
+              onClick={() => setIsSidebarOpen(true)}
+              title="Open Sidebar"
+            >
+              <Menu size={20} />
+            </button>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <h1 style={{ margin: 0, fontSize: '20px', fontWeight: 600 }}>
+                {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
+              </h1>
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : activeTopic ? `Difficulty: ${activeTopic.difficulty}` : ''}
+              </span>
+            </div>
           </div>
 
           <div className="tabs-container" style={{ display: 'flex', alignItems: 'center' }}>

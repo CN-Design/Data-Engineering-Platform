@@ -146,7 +146,7 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({ theme }) => {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 3fr', gap: '20px', height: 'calc(100vh - 120px)' }}>
+    <div className="grid-playground">
       
       {/* Schema sidebar list */}
       <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto' }}>

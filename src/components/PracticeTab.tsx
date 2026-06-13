@@ -169,7 +169,7 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           
           {/* Stats Dashboard Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: '16px' }}>
+          <div className="grid-stats">
             <div className="glass-panel" style={{ padding: '20px', display: 'flex', alignItems: 'center', gap: '16px', background: 'rgba(59, 130, 246, 0.04)' }}>
               <Trophy size={40} color="#3b82f6" />
               <div>
@@ -208,7 +208,7 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
           </div>
 
           {/* Filter Bar */}
-          <div className="glass-panel" style={{ padding: '16px', display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <div className="glass-panel" style={{ padding: '16px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ flex: 1, position: 'relative' }}>
               <input
                 type="text"
@@ -296,7 +296,7 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
       ) : (
         
         // 2. Split Workspace view
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', height: 'calc(100vh - 120px)' }}>
+        <div className="grid-workspace">
           
           {/* Left panel: Problem, Hints, Solution tabs */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflow: 'hidden' }}>
