@@ -7,72 +7,65 @@ export const sqlTopics: Topic[] = [
     "category": "sql",
     "difficulty": "beginner",
     "concept": {
-      "overview": "This topic covers What is SQL?, a core concept in modern SQL workflows.",
-      "bookDefinition": "What is SQL? is formally defined as the practice or implementation pattern to structure and process data assets effectively in distributed environments.",
-      "simpleExplanation": "Think of What is SQL? as a simple helper. Instead of doing everything manually, we let the system coordinate the flow of information.",
-      "whyItMatters": "Without What is SQL?, systems face scaling limits, high compute latency, and inconsistent data structures.",
-      "analogy": "Imagine a post office routing mail. Instead of one person reading every address, they group mail by state first.",
+      "overview": "Structured Query Language (SQL) is the standard programming language used to interact with Relational Database Management Systems (RDBMS). It is declarative, meaning you specify *what* data you want rather than *how* to retrieve it, leaving execution plan optimization to the database engine.",
+      "bookDefinition": "SQL is a domain-specific language used in programming and designed for managing data held in a relational database management system, or for stream processing in a relational data stream management system.",
+      "simpleExplanation": "Think of SQL as ordering food at a restaurant. You tell the waiter what dish you want (declarative), and the kitchen decides how to prepare it (execution planning). You don't need to go to the kitchen and chop ingredients yourself.",
+      "whyItMatters": "SQL is the universal language of data. Whether storing transactional records, building data warehouses, or writing PySpark queries, the underlying relational algebra and declarative interface of SQL remain the primary standard for data manipulation.",
+      "analogy": "Imagine a giant digital filing cabinet where folders (tables) are linked by barcodes (keys). Instead of manually searching through every drawer, you hand a specific barcode finder note (SQL query) to the clerk, who returns the exact folders instantly.",
       "useCases": [
-        "Processing viewing histories at Netflix",
-        "Managing real-time location metrics at Uber",
-        "Updating store checkout carts at Amazon"
+        "Querying user account balances in banking transaction ledgers",
+        "Retrieving daily sales aggregates for business intelligence dashboards",
+        "Filtering active premium subscribers in CRM databases"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ What is SQL? Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "User Query (Declarative)\n   ↓\n[ Parser & Optimizer ]  ← Analyzes indexes & statistics\n   ↓\n[ Execution Plan ]     ← Decides Index Scan / Table Scan\n   ↓\nReturned Recordset",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An 'Employees' table containing columns (employee_id, name, department, salary) and a 'Departments' table.",
+        "processing": "The database optimizer parses the SELECT statement, checks indexes on employee_id, and selects an optimal index seek.",
+        "output": "A list of employee names along with their computed department details."
       },
-      "codeExample": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id;",
-      "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
+      "codeExample": "SELECT name, salary \nFROM Employees \nWHERE department = 'IT' \nORDER BY salary DESC;",
+      "stepByStepBreakdown": "Line 1: SELECT specifies the columns we want to return (name, salary).\nLine 2: FROM identifies the source table (Employees).\nLine 3: WHERE filters the records, keeping only those where department equals 'IT'.\nLine 4: ORDER BY sorts the final output in descending order of salary.",
       "commonMistakes": [
-        "Applying the concept without check conditions.",
-        "Neglecting storage size limits."
+        "Using SELECT * in production queries, which causes excessive disk I/O and network overhead.",
+        "Forgetting to add indexes on columns frequently used in WHERE filters."
       ],
       "bestPractices": [
-        "Keep parameters decoupled from code.",
-        "Monitor runtime latency metrics."
+        "Always explicitly list required columns in SELECT instead of using wildcard *.",
+        "Use lowercase for column/table names and UPPERCASE for SQL keywords to improve readability."
       ],
       "interviewQuestions": [
         {
-          "question": "What is What is SQL??",
-          "answer": "It coordinates data pipelines.",
-          "whyAsked": "To check core understanding.",
-          "wrongAnswer": "It only stores files.",
+          "question": "What does it mean that SQL is a 'declarative' language?",
+          "answer": "It means you declare *what* data you want to retrieve, filter, or modify, without specifying the step-by-step algorithms or physical operations (like loops or disk accesses) required to get it. The database's query optimizer automatically plans the execution.",
+          "whyAsked": "To check fundamental query engine understanding.",
+          "wrongAnswer": "It means you must write step-by-step loops to search the tables.",
           "difficulty": "beginner"
         },
         {
-          "question": "How does What is SQL? scale?",
-          "answer": "By utilizing parallel workers.",
-          "whyAsked": "To assess intermediate scaling skills.",
-          "wrongAnswer": "It runs on a single node.",
+          "question": "What is the logical order of execution of a SELECT query?",
+          "answer": "The logical order is: FROM -> JOIN -> WHERE -> GROUP BY -> HAVING -> SELECT -> DISTINCT -> ORDER BY -> LIMIT. This is why you cannot reference a column alias created in the SELECT clause inside the WHERE clause.",
+          "whyAsked": "To assess intermediate SQL optimization and structuring skills.",
+          "wrongAnswer": "It executes exactly in the order written: SELECT, then FROM, then WHERE.",
           "difficulty": "intermediate"
-        },
-        {
-          "question": "How do you resolve OOM bottlenecks in What is SQL??",
-          "answer": "By tuning GC policies and caching.",
-          "whyAsked": "To test advanced system debugging.",
-          "wrongAnswer": "By adding more print statements.",
-          "difficulty": "advanced"
         }
       ],
       "scenarioQuestions": [
         {
-          "question": "Your What is SQL? pipeline is running 4x slower today. What do you check first?",
-          "solution": "Examine shuffle metrics, network latency, and statistics updates."
+          "question": "You run 'SELECT * FROM large_table' and the query times out. What are the potential issues and solutions?",
+          "solution": "1. Scanning all columns (SELECT *) causes high disk I/O and network transfer. Solution: Select only needed columns.\n2. Lacking limit checks returns too many rows. Solution: Add a LIMIT clause.\n3. Verify if the database is locked or undergoing heavy writes by checking the active execution processes."
         }
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "✓ SQL is declarative: specify WHAT, not HOW.",
+        "✓ Queries execute logically starting from FROM, ending with LIMIT.",
+        "✓ Avoid SELECT * to conserve system resources."
       ],
       "cheatSheet": {
-        "definition": "What is SQL? simplifies distributed operations.",
-        "mostAskedQuestion": "Explain the performance impact of What is SQL?.",
-        "commonMistake": "Forgetting to verify the partition size.",
-        "bestPractice": "Always index keys."
+        "definition": "SQL is the standard query language for relational databases.",
+        "mostAskedQuestion": "What is the difference between DDL and DML?",
+        "commonMistake": "Overusing SELECT * in production pipelines.",
+        "bestPractice": "Always filter rows early using WHERE to optimize indexing."
       }
     }
   },
@@ -2257,72 +2250,65 @@ export const sqlTopics: Topic[] = [
     "category": "sql",
     "difficulty": "intermediate",
     "concept": {
-      "overview": "This topic covers INNER JOIN, a core concept in modern SQL workflows.",
-      "bookDefinition": "INNER JOIN is formally defined as the practice or implementation pattern to structure and process data assets effectively in distributed environments.",
-      "simpleExplanation": "Think of INNER JOIN as a simple helper. Instead of doing everything manually, we let the system coordinate the flow of information.",
-      "whyItMatters": "Without INNER JOIN, systems face scaling limits, high compute latency, and inconsistent data structures.",
-      "analogy": "Imagine a post office routing mail. Instead of one person reading every address, they group mail by state first.",
+      "overview": "An INNER JOIN selects records that have matching values in both tables. It acts as an intersection of two datasets based on a specific matching condition (typically primary and foreign key matches). If a row in the left table does not have a matching row in the right table, it is excluded from the result set.",
+      "bookDefinition": "An inner join is a join operation that compares each row of table A with each row of table B to find all pairs of rows which satisfy the join-predicate. When the join-predicate is satisfied, column values for each matched pair of rows of A and B are combined into a result row.",
+      "simpleExplanation": "Imagine you have a list of students and a list of library cards. An INNER JOIN gives you a list of only the students who actually have a library card. If a student doesn't have a card, or a card doesn't belong to a student, they are left out.",
+      "whyItMatters": "Joins are fundamental to normalized database schemas. Instead of repeating department info for every employee, you store employees and departments in separate tables and INNER JOIN them dynamically to rebuild the full record, saving storage and maintaining consistency.",
+      "analogy": "Think of matching puzzle pieces. You have blue pieces (Table A) and yellow pieces (Table B). An inner join only keeps the pairs that fit together perfectly. Any leftover non-matching pieces are discarded.",
       "useCases": [
-        "Processing viewing histories at Netflix",
-        "Managing real-time location metrics at Uber",
-        "Updating store checkout carts at Amazon"
+        "Combining user orders with user profiles to display order delivery addresses",
+        "Linking transactions with products to display item names in customer receipts",
+        "Correlating system log entries with error code definitions"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ INNER JOIN Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Table A (Left)     Table B (Right)\n  [ ID 1 ]  ──match──  [ ID 1 ]   ==> Included in output\n  [ ID 2 ]             [ ID 3 ]   ==> Discarded (No match)",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Table A (Employees) with keys [101, 102], Table B (Salaries) with keys [101, 103].",
+        "processing": "The database matches the records where EmployeeID is equal in both tables (key 101). Keys 102 and 103 do not match and are filtered out.",
+        "output": "A single row containing Employee 101's details and salary."
       },
-      "codeExample": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id;",
-      "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
+      "codeExample": "SELECT e.employee_id, e.name, d.department_name \nFROM Employees e \nINNER JOIN Departments d \n  ON e.department_id = d.department_id;",
+      "stepByStepBreakdown": "Line 1: Specifies the fields to return from both tables.\nLine 2: Designates the primary/left table (Employees e).\nLine 3: Introduces the secondary/right table (Departments d) to join.\nLine 4: Defines the join condition using ON. Only records with matching department_id will be returned.",
       "commonMistakes": [
-        "Applying the concept without check conditions.",
-        "Neglecting storage size limits."
+        "Forgetting that duplicate keys in join columns create a cartesian product multiplication (exploding joins).",
+        "Joining on columns with mismatched data types, causing implicit conversion which disables index usage."
       ],
       "bestPractices": [
-        "Keep parameters decoupled from code.",
-        "Monitor runtime latency metrics."
+        "Always alias your tables to improve query readability and avoid column name ambiguity.",
+        "Ensure join columns are indexed, especially on the right/foreign key table, to avoid full table scans."
       ],
       "interviewQuestions": [
         {
-          "question": "What is INNER JOIN?",
-          "answer": "It coordinates data pipelines.",
-          "whyAsked": "To check core understanding.",
-          "wrongAnswer": "It only stores files.",
-          "difficulty": "beginner"
-        },
-        {
-          "question": "How does INNER JOIN scale?",
-          "answer": "By utilizing parallel workers.",
-          "whyAsked": "To assess intermediate scaling skills.",
-          "wrongAnswer": "It runs on a single node.",
+          "question": "What happens to NULL values in an INNER JOIN?",
+          "answer": "Rows containing NULL values in the join columns are excluded from the result set because NULL represents an unknown value, and SQL evaluates 'NULL = NULL' as UNKNOWN (which is treated as false in filters).",
+          "whyAsked": "To test understanding of three-valued logic in SQL joins.",
+          "wrongAnswer": "NULL matches with other NULLs and is included in the output.",
           "difficulty": "intermediate"
         },
         {
-          "question": "How do you resolve OOM bottlenecks in INNER JOIN?",
-          "answer": "By tuning GC policies and caching.",
-          "whyAsked": "To test advanced system debugging.",
-          "wrongAnswer": "By adding more print statements.",
+          "question": "Explain the difference between INNER JOIN execution types (Hash Join vs Nested Loop Join).",
+          "answer": "1. Nested Loop Join: For each row in outer table, loops through inner table. Best for small datasets.\n2. Hash Join: Builds an in-memory hash table of the smaller table, then scans the larger table. Highly efficient for large unsorted datasets.\n3. Merge Join: Sorts both datasets on join key first, then merges. Best when data is already sorted or indexed.",
+          "whyAsked": "To assess deep understanding of RDBMS query engine internals.",
+          "wrongAnswer": "They are identical in performance and differ only in syntax.",
           "difficulty": "advanced"
         }
       ],
       "scenarioQuestions": [
         {
-          "question": "Your INNER JOIN pipeline is running 4x slower today. What do you check first?",
-          "solution": "Examine shuffle metrics, network latency, and statistics updates."
+          "question": "An INNER JOIN query between a large logs table and a users table is running extremely slow. What optimization steps do you take?",
+          "solution": "1. Check the execution plan (EXPLAIN) to see if it is performing a Hash Join or Nested Loop.\n2. Ensure indexes exist on the join keys (users.user_id, logs.user_id).\n3. Filter the logs table early using a WHERE clause before performing the join.\n4. Update database statistics so the optimizer chooses the correct driver table."
         }
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "✓ INNER JOIN returns matches present in BOTH tables.",
+        "✓ Non-matching keys and NULLs are excluded.",
+        "✓ Exploding joins occur if join columns have duplicate keys."
       ],
       "cheatSheet": {
-        "definition": "INNER JOIN simplifies distributed operations.",
-        "mostAskedQuestion": "Explain the performance impact of INNER JOIN.",
-        "commonMistake": "Forgetting to verify the partition size.",
-        "bestPractice": "Always index keys."
+        "definition": "INNER JOIN combines rows from tables based on matching key values.",
+        "mostAskedQuestion": "What is the difference between INNER JOIN and LEFT JOIN?",
+        "commonMistake": "Joining on columns that contain high frequencies of duplicate keys.",
+        "bestPractice": "Always join on indexed key columns."
       }
     }
   },
