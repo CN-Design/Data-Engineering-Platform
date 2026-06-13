@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import type { Topic } from '../data/types';
 import {
   Book, Lightbulb, Code, ShieldCheck, AlertTriangle, CheckCircle2,
-  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight
+  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight, Loader2
 } from 'lucide-react';
+import type { PremiumTopicData } from '../data/types';
+import { PremiumTopicRenderer } from './PremiumTopicRenderer';
 
 interface LearnTabProps {
   topic: Topic | null;
@@ -16,11 +18,33 @@ interface LearnTabProps {
 export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete }) => {
   const [activeSubTab, setActiveSubTab] = useState<'concept' | 'examples' | 'bestpractices' | 'interview'>('concept');
   const [revealedQs, setRevealedQs] = useState<Record<number, boolean>>({});
+  const [premiumData, setPremiumData] = useState<PremiumTopicData | null>(null);
+  const [isLoadingPremium, setIsLoadingPremium] = useState<boolean>(false);
 
   // Automatically switch to 'concept' when topic changes
   useEffect(() => {
     setActiveSubTab('concept');
-  }, [topic?.id]);
+    setPremiumData(null);
+    if (!topic?.id) return;
+
+    const fetchPremiumJSON = async () => {
+      setIsLoadingPremium(true);
+      try {
+        const response = await fetch(`/content/${topic.category}/${topic.id}.json`);
+        if (response.ok) {
+          const data: PremiumTopicData = await response.json();
+          setPremiumData(data);
+        } else {
+          setPremiumData(null);
+        }
+      } catch (err) {
+        setPremiumData(null);
+      } finally {
+        setIsLoadingPremium(false);
+      }
+    };
+    fetchPremiumJSON();
+  }, [topic?.id, topic?.category]);
 
   if (!topic) {
     return (
@@ -86,86 +110,98 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
 
         {/* TAB 1: CORE CONCEPT */}
         {activeSubTab === 'concept' && (
-          <>
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <Book size={18} />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Topic Overview</h3>
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            
+            {isLoadingPremium ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                <Loader2 className="animate-spin" size={24} />
+                <span>Loading premium deep dive content...</span>
               </div>
-              <div className="section-body">
-                <p>{concept.overview}</p>
-                <div style={{
-                  background: 'rgba(59, 130, 246, 0.05)',
-                  borderLeft: '4px solid #3b82f6',
-                  padding: '12px 16px',
-                  borderRadius: '0 8px 8px 0',
-                  marginTop: '12px'
-                }}>
-                  <strong style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Book Definition:</strong>
-                  <span style={{ fontSize: '14px', fontStyle: 'italic', color: 'var(--text-primary)' }}>"{concept.bookDefinition}"</span>
+            ) : premiumData ? (
+              <PremiumTopicRenderer data={premiumData} />
+            ) : (
+              <>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <Book size={18} />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Topic Overview</h3>
+                  </div>
+                  <div className="section-body">
+                    <p>{concept.overview}</p>
+                    <div style={{
+                      background: 'rgba(59, 130, 246, 0.05)',
+                      borderLeft: '4px solid #3b82f6',
+                      padding: '12px 16px',
+                      borderRadius: '0 8px 8px 0',
+                      marginTop: '12px'
+                    }}>
+                      <strong style={{ display: 'block', fontSize: '12px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>Book Definition:</strong>
+                      <span style={{ fontSize: '14px', fontStyle: 'italic', color: 'var(--text-primary)' }}>"{concept.bookDefinition}"</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <Lightbulb size={18} color="#eab308" />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Explanation</h3>
-              </div>
-              <div className="section-body">
-                <p>{concept.simpleExplanation}</p>
-                <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '16px' }}>
-                  <strong style={{ display: 'block', color: 'var(--text-primary)', marginBottom: '6px' }}>Real-World Analogy:</strong>
-                  <p style={{ color: 'var(--text-secondary)' }}>{concept.analogy}</p>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <Lightbulb size={18} color="#eab308" />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Explanation</h3>
+                  </div>
+                  <div className="section-body">
+                    <p>{concept.simpleExplanation}</p>
+                    <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-glass)', paddingTop: '16px' }}>
+                      <strong style={{ display: 'block', color: 'var(--text-primary)', marginBottom: '6px' }}>Real-World Analogy:</strong>
+                      <p style={{ color: 'var(--text-secondary)' }}>{concept.analogy}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="grid-concept">
-              <div className="glass-panel section-card">
-                <div className="section-header">
-                  <Award size={18} color="#3b82f6" />
-                  <h3 style={{ margin: 0, fontSize: '16px' }}>Why This Matters</h3>
-                </div>
-                <div className="section-body">
-                  <p>{concept.whyItMatters}</p>
-                </div>
-              </div>
+                <div className="grid-concept">
+                  <div className="glass-panel section-card">
+                    <div className="section-header">
+                      <Award size={18} color="#3b82f6" />
+                      <h3 style={{ margin: 0, fontSize: '16px' }}>Why This Matters</h3>
+                    </div>
+                    <div className="section-body">
+                      <p>{concept.whyItMatters}</p>
+                    </div>
+                  </div>
 
-              <div className="glass-panel section-card">
-                <div className="section-header">
-                  <Settings size={18} color="#10b981" />
-                  <h3 style={{ margin: 0, fontSize: '16px' }}>Real World Use Cases</h3>
+                  <div className="glass-panel section-card">
+                    <div className="section-header">
+                      <Settings size={18} color="#10b981" />
+                      <h3 style={{ margin: 0, fontSize: '16px' }}>Real World Use Cases</h3>
+                    </div>
+                    <div className="section-body">
+                      <ul style={{ paddingLeft: '18px', margin: 0 }}>
+                        {concept.useCases.map((uc, i) => (
+                          <li key={i} style={{ marginBottom: '6px' }}>{uc}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
                 </div>
-                <div className="section-body">
-                  <ul style={{ paddingLeft: '18px', margin: 0 }}>
-                    {concept.useCases.map((uc, i) => (
-                      <li key={i} style={{ marginBottom: '6px' }}>{uc}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
 
-            <div className="glass-panel section-card">
-              <div className="section-header">
-                <FileText size={18} />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Visual Pipeline Layout</h3>
-              </div>
-              <div className="section-body">
-                <pre style={{
-                  fontFamily: 'Fira Code, monospace',
-                  background: '#07080b',
-                  padding: '16px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-glass)',
-                  overflowX: 'auto',
-                  fontSize: '13px',
-                  color: '#10b981'
-                }}>{concept.diagram}</pre>
-              </div>
-            </div>
-          </>
+                <div className="glass-panel section-card">
+                  <div className="section-header">
+                    <FileText size={18} />
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>Visual Pipeline Layout</h3>
+                  </div>
+                  <div className="section-body">
+                    <pre style={{
+                      fontFamily: 'Fira Code, monospace',
+                      background: '#07080b',
+                      padding: '16px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--border-glass)',
+                      overflowX: 'auto',
+                      fontSize: '13px',
+                      color: '#10b981'
+                    }}>{concept.diagram}</pre>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         )}
 
         {/* TAB 2: EXAMPLES & CODE */}
