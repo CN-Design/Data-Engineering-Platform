@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import type { Topic } from '../data/types';
-import { 
-  Book, Lightbulb, Code, ShieldCheck, AlertTriangle, CheckCircle2, 
-  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, Sparkles, Key, Loader2
+import {
+  Book, Lightbulb, Code, ShieldCheck, AlertTriangle, CheckCircle2,
+  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award
 } from 'lucide-react';
 
 interface LearnTabProps {
@@ -11,104 +11,15 @@ interface LearnTabProps {
   onToggleComplete: () => void;
 }
 
-const parseInlineFormatting = (text: string) => {
-  if (!text) return '';
-  // Simple bold replacer
-  const parts = text.split(/(\*\*.*?\*\*)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={idx} style={{ color: 'var(--text-primary)' }}>{part.slice(2, -2)}</strong>;
-    }
-    // Code blocks inline
-    const inlineCodeParts = part.split(/(`.*?`)/g);
-    return inlineCodeParts.map((subPart, sIdx) => {
-      if (subPart.startsWith('`') && subPart.endsWith('`')) {
-        return <code key={`${idx}-${sIdx}`} style={{ background: 'var(--bg-inner)', padding: '2px 6px', borderRadius: '4px', fontFamily: 'monospace', fontSize: '12.5px', color: '#f43f5e' }}>{subPart.slice(1, -1)}</code>;
-      }
-      return subPart;
-    });
-  });
-};
 
-const renderMarkdown = (text: string) => {
-  if (!text) return null;
-  
-  // Split by code blocks first
-  const parts = text.split(/(```[\s\S]*?```)/g);
-  
-  return parts.map((part, idx) => {
-    if (part.startsWith('```')) {
-      const match = part.match(/```(\w+)?\n([\s\S]*?)```/);
-      const language = match ? match[1] : '';
-      const codeContent = match ? match[2] : part.replace(/```/g, '');
-      return (
-        <pre key={idx} className="code-block" style={{ marginTop: '12px', marginBottom: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-          {language && <span style={{ display: 'block', fontSize: '10px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '4px' }}>{language}</span>}
-          <code>{codeContent.trim()}</code>
-        </pre>
-      );
-    }
-    
-    // Normal text - process headers, bolding, list items line by line
-    const lines = part.split('\n');
-    return (
-      <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {lines.map((line, lIdx) => {
-          const trimmed = line.trim();
-          if (!trimmed) return <div key={lIdx} style={{ height: '8px' }} />;
-          
-          // Headers
-          if (trimmed.startsWith('### ')) {
-            return <h4 key={lIdx} style={{ margin: '16px 0 6px 0', fontSize: '15px', color: 'var(--text-primary)', fontWeight: 600 }}>{trimmed.replace('### ', '')}</h4>;
-          }
-          if (trimmed.startsWith('## ')) {
-            return <h3 key={lIdx} style={{ margin: '20px 0 8px 0', fontSize: '17px', color: 'var(--text-primary)', fontWeight: 600, borderBottom: '1px solid var(--border-glass)', paddingBottom: '4px' }}>{trimmed.replace('## ', '')}</h3>;
-          }
-          if (trimmed.startsWith('# ')) {
-            return <h2 key={lIdx} style={{ margin: '24px 0 12px 0', fontSize: '20px', color: 'var(--text-primary)', fontWeight: 700 }}>{trimmed.replace('# ', '')}</h2>;
-          }
-          
-          // List items
-          if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-            const content = trimmed.substring(2);
-            return (
-              <ul key={lIdx} style={{ margin: '0 0 4px 0', paddingLeft: '20px' }}>
-                <li style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{parseInlineFormatting(content)}</li>
-              </ul>
-            );
-          }
-          
-          // Default paragraph
-          return <p key={lIdx} style={{ margin: '0 0 8px 0', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.6' }}>{parseInlineFormatting(trimmed)}</p>;
-        })}
-      </div>
-    );
-  });
-};
 
 export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'concept' | 'deepdive' | 'examples' | 'bestpractices' | 'interview'>('concept');
+  const [activeSubTab, setActiveSubTab] = useState<'concept' | 'examples' | 'bestpractices' | 'interview'>('concept');
   const [revealedQs, setRevealedQs] = useState<Record<number, boolean>>({});
-  
-  // API Key & Cache States
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
-  const [showKeyInput, setShowKeyInput] = useState(!apiKey);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  const [deepDives, setDeepDives] = useState<Record<string, string>>(() => {
-    try {
-      const saved = localStorage.getItem('de_deepdives_cache');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
 
   // Automatically switch to 'concept' when topic changes
   useEffect(() => {
     setActiveSubTab('concept');
-    setError(null);
   }, [topic?.id]);
 
   if (!topic) {
@@ -125,65 +36,9 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
     setRevealedQs(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
 
-  const saveKey = (key: string) => {
-    localStorage.setItem('gemini_api_key', key);
-    setApiKey(key);
-    setShowKeyInput(false);
-    setError(null);
-  };
-
-  const fetchDeepDive = async () => {
-    const keyToUse = apiKey || localStorage.getItem('gemini_api_key');
-    if (!keyToUse) {
-      setError("Please save a valid Gemini API Key first.");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    const promptText = `You are a Principal Data Engineer and Senior Technical Instructor. Provide a highly detailed, comprehensive study guide for the topic "${topic.title}" under the category "${topic.category}".
-Your response MUST be extremely detailed and structured into the following sections:
-1. **Overview & Architectural Role**: Explain why this exists, where it fits in a modern production data architecture, and how it compares to alternative approaches.
-2. **Sub-Concepts & Technical Deep Dive**: Break down at least 3-4 sub-concepts or internal details (e.g. for SQL JOINs: explain Inner, Left, Full, Cross, Hash Join vs Merge Join vs Loop Join execution, and partition skew).
-3. **Step-by-Step Production Code Example**: Provide a complete, production-ready code example (SQL or PySpark/Python depending on category) showing standard syntax and best practices.
-4. **Performance Tuning & Failure Modes**: Detail common production failure modes (OOM, skew, serialization, indexing issues) and how to tune/resolve them.
-5. **Key Scenario Interview Question**: Provide a realistic, scenario-based interview question and a detailed, high-scoring answer.
-
-Be detailed, technical, and use markdown formatting.`;
-
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${keyToUse}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: promptText }] }]
-          })
-        }
-      );
-
-      const data = await response.json();
-      const answer = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (answer) {
-        const updated = { ...deepDives, [topic.id]: answer };
-        setDeepDives(updated);
-        localStorage.setItem('de_deepdives_cache', JSON.stringify(updated));
-      } else {
-        throw new Error(data.error?.message || "No content returned from Gemini API.");
-      }
-    } catch (err: any) {
-      setError(err.message || "Failed to call Gemini API");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1000px', margin: '0 auto' }}>
-      
+
       {/* Sub tabs header */}
       <div style={{
         display: 'flex',
@@ -200,13 +55,6 @@ Be detailed, technical, and use markdown formatting.`;
           <Book size={14} /> Core Concept
         </button>
         <button
-          onClick={() => setActiveSubTab('deepdive')}
-          className={`tab-btn ${activeSubTab === 'deepdive' ? 'active' : ''}`}
-          style={{ fontSize: '13px', padding: '8px 12px' }}
-        >
-          <Sparkles size={14} color="#a855f7" /> AI Deep Dive
-        </button>
-        <button
           onClick={() => setActiveSubTab('examples')}
           className={`tab-btn ${activeSubTab === 'examples' ? 'active' : ''}`}
           style={{ fontSize: '13px', padding: '8px 12px' }}
@@ -218,7 +66,7 @@ Be detailed, technical, and use markdown formatting.`;
           className={`tab-btn ${activeSubTab === 'bestpractices' ? 'active' : ''}`}
           style={{ fontSize: '13px', padding: '8px 12px' }}
         >
-          <ShieldCheck size={14} /> Production Tips
+          <ShieldCheck size={14} /> Tips
         </button>
         <button
           onClick={() => setActiveSubTab('interview')}
@@ -231,7 +79,7 @@ Be detailed, technical, and use markdown formatting.`;
 
       {/* Sub tab content */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
+
         {/* TAB 1: CORE CONCEPT */}
         {activeSubTab === 'concept' && (
           <>
@@ -258,7 +106,7 @@ Be detailed, technical, and use markdown formatting.`;
             <div className="glass-panel section-card">
               <div className="section-header">
                 <Lightbulb size={18} color="#eab308" />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Simple Language Explanation</h3>
+                <h3 style={{ margin: 0, fontSize: '16px' }}>Explanation</h3>
               </div>
               <div className="section-body">
                 <p>{concept.simpleExplanation}</p>
@@ -316,100 +164,7 @@ Be detailed, technical, and use markdown formatting.`;
           </>
         )}
 
-        {/* TAB 2: AI DEEP-DIVE (NEW DETAILED EXPLANATION PANEL) */}
-        {activeSubTab === 'deepdive' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-            
-            {/* Configure Key Card */}
-            {showKeyInput && (
-              <div className="glass-panel" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Key size={18} color="#a855f7" />
-                  <strong style={{ fontSize: '14px' }}>Gemini API Key Required</strong>
-                </div>
-                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
-                  Unlock textbook-level deep dives, exhaustive sub-concept breakdowns, and customized production code examples generated on-the-fly for this topic.
-                </p>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                  <input
-                    type="password"
-                    placeholder="Enter your Gemini API key..."
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: 'var(--bg-primary)',
-                      border: '1px solid var(--border-glass)',
-                      borderRadius: '6px',
-                      padding: '8px 12px',
-                      color: '#fff',
-                      fontSize: '13px'
-                    }}
-                  />
-                  <button onClick={() => saveKey(apiKey)} className="btn btn-primary">
-                    Save Key
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {!showKeyInput && !deepDives[topic.id] && !loading && (
-              <div className="glass-panel" style={{ padding: '24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-                <Sparkles size={32} color="#a855f7" style={{ animation: 'pulse 2s infinite' }} />
-                <h3 style={{ margin: 0, fontSize: '16px' }}>Generate Rich Deep Dive</h3>
-                <p style={{ maxWidth: '600px', fontSize: '13px', color: 'var(--text-secondary)', margin: 0 }}>
-                  Generate an in-depth, master-level guide for **{topic.title}**. This will break down internal execution details, sub-concepts, optimization rules, and common interview scenarios.
-                </p>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-                  <button onClick={fetchDeepDive} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Sparkles size={14} /> Generate Guide
-                  </button>
-                  <button onClick={() => setShowKeyInput(true)} className="btn btn-secondary" style={{ fontSize: '12px' }}>
-                    Configure Key
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {loading && (
-              <div className="glass-panel" style={{ padding: '40px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-                <Loader2 size={36} color="#a855f7" style={{ animation: 'spin 1.5s linear infinite' }} />
-                <div>
-                  <h4 style={{ margin: 0, fontSize: '15px' }}>Analyzing Topic Architecture...</h4>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px', marginBlockEnd: 0 }}>
-                    Gemini is generating detailed explanations and code sub-concepts for **{topic.title}**
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {error && (
-              <div className="glass-panel" style={{ padding: '16px', borderLeft: '4px solid #ef4444', color: '#ef4444', fontSize: '13px' }}>
-                {error}
-              </div>
-            )}
-
-            {deepDives[topic.id] && (
-              <div className="glass-panel section-card" style={{ padding: '24px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-glass)', paddingBottom: '12px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Sparkles size={18} color="#a855f7" />
-                    <strong style={{ fontSize: '15px', color: 'var(--text-primary)' }}>AI Study Guide & Sub-Concepts</strong>
-                  </div>
-                  <button onClick={fetchDeepDive} className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '11px' }}>
-                    Regenerate
-                  </button>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  {renderMarkdown(deepDives[topic.id])}
-                </div>
-              </div>
-            )}
-
-          </div>
-        )}
-
-        {/* TAB 3: EXAMPLES & CODE */}
+        {/* TAB 2: EXAMPLES & CODE */}
         {activeSubTab === 'examples' && (
           <>
             <div className="glass-panel section-card">
@@ -522,9 +277,9 @@ Be detailed, technical, and use markdown formatting.`;
                 {concept.interviewQuestions.map((q, idx) => {
                   const isRev = !!revealedQs[idx];
                   return (
-                    <div 
-                      key={idx} 
-                      className="glass-panel question-card" 
+                    <div
+                      key={idx}
+                      className="glass-panel question-card"
                       onClick={() => toggleQ(idx)}
                       style={{ padding: '16px' }}
                     >
@@ -563,9 +318,9 @@ Be detailed, technical, and use markdown formatting.`;
                   const sIdx = idx + 100;
                   const isRev = !!revealedQs[sIdx];
                   return (
-                    <div 
-                      key={`sec-${idx}`} 
-                      className="glass-panel question-card" 
+                    <div
+                      key={`sec-${idx}`}
+                      className="glass-panel question-card"
                       onClick={() => toggleQ(sIdx)}
                       style={{ padding: '16px', borderLeft: '3px solid #a855f7' }}
                     >

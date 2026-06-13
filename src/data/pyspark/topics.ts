@@ -19,9 +19,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "User Application (Driver)\n         ↓ (Splits query into Tasks)\n  [ Cluster Manager ] (YARN/K8s/Mesos)\n   ↙     ↓     ↘\n[Exec 1] [Exec 2] [Exec 3] (Executors process partitions in RAM)",
       "detailedExample": {
-        "input": "A 100GB CSV log file stored in Amazon S3 or Azure ADLS.",
-        "processing": "Spark reads the data, partitions it across the cluster executors, filters lines containing 'ERROR', and groups by service type.",
-        "output": "A small summary table showing the error count per microservice."
+        "input": "A large, complex dataset (e.g., 1TB of log files) requiring distributed processing and analysis.",
+        "processing": "Spark distributes the dataset across a cluster, performing parallel computations like filtering and aggregation using its in-memory processing capabilities.",
+        "output": "Significantly faster computation of analytical results and insights from the large dataset compared to traditional single-machine processing."
       },
       "codeExample": "from pyspark.sql import SparkSession\n\nspark = SparkSession.builder.appName(\"SparkIntro\").getOrCreate()\ndf = spark.read.json(\"s3://my-bucket/logs/*.json\")\nerror_counts = df.filter(df.status == \"ERROR\").groupBy(\"service\").count()\nerror_counts.show()",
       "stepByStepBreakdown": "Line 1-3: Initializes a SparkSession, the entry point to PySpark.\nLine 4: Reads JSON files lazily from S3, creating a DataFrame.\nLine 5: Defines transformation operations (filter, groupBy, count) which remain lazy and do not execute until an action is called.\nLine 6: Triggers an action (show()) which builds the DAG and executes the job.",
@@ -87,9 +87,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Spark Architecture Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark application submitted to a cluster manager (e.g., YARN) with a dataset to process.",
+        "processing": "The Driver program coordinates with the Cluster Manager to launch Executors on worker nodes, which then perform tasks on partitions of the data.",
+        "output": "The distributed execution of the application, where tasks run in parallel across the cluster, managed by the Driver and executed by Executors."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -162,9 +162,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Driver Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark script containing transformations and actions (e.g., `df.filter(...).count()`).",
+        "processing": "The Driver program (JVM/Python process) translates the script into a DAG of RDD operations, schedules tasks, and coordinates with the Cluster Manager and Executors.",
+        "output": "The overall execution plan and coordination of the Spark application, including collecting final results back to the client."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -237,9 +237,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Executor Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A task (e.g., a `map` or `reduce` operation) assigned by the Driver, along with a partition of data.",
+        "processing": "The Executor (JVM process on a worker node) runs the assigned task on its allocated data partition, performing computations and storing intermediate results.",
+        "output": "The completion of individual computational tasks on specific data partitions, contributing to the overall distributed processing of the Spark application."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -312,9 +312,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Cluster Manager Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark application submission request specifying resources (e.g., CPU, memory) for the Driver and Executors.",
+        "processing": "The Cluster Manager (e.g., YARN, Mesos, Kubernetes) allocates resources on the cluster, launches the Driver, and then launches Executors as requested by the Driver.",
+        "output": "The successful provisioning of computational resources and the launch of the Spark application components (Driver and Executors) across the cluster."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -387,9 +387,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SparkSession Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Python script requiring interaction with Spark functionalities like DataFrame creation or reading data.",
+        "processing": "`SparkSession.builder.appName(\"MyApp\").getOrCreate()` initializes the entry point, providing access to all Spark features, including SparkContext and SQLContext.",
+        "output": "A `SparkSession` object, enabling the creation of DataFrames, execution of SQL queries, and interaction with various Spark APIs."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -462,9 +462,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SparkContext Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A legacy Spark application or a need for RDD-level operations, typically accessed via `SparkSession.sparkContext`.",
+        "processing": "`SparkContext` establishes the connection to the Spark cluster and is responsible for creating RDDs and broadcasting variables.",
+        "output": "The fundamental connection to the Spark cluster, allowing for low-level RDD manipulations and resource management."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -537,9 +537,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Creating DataFrames Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Python list of tuples or a Pandas DataFrame, representing structured data.",
+        "processing": "`spark.createDataFrame([(1, \"Alice\"), (2, \"Bob\")], [\"id\", \"name\"])` converts the input into a distributed, immutable collection of rows with named columns.",
+        "output": "A PySpark DataFrame, ready for distributed transformations and actions, with a defined schema."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -612,9 +612,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Reading Data Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A CSV file located in HDFS or S3 (e.g., `s3://my-bucket/data.csv`).",
+        "processing": "`spark.read.csv(\"s3://my-bucket/data.csv\", header=True, inferSchema=True)` reads the data, infers its schema, and distributes it across the cluster.",
+        "output": "A PySpark DataFrame containing the data from the specified source, with columns and types automatically detected or explicitly defined."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -687,9 +687,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Writing Data Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame (e.g., `processed_df`) containing transformed data.",
+        "processing": "`processed_df.write.parquet(\"hdfs://path/to/output\", mode=\"overwrite\")` serializes the DataFrame's contents into Parquet format and saves it to the specified distributed file system.",
+        "output": "The DataFrame's data persisted as Parquet files in the target location, optimized for future reads and distributed storage."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -762,9 +762,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ select() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `df` containing customer data with columns `customer_id`, `name`, `email`, and `registration_date`.",
+        "processing": "The `select()` transformation is applied to `df` to choose only the `customer_id` and `name` columns.",
+        "output": "A new DataFrame containing only the `customer_id` and `name` columns for all customers."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -837,9 +837,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ filter() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `sales_df` with columns `product_id`, `region`, `amount`, and `sale_date`.",
+        "processing": "The `filter()` transformation is used to select rows where `region` is 'EMEA' and `amount` is greater than 1000.",
+        "output": "A DataFrame containing only sales records from the 'EMEA' region with an amount exceeding 1000."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -912,9 +912,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ withColumn() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `transactions_df` with columns `item_count` and `price_per_item`.",
+        "processing": "A new column `total_cost` is added to `transactions_df` by multiplying `item_count` and `price_per_item` using `withColumn()`.",
+        "output": "A DataFrame with the original columns plus the new `total_cost` column for each transaction."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -987,9 +987,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ drop() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `user_data_df` containing `user_id`, `username`, `password_hash`, and `last_login`.",
+        "processing": "The `drop()` transformation is applied to `user_data_df` to remove the sensitive `password_hash` column.",
+        "output": "A new DataFrame identical to the input but without the `password_hash` column."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1062,9 +1062,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ distinct() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `events_df` with columns `event_type`, `user_id`, and `timestamp`, where `event_type` might have duplicates.",
+        "processing": "The `distinct()` transformation is applied to `events_df` to retrieve only the unique combinations of all columns.",
+        "output": "A DataFrame where each row represents a unique `event_type`, `user_id`, and `timestamp` combination present in the original data."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1137,9 +1137,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ show() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `logs_df` containing millions of application log entries.",
+        "processing": "The `show(5)` action is called on `logs_df` to display the first 5 rows of the DataFrame to the console.",
+        "output": "A formatted table printed to standard output, showing a preview of the first 5 log entries."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1212,9 +1212,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ collect() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A small DataFrame `config_df` with `key` and `value` columns, holding configuration parameters.",
+        "processing": "The `collect()` action is executed on `config_df` to retrieve all rows as a list of `Row` objects to the driver program.",
+        "output": "A Python list where each element is a PySpark `Row` object, representing a configuration parameter from the DataFrame."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1287,9 +1287,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ count() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `sensor_readings_df` representing billions of IoT sensor data points.",
+        "processing": "The `count()` action is performed on `sensor_readings_df` to determine the total number of records.",
+        "output": "An integer value representing the total number of rows (sensor readings) in the DataFrame."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1362,9 +1362,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ take() Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large DataFrame `customer_orders_df` with millions of customer order details.",
+        "processing": "The `take(10)` action is called on `customer_orders_df` to fetch the first 10 rows to the driver as a list of `Row` objects.",
+        "output": "A Python list containing the first 10 `Row` objects from the DataFrame, useful for quick inspection."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1437,9 +1437,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Joins Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Two DataFrames: `employees_df` (employee_id, name, department_id) and `departments_df` (department_id, department_name, location).",
+        "processing": "An inner join is performed between `employees_df` and `departments_df` using the common `department_id` column.",
+        "output": "A new DataFrame containing combined employee and department information (employee_id, name, department_id, department_name, location) for all matching department IDs."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1512,9 +1512,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Aggregations Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with columns 'category' and 'revenue', representing sales data.",
+        "processing": "Calculate the total sum of 'revenue' across the entire DataFrame using `df.agg(F.sum('revenue').alias('total_revenue'))`.",
+        "output": "A DataFrame with a single row and column, showing the grand total revenue for all categories."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1587,9 +1587,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Group By Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` containing 'department' and 'salary' for employees.",
+        "processing": "Group the DataFrame by 'department' and compute the average 'salary' for each department using `df.groupBy('department').agg(F.avg('salary').alias('avg_salary'))`.",
+        "output": "A DataFrame listing each unique department along with its calculated average employee salary."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1662,9 +1662,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Sort Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with 'name' and 'score' columns for students.",
+        "processing": "Sort the DataFrame by the 'score' column in descending order using `df.sort(F.col('score').desc())`.",
+        "output": "A DataFrame where students are ordered from the highest score to the lowest score."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1737,9 +1737,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Union Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Two PySpark DataFrames, `df_q1_sales` and `df_q2_sales`, both having identical schemas ('product_id', 'amount', 'date').",
+        "processing": "Combine both DataFrames vertically into a single DataFrame using `df_q1_sales.union(df_q2_sales)`.",
+        "output": "A single DataFrame containing all sales records from both the first and second quarters."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1812,9 +1812,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Temporary Views Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `customer_data` containing customer IDs and names.",
+        "processing": "Register `customer_data` as a temporary SQL view named `customers_view` using `customer_data.createOrReplaceTempView('customers_view')`.",
+        "output": "The `customers_view` is now accessible for SQL queries directly through `spark.sql()` within the current Spark session."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1887,9 +1887,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SQL Queries Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A temporary view `products_view` containing 'product_name', 'category', and 'price' columns.",
+        "processing": "Execute a SQL query `SELECT product_name, price FROM products_view WHERE category = 'Electronics'` using `spark.sql()`.",
+        "output": "A DataFrame containing only the product name and price for items categorized as 'Electronics'."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1962,9 +1962,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Spark SQL Functions Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with a 'timestamp_col' column containing date-time strings.",
+        "processing": "Use `F.date_format(F.col('timestamp_col'), 'yyyy-MM-dd')` to extract and format the date part into a new 'event_date' column.",
+        "output": "A DataFrame with an additional 'event_date' column, showing only the date part of the original timestamp."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2037,9 +2037,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Window Specification Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with 'region', 'city', and 'sales_amount' columns.",
+        "processing": "Define a window specification partitioned by 'region' and ordered by 'sales_amount' in descending order using `Window.partitionBy('region').orderBy(F.col('sales_amount').desc())`.",
+        "output": "A reusable window object `window_spec` that can be applied to calculate analytics within each region."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2112,9 +2112,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Ranking Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with 'employee_id', 'department', and 'salary' columns.",
+        "processing": "Apply `F.rank()` over a window partitioned by 'department' and ordered by 'salary' descending to assign a rank to employees within each department.",
+        "output": "A DataFrame with an additional 'salary_rank' column, indicating each employee's rank based on salary within their respective department."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2187,9 +2187,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Running Totals Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with 'order_date' and 'daily_revenue' columns, sorted by date.",
+        "processing": "Calculate a running total of 'daily_revenue' using `F.sum('daily_revenue').over(Window.orderBy('order_date').rowsBetween(Window.unboundedPreceding(), Window.currentRow()))`.",
+        "output": "A DataFrame with an additional 'cumulative_revenue' column, showing the accumulated revenue up to each specific order date."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2262,9 +2262,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Working with CSV Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A CSV file named 'users.csv' containing 'id,name,age' data.",
+        "processing": "Read 'users.csv' into a PySpark DataFrame, inferring the schema and specifying the header option.",
+        "output": "A PySpark DataFrame with columns 'id' (IntegerType), 'name' (StringType), and 'age' (IntegerType)."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2337,9 +2337,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Working with JSON Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A JSON file 'events.json' with semi-structured data, e.g., `{\"id\":1, \"details\":{\"type\":\"click\", \"timestamp\":\"...\"}}`.",
+        "processing": "Load 'events.json' into a PySpark DataFrame, automatically inferring the nested schema.",
+        "output": "A PySpark DataFrame where 'details' is a StructType column, allowing access to nested fields like `df.details.type`."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2412,9 +2412,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Working with Parquet Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df_sales` containing structured sales transaction data.",
+        "processing": "Write `df_sales` to a Parquet file, leveraging its columnar storage and schema evolution capabilities.",
+        "output": "A Parquet file (or directory of files) on disk, optimized for analytical queries and efficient data retrieval."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2487,9 +2487,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Working with Delta Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df_updates` with new and updated customer records, and an existing Delta table `customers_delta`.",
+        "processing": "Perform an `upsert` operation using `DeltaTable.merge()` on `customers_delta`, matching on customer ID.",
+        "output": "An updated `customers_delta` table with ACID properties, reflecting merged changes and maintaining transaction history."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2562,9 +2562,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Python UDF Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame with a 'product_name' column containing mixed-case strings.",
+        "processing": "Define a Python function to convert a string to title case, register it as a UDF, and apply it to 'product_name'.",
+        "output": "A PySpark DataFrame with a new column 'formatted_name' containing the title-cased product names."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2637,9 +2637,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Pandas UDF Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame with 'category' and 'price' columns, requiring a group-wise median calculation.",
+        "processing": "Define a Pandas function to calculate the median of a Series, register it as a Pandas UDF (e.g., `Grouped Map`), and apply it grouped by 'category'.",
+        "output": "A PySpark DataFrame containing each 'category' and its corresponding median 'price', leveraging vectorized operations."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2712,9 +2712,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ DAG Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A sequence of PySpark DataFrame transformations: `read_csv -> filter -> join -> select`.",
+        "processing": "Spark constructs a Logical Plan (DAG) representing these operations and their dependencies without immediate execution.",
+        "output": "A visualizable Directed Acyclic Graph showing the stages and tasks, like 'Scan CSV', 'Filter', 'HashJoin', and 'Project'."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2787,9 +2787,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Catalyst Optimizer Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame query involving multiple joins, filters, and aggregations.",
+        "processing": "The Catalyst Optimizer applies rule-based and cost-based optimizations, such as predicate pushdown and join reordering, to the logical plan.",
+        "output": "An optimized physical execution plan that minimizes data shuffling and computations, leading to faster query execution."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2862,9 +2862,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Tungsten Engine Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An optimized physical execution plan generated by the Catalyst Optimizer, ready for execution.",
+        "processing": "The Tungsten Engine performs whole-stage code generation, efficient memory management, and CPU cache-aware computations.",
+        "output": "Low-level, highly efficient execution of Spark tasks, reducing CPU and memory overhead for improved performance."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2937,9 +2937,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Repartition Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df_logs` with 200 partitions, but subsequent operations require fewer, larger partitions.",
+        "processing": "Call `df_logs.repartition(10)` to redistribute the data across 10 partitions, involving a shuffle operation.",
+        "output": "A new PySpark DataFrame with 10 partitions, optimized for downstream processing or writing to fewer, larger files."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3012,9 +3012,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Coalesce Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame with 100 partitions, resulting from a large data load that created many small files.",
+        "processing": "Apply `df.coalesce(10)` to reduce the number of partitions to 10, which avoids a full shuffle by moving data only to existing partitions.",
+        "output": "A new DataFrame with 10 partitions, ready for more efficient downstream processing or writing to fewer, larger files."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3087,9 +3087,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Partition Pruning Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Parquet table partitioned by `event_date` and `country`, containing billions of records across many directories.",
+        "processing": "Query the table with `spark.sql(\"SELECT * FROM events WHERE event_date = '2023-01-01' AND country = 'US'\")`. Spark's optimizer identifies and reads only the relevant partition directories.",
+        "output": "Only data from the `2023-01-01/US` partition is scanned and returned, significantly reducing I/O and query time by skipping irrelevant data."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3162,9 +3162,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Caching Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `df_cleaned` resulting from complex transformations on raw data, which will be used multiple times in subsequent analyses.",
+        "processing": "Call `df_cleaned.cache()` followed by an action (e.g., `df_cleaned.count()`) to materialize and store the DataFrame in memory.",
+        "output": "Subsequent operations on `df_cleaned` execute much faster as data is read directly from memory instead of recomputing transformations from scratch."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3237,9 +3237,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Persistence Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame `df_intermediate` that is computationally expensive to generate and needs to be reused across several stages, potentially exceeding available memory.",
+        "processing": "Use `df_intermediate.persist(StorageLevel.DISK_ONLY)` to store the DataFrame reliably on disk, or `StorageLevel.MEMORY_AND_DISK` to spill to disk if memory is insufficient.",
+        "output": "The DataFrame is stored on disk (or memory/disk), allowing reliable reuse even for very large datasets, at the cost of slower access compared to pure memory caching."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3312,9 +3312,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Broadcast Join Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large DataFrame `orders` (billions of rows) and a small DataFrame `products` (thousands of rows) that needs to be joined on `product_id`.",
+        "processing": "Spark automatically (or explicitly via `broadcast(products)`) sends the `products` DataFrame to all executor nodes, then performs a local hash join on each executor.",
+        "output": "A joined DataFrame is produced without any data shuffle for the smaller table, significantly improving join performance by avoiding network I/O."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3387,9 +3387,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ AQE Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A complex Spark SQL query involving multiple joins and aggregations where intermediate shuffle sizes are unknown or potentially skewed.",
+        "processing": "With AQE enabled (`spark.sql.adaptive.enabled=true`), Spark dynamically optimizes the query plan during execution, adjusting join strategies, coalescing shuffle partitions, and handling skew.",
+        "output": "The query completes more efficiently by adapting to runtime statistics, potentially switching to a broadcast join for a small intermediate result or re-partitioning skewed data."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3462,9 +3462,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ What is Shuffle? Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A DataFrame undergoing a `groupBy()` aggregation or a `join()` operation where keys are initially distributed across different partitions on various executor nodes.",
+        "processing": "Spark exchanges data across the network between different executor nodes to bring all rows with the same key to the same partition for processing.",
+        "output": "Data is re-distributed across partitions, enabling operations like aggregation or joining on common keys, but incurring significant network and disk I/O overhead."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3537,9 +3537,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Shuffle Optimization Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark job with frequent shuffles, leading to high network I/O and slow performance, potentially due to too many small shuffle files or data skew.",
+        "processing": "Techniques like increasing `spark.sql.shuffle.partitions`, enabling AQE, pre-partitioning data, or using `repartitionByRange` are applied to manage shuffle behavior.",
+        "output": "Reduced shuffle overhead, fewer network transfers, and more balanced data distribution across partitions, leading to faster job execution and improved stability."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3612,9 +3612,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Storage Memory Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark application running on a cluster where `spark.memory.fraction` allocates a portion of the JVM heap for Spark's unified memory manager.",
+        "processing": "Data cached using `df.cache()` or `df.persist()` is stored within the Storage Memory region of the executor's JVM heap.",
+        "output": "Cached RDDs/DataFrames are quickly accessible from memory, but if Storage Memory is exhausted, data might be evicted or spilled to disk depending on the persistence level."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3687,9 +3687,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Execution Memory Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark job performing operations like joins, aggregations, or sorts that require temporary buffers and data structures for intermediate computations.",
+        "processing": "These operations utilize the Execution Memory region of the executor's JVM heap for their intermediate computations, such as hash tables for joins or sort buffers.",
+        "output": "Efficient in-memory processing for shuffle, join, and aggregation buffers, but if Execution Memory is exhausted, data spills to disk, significantly slowing down the operation."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3762,9 +3762,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Structured Streaming Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A directory continuously receives new JSON files representing sensor readings, each containing a timestamp and a value.",
+        "processing": "PySpark reads these files as a stream, applies a schema, and calculates a tumbling window count of readings every 10 seconds.",
+        "output": "The query continuously writes the windowed counts to the console, showing real-time aggregates as new data arrives."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3837,9 +3837,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Watermarking Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A stream of click events with an event-time timestamp column, arriving potentially out-of-order or delayed.",
+        "processing": "A watermark of '1 minute' is applied to the event-time column, allowing events up to 1 minute late to be included in their correct 5-minute tumbling window.",
+        "output": "Aggregated click counts per 5-minute window, where late events within the 1-minute threshold are correctly processed, and very late events are dropped."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3912,9 +3912,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Checkpointing Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A stateful Structured Streaming query aggregating user sessions from a Kafka topic.",
+        "processing": "A checkpoint directory is configured to persist the query's progress (offsets) and intermediate state (session aggregates) to HDFS/S3.",
+        "output": "Upon failure or restart, the query resumes exactly from its last committed state and offset, ensuring exactly-once processing and preventing data loss."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3987,9 +3987,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Lazy Evaluation Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame with a chain of transformations defined, such as `df.filter(...).select(...).groupBy(...).agg(...)`.",
+        "processing": "PySpark builds a logical execution plan for these transformations without immediately computing any results or loading data.",
+        "output": "The actual computation and data processing only occur when an action like `df.show()` or `df.write()` is called, triggering optimized execution."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4062,9 +4062,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Wide vs Narrow Transformations Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark DataFrame `df` with multiple partitions.",
+        "processing": "`df.filter()` is a narrow transformation as it processes data within existing partitions; `df.groupBy().agg()` is wide, requiring data shuffle across partitions.",
+        "output": "Narrow transformations result in child partitions depending on a single parent partition, while wide transformations require data from all parent partitions, necessitating a shuffle."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4137,9 +4137,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Shuffle Internals Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PySpark `df.join(another_df)` operation where both DataFrames are large and require key-based redistribution.",
+        "processing": "Mappers write partitioned data to local disk, then reducers fetch and merge these partitions over the network to form the joined result.",
+        "output": "Data is redistributed across the cluster, enabling the join operation by bringing together rows with matching keys from different original partitions."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4212,9 +4212,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Broadcast Joins Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Joining a large `orders_df` (millions of rows) with a significantly smaller `products_df` (thousands of rows).",
+        "processing": "The `products_df` is collected by the driver and then efficiently sent to all executor nodes, allowing each executor to perform the join locally.",
+        "output": "The join completes without a costly shuffle of the large `orders_df`, significantly improving performance by avoiding network I/O for the smaller table."
       },
       "codeExample": "df.groupBy(\"user_id\").count()",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",

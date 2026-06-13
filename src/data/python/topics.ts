@@ -19,9 +19,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python What is Python? ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A simple instruction to display text: `print('Hello, Data Engineer!')`",
+        "processing": "The Python interpreter executes the `print()` function, which is a built-in command to output data to the standard console.",
+        "output": "The string 'Hello, Data Engineer!' is displayed on the console."
       },
       "codeExample": "def run_example():\n    # Python What is Python? implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -94,9 +94,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Python Syntax & Basics ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "Two integer variables are defined: `x = 10` and `y = 5`.",
+        "processing": "Python assigns the values to the variables and then performs an addition operation: `result = x + y`.",
+        "output": "The variable `result` now holds the integer value `15`."
       },
       "codeExample": "def run_example():\n    # Python Python Syntax & Basics implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -169,9 +169,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Data Types & Collections ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A list of strings representing server names: `servers = ['web01', 'db01']`.",
+        "processing": "A new server name 'cache01' is appended to the existing `servers` list using `servers.append('cache01')`.",
+        "output": "The `servers` list is updated to `['web01', 'db01', 'cache01']`."
       },
       "codeExample": "def run_example():\n    # Python Data Types & Collections implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -244,9 +244,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Loops & Conditionals ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A list of numerical sensor readings: `readings = [22, 15, 30, 18, 25]`.",
+        "processing": "A `for` loop iterates through `readings`, and an `if` statement checks if each reading is greater than `20`, printing it if true.",
+        "output": "The console displays: `22`, `30`, `25` (each on a new line)."
       },
       "codeExample": "def run_example():\n    # Python Loops & Conditionals implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -319,9 +319,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Functions & Scope ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "Two integer arguments, `5` and `7`, are passed to a function call: `calculate_sum(5, 7)`.",
+        "processing": "A function `calculate_sum(a, b)` is defined to return `a + b`. The arguments `5` and `7` are assigned to `a` and `b` within the function's scope, and their sum is computed.",
+        "output": "The function returns the integer value `12`."
       },
       "codeExample": "def run_example():\n    # Python Functions & Scope implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -394,9 +394,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python File I/O & File Systems ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A string of data: `log_entry = 'INFO: Process started successfully.'` and a file path `'/tmp/app.log'`.",
+        "processing": "Python opens `/tmp/app.log` in write mode (`'w'`), writes the `log_entry` string to it, and then closes the file.",
+        "output": "A file named `app.log` is created in `/tmp/` containing the text 'INFO: Process started successfully.'."
       },
       "codeExample": "def run_example():\n    # Python File I/O & File Systems implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -469,9 +469,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Error Handling & Exceptions ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "An attempt to divide by zero: `numerator = 10`, `denominator = 0`.",
+        "processing": "A `try` block attempts `result = numerator / denominator`. A `ZeroDivisionError` is raised and caught by an `except` block, which then prints a custom error message.",
+        "output": "The console displays: 'Error: Cannot divide by zero.'"
       },
       "codeExample": "def run_example():\n    # Python Error Handling & Exceptions implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -544,9 +544,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Classes & Object-Oriented Design ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "Parameters for a new data record: `id=101`, `status='active'`, `timestamp='2023-10-27'`.",
+        "processing": "A `DataRecord` class is defined with an `__init__` method to set `id`, `status`, and `timestamp`. An instance is created: `record = DataRecord(101, 'active', '2023-10-27')`.",
+        "output": "An object `record` of type `DataRecord` is instantiated, with attributes `record.id`, `record.status`, and `record.timestamp` set accordingly."
       },
       "codeExample": "def run_example():\n    # Python Classes & Object-Oriented Design implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -619,9 +619,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Environment Variables & Config ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "An environment variable `DB_HOST` is set to `localhost` in the shell before running the Python script.",
+        "processing": "The Python script uses `import os` and then `os.getenv('DB_HOST')` to retrieve the value associated with the `DB_HOST` environment variable.",
+        "output": "The Python script successfully retrieves and can use the string value `'localhost'` for database connection."
       },
       "codeExample": "def run_example():\n    # Python Environment Variables & Config implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -694,9 +694,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Concurrency & Parallelism ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A list of simple functions, `task1` and `task2`, each simulating work with a `time.sleep()` call.",
+        "processing": "Two `threading.Thread` objects are created, each targeting one of the functions. Both threads are started simultaneously using `thread.start()` and then joined.",
+        "output": "The console shows interleaved output from `task1` and `task2`, demonstrating that they executed concurrently rather than sequentially."
       },
       "codeExample": "def run_example():\n    # Python Concurrency & Parallelism implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -769,9 +769,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Memory Management & GIL ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A Python script creates multiple threads that perform CPU-bound operations on shared data, such as incrementing a global counter.",
+        "processing": "The Python GIL ensures only one thread executes bytecode at a time, preventing race conditions on the shared counter but limiting true parallel execution for CPU-bound tasks.",
+        "output": "Despite multiple threads, the total execution time is similar to a single-threaded process for CPU-bound work, demonstrating the GIL's impact on parallelism."
       },
       "codeExample": "def run_example():\n    # Python Memory Management & GIL implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -844,9 +844,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Iterators & Generators ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A function `read_large_file(filepath)` is designed to yield lines from a large log file one by one.",
+        "processing": "The function uses `yield` to create a generator, which produces an iterator that provides lines on demand without loading the entire file into memory.",
+        "output": "Each call to `next()` on the generator object returns the subsequent line from the file, consuming minimal memory regardless of file size."
       },
       "codeExample": "def run_example():\n    # Python Iterators & Generators implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",
@@ -919,9 +919,9 @@ export const pythonTopics: Topic[] = [
       ],
       "diagram": "Raw Source\n   ↓\n[ Python Testing & Mocking ]\n   ↓\nTransformed Output",
       "detailedExample": {
-        "input": "Input parameters or raw file buffers.",
-        "processing": "Evaluating logic and executing step mappings.",
-        "output": "Result outputs."
+        "input": "A Python function `fetch_data_from_api()` makes an external HTTP request to an API endpoint.",
+        "processing": "A unit test uses `unittest.mock.patch` to replace the `requests.get` call with a mock object that returns a predefined JSON response.",
+        "output": "The test asserts that `fetch_data_from_api()` correctly processes the mocked response, verifying its logic without actual network interaction."
       },
       "codeExample": "def run_example():\n    # Python Testing & Mocking implementation\n    pass",
       "stepByStepBreakdown": "Line 1: Configures import paths.\nLine 2: Executes runtime loop.",

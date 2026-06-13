@@ -19,9 +19,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ What is Data Engineering? Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw web server log files containing user access patterns and error messages.",
+        "processing": "An ETL pipeline extracts relevant user activity, transforms it into a structured format, and loads it into a data warehouse for analysis.",
+        "output": "A clean, queryable table in Snowflake containing user session data, ready for business intelligence dashboards."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -94,9 +94,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Engineer vs Data Analyst Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A data warehouse table containing aggregated sales data, populated daily.",
+        "processing": "The Data Engineer designs and maintains the ETL process populating this table, while the Data Analyst writes SQL queries to extract insights from it.",
+        "output": "Engineer provides a reliable data source; Analyst provides a report on quarterly sales trends and customer behavior."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -169,9 +169,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Engineer vs Data Scientist Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A curated dataset of customer transaction history and demographic information.",
+        "processing": "The Data Engineer ensures this dataset is clean, consistent, and accessible in a feature store, while the Data Scientist uses it to train a churn prediction model.",
+        "output": "Engineer delivers a production-ready feature store; Scientist delivers a deployed machine learning model for customer retention."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -244,9 +244,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Responsibilities of a Data Engineer Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Streaming sensor data from thousands of IoT devices in real-time.",
+        "processing": "Design and implement a Kafka-based ingestion pipeline, process data with Spark Streaming, and store it in a time-series database like InfluxDB.",
+        "output": "A robust, scalable system that continuously ingests, processes, and stores real-time IoT data for monitoring and anomaly detection."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -319,9 +319,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Modern Data Stack Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Customer interaction data from Salesforce and marketing campaign data from Google Ads.",
+        "processing": "Fivetran ingests data into Snowflake, dbt transforms it into analytics-ready models, and Looker visualizes the results.",
+        "output": "A unified dashboard in Looker showing marketing ROI and customer lifetime value, powered by transformed data in Snowflake."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -394,9 +394,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Lifecycle Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "New customer sign-up information from a web application form.",
+        "processing": "Data is ingested, transformed, stored in a data warehouse, analyzed for insights, and eventually archived to cold storage after its active use period.",
+        "output": "A complete audit trail of customer data, from initial capture to long-term retention, adhering to data governance policies."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -469,9 +469,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Structured Data Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A CSV file containing employee records with columns like `employee_id`, `name`, `department`, and `salary`.",
+        "processing": "Load the CSV into a PostgreSQL table, enforcing data types (e.g., INTEGER for ID, VARCHAR for name) and primary key constraints.",
+        "output": "A relational database table where each row represents an employee and each column has a specific, consistent data type and schema."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -544,9 +544,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Semi-Structured Data Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A stream of JSON events from a microservice, each containing varying fields like `user_id`, `event_type`, `timestamp`, and sometimes `item_id` or `error_code`.",
+        "processing": "Ingest the JSON events into a NoSQL document database like MongoDB or a data lake, allowing for flexible schema evolution.",
+        "output": "A collection of JSON documents in MongoDB, where each document can have different attributes but shares a common structure for core fields."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -619,9 +619,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Unstructured Data Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A collection of customer support email transcripts and attached images stored in a file system.",
+        "processing": "Store the emails and images in an S3 bucket; apply natural language processing (NLP) to extract sentiment from text and object detection to categorize images.",
+        "output": "S3 objects containing raw data, alongside extracted metadata and sentiment scores stored in a separate database for analysis."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -694,9 +694,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ OLTP vs OLAP Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A customer placing an order on an e-commerce website (OLTP) and historical sales data for reporting (OLAP).",
+        "processing": "The OLTP system (e.g., MySQL) processes the order, updating inventory and sales records instantly. The OLAP system (e.g., Redshift) aggregates historical sales data for monthly trend analysis.",
+        "output": "OLTP provides immediate order confirmation and inventory updates; OLAP provides a quarterly sales performance report to management."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -769,9 +769,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Sources Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A web server generates access logs containing user requests, timestamps, and IP addresses.",
+        "processing": "A log collector (e.g., Fluentd) streams these logs from the server to a Kafka topic for real-time ingestion.",
+        "output": "A continuous stream of raw log events available in Kafka for further processing by downstream consumers."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -844,9 +844,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ CSV Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A file named `products.csv` containing comma-separated values like `101,Laptop,1200.00,Electronics`.",
+        "processing": "A Python script uses the `csv` module to read the file, parse each line, and convert the price to a float.",
+        "output": "A list of dictionaries or objects in memory, where each dictionary represents a product with keys like 'id', 'name', 'price', 'category'."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -919,9 +919,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ JSON Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An API endpoint returns a JSON array of user objects, e.g., `[{\"id\": 1, \"name\": \"Alice\"}, {\"id\": 2, \"name\": \"Bob\"}]`.",
+        "processing": "A data pipeline uses a JSON parser (e.g., `json.loads` in Python) to deserialize the string into a native data structure.",
+        "output": "A list of Python dictionaries, where each dictionary represents a user record with accessible keys like `user_data[0]['name']`."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -994,9 +994,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ XML Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A file `config.xml` containing hierarchical data structured with tags, like `<config><setting name=\"timeout\">60</setting></config>`.",
+        "processing": "An ETL job uses an XML parser (e.g., `ElementTree` in Python) to navigate the document tree and extract specific element values.",
+        "output": "Extracted values, such as the timeout setting (e.g., `60`), which can then be used to configure an application."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1069,9 +1069,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Parquet Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large dataset of customer transactions stored as multiple Parquet files in an S3 bucket, partitioned by date.",
+        "processing": "A Spark job reads the Parquet files, leveraging columnar storage to efficiently filter transactions for a specific date range and product ID.",
+        "output": "A Spark DataFrame containing only the relevant, filtered transaction records, optimized for subsequent analytical queries."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1144,9 +1144,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Avro Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Kafka topic receives messages serialized in Avro format, each conforming to a predefined schema registered in a Schema Registry.",
+        "processing": "A Flink application consumes these Avro messages, deserializing them using the schema to access strongly typed fields.",
+        "output": "Structured data records within the Flink application, where each field's type and name are guaranteed by the Avro schema, preventing data inconsistencies."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1219,9 +1219,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ ORC Format Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Hive table stores petabyte-scale sensor data in ORC format, optimized for read performance in data warehouses.",
+        "processing": "A Presto query engine reads the ORC files, utilizing predicate pushdown and column pruning to quickly retrieve aggregated sensor readings for a specific device.",
+        "output": "A result set containing the aggregated sensor data, with query performance significantly improved due to ORC's efficient compression and indexing."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1294,9 +1294,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ What is a Database? Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An application needs to persistently store user profiles, including names, emails, and passwords.",
+        "processing": "A database management system (DBMS) receives SQL commands to create tables, insert new user records, and retrieve existing ones.",
+        "output": "Structured data stored on disk, organized into tables with defined schemas, allowing for efficient retrieval and modification of user information."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1369,9 +1369,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ RDBMS Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A web application needs to manage customer orders, linking customers to their multiple orders and order items.",
+        "processing": "A PostgreSQL database stores this data across normalized tables (e.g., `Customers`, `Orders`, `OrderItems`) with foreign key constraints enforcing referential integrity.",
+        "output": "Consistent and related data, where querying `JOIN`s across tables accurately retrieves a customer's complete order history."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1444,9 +1444,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ NoSQL Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A social media platform needs to store rapidly changing user activity feeds, with flexible schemas and high write throughput.",
+        "processing": "A MongoDB database stores each user's feed as a document, allowing new activity types to be added without schema migration.",
+        "output": "A highly scalable and available data store where user feeds can be quickly updated and retrieved, adapting to evolving data structures."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1519,9 +1519,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Primary Key Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A `users` table contains `user_id`, `username`, and `email` columns.",
+        "processing": "Designate `user_id` as the primary key for the `users` table.",
+        "output": "Each `user_id` uniquely identifies a user record, preventing duplicates and enabling efficient lookups."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1594,9 +1594,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Foreign Key Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Two tables exist: `users` (with `user_id` as PK) and `orders` (with `order_id`, `user_id`, `product_id`).",
+        "processing": "Establish `user_id` in the `orders` table as a foreign key referencing `user_id` in the `users` table.",
+        "output": "Referential integrity is maintained, ensuring an order cannot exist for a non-existent user."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1669,9 +1669,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Constraints Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A `products` table with columns `product_id`, `product_name`, `price`, `stock_quantity`.",
+        "processing": "Apply `NOT NULL` to `product_name`, `UNIQUE` to `product_id`, and `CHECK (price > 0)` to `price`.",
+        "output": "Data quality is enforced by preventing null product names, duplicate product IDs, and non-positive prices."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1744,9 +1744,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Normalization Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A single `orders_details` table contains redundant `customer_name`, `customer_address`, `product_name`, and `product_price` for each order line item.",
+        "processing": "Decompose the table into `orders`, `customers`, and `products` tables, linking them with foreign keys to remove redundant information.",
+        "output": "Data redundancy is reduced, update anomalies are prevented, and data integrity is improved across the database schema."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1819,9 +1819,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Denormalization Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Normalized `customers`, `orders`, and `products` tables require complex joins for frequent analytical queries.",
+        "processing": "Create a new `sales_fact` table by pre-joining customer names and product categories directly into order records.",
+        "output": "Query performance for reporting is significantly improved by reducing the need for complex joins at query time, though some data redundancy is introduced."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1894,9 +1894,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Warehouse Basics Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Operational data from various source systems like OLTP databases, CRM, and ERP.",
+        "processing": "Extract, transform, and load this data into a centralized, subject-oriented, non-volatile, and time-variant repository.",
+        "output": "A historical, integrated view of business data optimized for analytical querying and reporting, supporting business intelligence."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -1969,9 +1969,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Mart Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large enterprise data warehouse containing data for multiple departments.",
+        "processing": "Extract a subset of the data warehouse, focusing specifically on sales or marketing data, and load it into a separate, smaller database.",
+        "output": "A departmental-specific data store providing targeted analytics and reporting capabilities for a particular business function, like sales performance."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2044,9 +2044,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Lake Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw, unstructured, semi-structured, and structured data from diverse sources (logs, IoT, social media, databases) in their native formats.",
+        "processing": "Ingest data directly into a scalable storage system (e.g., HDFS, S3) without prior schema definition or transformation.",
+        "output": "A central repository for all enterprise data, enabling schema-on-read processing for big data analytics, machine learning, and data science."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2119,9 +2119,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Lakehouse Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw data stored in a data lake (e.g., Parquet files on S3) alongside the need for ACID transactions and data warehousing features.",
+        "processing": "Implement an open table format (e.g., Delta Lake, Apache Iceberg) on top of the data lake storage.",
+        "output": "A unified platform combining the flexibility of a data lake with the reliability and performance of a data warehouse, supporting both streaming and batch analytics."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2194,9 +2194,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ ETL Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Customer order data from an OLTP database and product catalog data from a separate CSV file.",
+        "processing": "Extract data from sources, transform it (e.g., clean, aggregate, join), and load it into a data warehouse fact table.",
+        "output": "Consolidated, cleaned, and structured data ready for analytical queries in a data warehouse."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2269,9 +2269,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ ELT Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw sales data from an OLTP database (e.g., PostgreSQL) and clickstream data from a web server log (e.g., S3 bucket).",
+        "processing": "Data is loaded directly into a data warehouse (e.g., Snowflake). Transformations like joining sales and clickstream data, calculating total revenue, and aggregating by customer are performed within Snowflake using SQL.",
+        "output": "Transformed, aggregated sales and customer behavior data stored in a data warehouse table, ready for analytical queries and reporting."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2344,9 +2344,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ What is Batch Processing? Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A daily file containing all customer transactions for the previous 24 hours, stored in an S3 bucket.",
+        "processing": "A scheduled Spark job reads the entire file once a day, calculates daily sales totals per product, and identifies top-selling items.",
+        "output": "A new aggregated report file containing daily sales summaries and top products, written back to S3 or a data warehouse table."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2419,9 +2419,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Use Cases Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Diverse data sources like CRM systems, IoT device telemetry, and social media feeds.",
+        "processing": "Data engineers design and implement pipelines to ingest, transform, and store this data, enabling applications like fraud detection, personalized recommendations, and predictive maintenance.",
+        "output": "A robust data platform supporting real-time analytics for fraud detection, machine learning models for recommendations, and dashboards for operational insights."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2494,9 +2494,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Advantages Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Disparate, unorganized data across various departmental silos.",
+        "processing": "Data engineering establishes standardized pipelines and data models, ensuring data quality, accessibility, and consistency.",
+        "output": "A unified, reliable source of truth for business intelligence, enabling accurate reporting, informed decision-making, and reduced data inconsistencies."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2569,9 +2569,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Limitations Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "High-volume, continuous stream of sensor data requiring immediate anomaly detection.",
+        "processing": "A traditional batch processing system processes data hourly, leading to a significant delay in identifying critical events.",
+        "output": "Delayed alerts for anomalies, potentially missing real-time intervention opportunities due to the inherent latency of batch processing."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2644,9 +2644,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ ER Diagrams Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Business requirements for a new e-commerce database, detailing entities like Customers, Orders, Products, and their relationships.",
+        "processing": "A data modeler uses a tool like Lucidchart or dbdiagram.io to visually represent these entities, their attributes, and the relationships (e.g., one-to-many between Customer and Order) using standard ERD notation.",
+        "output": "A logical ERD showing entities, attributes (with data types), primary/foreign keys, and cardinality, serving as a blueprint for database schema creation."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2719,9 +2719,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Star Schema Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Transactional sales data (order ID, product ID, customer ID, date, quantity, price) and related master data (product details, customer demographics, date attributes).",
+        "processing": "Data is modeled into a central fact table (e.g., FactSales) containing measures and foreign keys, surrounded by denormalized dimension tables (e.g., DimProduct, DimCustomer, DimDate).",
+        "output": "A data warehouse schema optimized for analytical queries, allowing fast aggregation and slicing/dicing of sales data by various dimensions."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2794,9 +2794,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Snowflake Schema Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Transactional sales data and highly normalized master data, where dimensions themselves have sub-dimensions (e.g., Product dimension with a separate Brand dimension).",
+        "processing": "A central fact table is linked to normalized dimension tables, which in turn link to further sub-dimension tables (e.g., FactSales -> DimProduct -> DimBrand).",
+        "output": "A data warehouse schema with reduced data redundancy compared to a star schema, but potentially more complex joins for queries due to increased normalization."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2869,9 +2869,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Fact Tables Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Granular sales transaction records, including order quantity, unit price, and foreign keys to associated dimensions (e.g., product_key, customer_key, date_key).",
+        "processing": "These records are loaded into a FactSales table, where each row represents a single sales event and contains measurable quantities (measures) and foreign keys referencing dimension tables.",
+        "output": "A FactSales table containing additive measures like quantity_sold and revenue, enabling aggregation and analysis of sales performance across different dimensions."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -2944,9 +2944,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Dimension Tables Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Master data about products (SKU, name, category, brand), customers (ID, name, address, segment), and time (date, day of week, month, year).",
+        "processing": "This master data is loaded into separate DimProduct, DimCustomer, and DimDate tables, with each row representing a unique entity and containing descriptive attributes.",
+        "output": "DimProduct, DimCustomer, and DimDate tables providing context and descriptive attributes for the measures in fact tables, enabling filtering and grouping in analytical queries."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3019,9 +3019,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SCD Type 1 Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A customer record for 'John Doe' exists in the `customers` table with `email: old@example.com`.",
+        "processing": "A new record for 'John Doe' arrives with an updated email `new@example.com`; the system identifies the existing record by customer ID and updates the email directly.",
+        "output": "The `customers` table now shows 'John Doe' with `email: new@example.com`, overwriting the old email address."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3094,9 +3094,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SCD Type 2 Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A customer record for 'Jane Smith' exists with `address: 123 Main St`, `is_current: true`, `valid_from: 2020-01-01`, `valid_to: 9999-12-31`.",
+        "processing": "A new record for 'Jane Smith' arrives with `address: 456 Oak Ave`; the system updates the existing record's `is_current` to `false` and `valid_to` to the current date, then inserts a new record with the new address, `is_current: true`, and `valid_from` as the current date.",
+        "output": "The `customers` table now contains two records for 'Jane Smith': one inactive with the old address and one active with the new address, preserving historical changes."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3169,9 +3169,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ SCD Type 3 Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A product record for 'Product A' exists with `current_price: 10.00` and `previous_price: NULL`.",
+        "processing": "A new price for 'Product A' (12.00) arrives; the system moves the `current_price` (10.00) to the `previous_price` column and updates `current_price` to 12.00.",
+        "output": "The product table for 'Product A' now shows `current_price: 12.00` and `previous_price: 10.00`, retaining the immediate prior state in a separate column."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3244,9 +3244,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Pipeline Design Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw CSV files containing daily sales data are landed in an S3 bucket.",
+        "processing": "A pipeline is designed with stages for ingestion (S3 to raw zone), transformation (cleaning, aggregation in a processing zone using Spark), and loading (to a data warehouse fact table in Snowflake).",
+        "output": "Cleaned, aggregated sales data is available in a Snowflake data warehouse, ready for business intelligence reporting and analysis."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3319,9 +3319,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Ingestion Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A PostgreSQL database containing customer order information is continuously updated.",
+        "processing": "A Debezium CDC connector captures real-time changes from the PostgreSQL transaction log and streams them as JSON messages to a Kafka topic.",
+        "output": "Customer order changes are continuously published as messages to a Kafka topic, available for immediate consumption by downstream services."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3394,9 +3394,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Validation Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A batch of incoming customer records, some with missing email addresses or invalid phone number formats.",
+        "processing": "A validation script checks if 'email' fields are non-null and 'phone_number' fields match a predefined regex pattern for valid formats.",
+        "output": "Valid records are moved to a staging area for further processing, while invalid records are quarantined with error descriptions for manual review and correction."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3469,9 +3469,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Error Handling Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Spark job attempts to write processed data to an S3 bucket but encounters a network timeout during the write operation.",
+        "processing": "The job catches the network exception, logs the error details (timestamp, error type, affected data partition), and attempts to write the failed records to a dead-letter queue for later reprocessing.",
+        "output": "The Spark job fails gracefully for the affected batch, and problematic records are isolated in a dead-letter queue, preventing data loss and allowing for investigation."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3544,9 +3544,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Retry Mechanisms Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An API call to an external payment gateway fails with a transient 503 Service Unavailable error.",
+        "processing": "A retry mechanism is implemented with exponential backoff, attempting the API call again after increasing delays (e.g., 1s, 2s, 4s) up to a maximum of 3 attempts.",
+        "output": "The API call successfully completes on the second attempt after the service recovers, preventing a full job failure due to a temporary external issue."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3619,9 +3619,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Quality Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A daily load of product inventory data where some 'stock_quantity' values are negative or 'product_id' values are duplicates.",
+        "processing": "Data quality checks are run to identify records with negative stock, flag duplicate product IDs, and ensure all required fields are populated and within expected ranges.",
+        "output": "A data quality report highlights 5 records with negative stock and 2 duplicate product IDs, preventing their propagation to downstream systems and triggering alerts for data stewards."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3694,9 +3694,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Airflow Basics Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Python script defines an Airflow DAG with three sequential tasks: `extract_data`, `transform_data`, and `load_data`.",
+        "processing": "Airflow's scheduler parses the DAG, creates task instances, and executes them sequentially on workers according to their defined dependencies and schedule (e.g., daily at midnight).",
+        "output": "The `extract_data` task runs, followed by `transform_data`, and finally `load_data`, resulting in a completed, orchestrated data pipeline run."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3769,9 +3769,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ DAGs Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A Python file defines a sequence of tasks (e.g., `extract_data`, `transform_data`, `load_data`) with explicit dependencies between them.",
+        "processing": "An Airflow scheduler parses the DAG file, identifies the tasks and their dependencies, and registers the DAG for execution.",
+        "output": "A visual representation in the Airflow UI showing `extract_data` feeding into `transform_data`, which then feeds into `load_data`, ready for scheduling."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3844,9 +3844,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Operators Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A task defined within an Airflow DAG uses a `PostgresOperator` to execute a specific SQL query, like `CREATE TABLE IF NOT EXISTS my_table (...)`.",
+        "processing": "The Airflow executor invokes the `PostgresOperator` to establish a connection to the configured PostgreSQL database and execute the provided SQL statement.",
+        "output": "A new table is created or data is modified in the PostgreSQL database, and the task is marked as successful in Airflow."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3919,9 +3919,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Sensors Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An Airflow `S3KeySensor` is configured to wait for the existence of a specific file (`new_orders.csv`) in a designated S3 bucket.",
+        "processing": "The sensor periodically polls the S3 bucket; upon detecting `new_orders.csv`, it marks itself as successful and allows downstream tasks to proceed.",
+        "output": "The `S3KeySensor` transitions from a 'running' to 'success' state, triggering the next task in the DAG, such as an S3 to Redshift data load."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -3994,9 +3994,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Scheduling Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "An Airflow DAG is defined with `schedule_interval='@daily'` and a `start_date` of '2023-01-01'.",
+        "processing": "The Airflow scheduler, running continuously, identifies the DAG's schedule and creates a new DAG run instance for each day since the `start_date`.",
+        "output": "A series of DAG runs are initiated daily at midnight UTC, each with a `data_interval_start` and `data_interval_end` corresponding to the scheduled period."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4069,9 +4069,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Monitoring Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A running Airflow DAG has several tasks, some of which are failing due to a database connection error.",
+        "processing": "Airflow's UI displays task statuses (e.g., 'failed', 'running'), logs are collected for each task, and alerts are sent via Slack for failed tasks.",
+        "output": "A dashboard shows the health of all DAGs, specific task logs detail the connection error, and a notification is sent to the data engineering team about the failure."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4144,9 +4144,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Lake Architecture Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw log files from web servers, JSON event data from applications, and CSV files from transactional databases are generated continuously.",
+        "processing": "Data is ingested into an S3 bucket (raw zone), then transformed and curated into Parquet files in a separate S3 bucket (curated zone) using Spark.",
+        "output": "A multi-zone data lake on S3, with raw, structured, and curated data layers, enabling various analytics and machine learning workloads."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4219,9 +4219,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Storage Layers Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large dataset of customer transactions is stored as CSV files in an S3 bucket, leading to inefficient queries.",
+        "processing": "The CSV files are converted into Apache Parquet format, compressed, and partitioned by date, then stored in a separate S3 prefix.",
+        "output": "Optimized data in S3, leveraging Parquet's columnar storage and compression for faster query performance and reduced storage costs compared to the original CSVs."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4294,9 +4294,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Metadata Management Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A new Parquet table `customer_orders` is created in S3, partitioned by `order_date` and containing columns like `customer_id`, `product_id`.",
+        "processing": "AWS Glue Crawler scans the S3 path, infers the schema and partitions, and registers this information in the AWS Glue Data Catalog.",
+        "output": "A catalog entry in Glue Data Catalog for `customer_orders`, detailing its schema, data format, S3 location, and partition keys, making it queryable by Athena or Spark."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4369,9 +4369,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Partitioning Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large dataset of IoT sensor readings, with each record containing a `timestamp` and `device_id`, needs to be stored efficiently.",
+        "processing": "When writing the data to S3 using Spark, the data is partitioned by `year`, `month`, `day`, and `device_id` to create separate folders.",
+        "output": "Data organized in S3 paths like `s3://iot-data/year=2023/month=01/day=15/device_id=ABC/`, significantly improving query performance by allowing engines to scan only relevant subsets."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4444,9 +4444,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Compaction Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A data lake table in S3 has many small Parquet files (e.g., 1000 files, each 1MB) generated by frequent micro-batch writes.",
+        "processing": "A Spark job reads these small files, combines them into larger, more optimal Parquet files (e.g., 10 files, each 100MB), and overwrites the original small files.",
+        "output": "The same logical dataset is now represented by fewer, larger Parquet files, reducing metadata overhead and improving query performance for engines like Athena or Presto."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4519,9 +4519,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Real-time Processing Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A continuous stream of sensor readings from IoT devices (e.g., temperature, humidity) arriving every second.",
+        "processing": "An application immediately analyzes each incoming reading to detect anomalies or trigger alerts if thresholds are exceeded.",
+        "output": "An alert is sent to an operations dashboard or an automated system initiates a corrective action within milliseconds of detection."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4594,9 +4594,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Event Driven Architecture Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A user places an order on an e-commerce website, generating an 'OrderPlaced' event.",
+        "processing": "This event is published to a central event bus, triggering multiple independent services like inventory update, payment processing, and shipping notification.",
+        "output": "Inventory is decremented, payment is processed, and a shipping label is generated, all asynchronously in response to the single event."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4669,9 +4669,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Event Streams Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "User clickstream data (page views, clicks, searches) from a website, continuously appended to a Kafka topic.",
+        "processing": "A consumer group reads these events sequentially from the topic, ensuring ordered processing of user interactions.",
+        "output": "A historical log of all user activities is maintained, enabling real-time analytics and personalized recommendations."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4744,9 +4744,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Message Queues Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A web server receives a request to process a large image, placing a message with the image URL into an SQS queue.",
+        "processing": "A worker service polls the queue, retrieves the message, downloads the image, and performs resizing and watermarking operations.",
+        "output": "The processed image is stored in an S3 bucket, and a completion notification is sent back to the web server, decoupling the heavy processing from the request."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4819,9 +4819,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Stream Processing Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Financial transaction data (e.g., credit card purchases) arriving continuously at high velocity.",
+        "processing": "A Flink application aggregates transactions by user within a 5-minute tumbling window to calculate spending patterns and detect potential fraud.",
+        "output": "Real-time alerts are generated for suspicious spending spikes, and aggregated spending metrics are updated in a dashboard every 5 minutes."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4894,9 +4894,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ CAP Theorem Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A distributed database system (e.g., Cassandra) experiences a network partition, splitting nodes into two isolated groups.",
+        "processing": "The system must choose between maintaining availability (allowing writes to both sides, risking inconsistency) or consistency (rejecting writes on one side to ensure data integrity).",
+        "output": "Cassandra, being an AP system, prioritizes availability, allowing writes on both sides of the partition but potentially leading to temporary data inconsistencies until the partition heals."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -4969,9 +4969,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Consistency Models Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Two clients simultaneously attempt to update the same record in a distributed database (e.g., client A sets 'value=1', client B sets 'value=2').",
+        "processing": "Under a strong consistency model (e.g., linearizability), one write is guaranteed to complete before the other is observed, ensuring all clients see the same, most recent value.",
+        "output": "All subsequent reads by any client will consistently return 'value=2' (assuming B's write was the last committed), never seeing an intermediate or stale state."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5044,9 +5044,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Replication Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A primary database server receives a write operation (e.g., 'INSERT INTO users VALUES ('John Doe')').",
+        "processing": "The primary server asynchronously copies this write operation to multiple replica servers, ensuring data redundancy and fault tolerance.",
+        "output": "The data is present on all replicas, allowing read queries to be distributed across them and providing failover capability if the primary fails."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5119,9 +5119,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Sharding Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A massive user database with billions of records, becoming too large for a single server to handle efficiently.",
+        "processing": "The database is horizontally partitioned based on a sharding key (e.g., 'user_id'), distributing different ranges of user IDs across separate database instances (shards).",
+        "output": "Each shard manages a subset of the total data, improving query performance and scalability by distributing the load across multiple physical servers."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5194,9 +5194,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Partitioning Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large table in a data warehouse containing historical sales data for many years.",
+        "processing": "The table is logically divided into smaller, more manageable segments based on a partition key (e.g., 'sale_date' by year or month).",
+        "output": "Queries targeting specific time ranges only scan relevant partitions, significantly reducing query execution time and improving data management efficiency."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5269,9 +5269,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Lambda Architecture Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Real-time sensor data stream (speed layer) and historical sensor data batches (batch layer) arriving simultaneously.",
+        "processing": "The speed layer processes individual events for immediate insights, while the batch layer recomputes aggregates hourly from immutable historical data.",
+        "output": "A merged view providing both immediate, approximate real-time insights and accurate, comprehensive historical data for analysis."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5344,9 +5344,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Kappa Architecture Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A continuous stream of customer clickstream events published to a Kafka topic.",
+        "processing": "A stream processing engine (e.g., Flink) consumes events, performs real-time aggregations, and can reprocess the entire stream from an earlier offset for schema changes.",
+        "output": "Continuously updated materialized views of user session data and real-time dashboards, with the ability to rebuild state from the source stream."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5419,9 +5419,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Medallion Architecture (Bronze, Silver, Gold) Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Raw JSON log files from S3 are ingested into the Bronze layer.",
+        "processing": "Data is cleaned, de-duplicated, and structured into Delta tables in the Silver layer, then aggregated and denormalized for specific business use cases in the Gold layer.",
+        "output": "Highly optimized, business-ready analytical tables in the Gold layer, suitable for direct consumption by BI tools and data scientists."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5494,9 +5494,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Lineage Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A SQL query transforming `raw_sales` into `processed_sales`, and a subsequent BI dashboard using `processed_sales`.",
+        "processing": "A lineage tool parses the SQL query and dashboard metadata to map dependencies between tables and reports.",
+        "output": "A visual graph showing `raw_sales` -> `processed_sales` -> `Sales_Dashboard`, indicating data flow and transformations."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5569,9 +5569,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Catalog Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Metadata from various data sources like Snowflake tables, S3 buckets, and Kafka topics, along with user-contributed descriptions.",
+        "processing": "The catalog ingests schema information, data types, ownership, and tags, making it searchable and discoverable.",
+        "output": "A central portal where users can search for 'customer data,' find relevant tables, view their schemas, and understand their purpose."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5644,9 +5644,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Security Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A user attempts to query a table containing Personally Identifiable Information (PII) like `customer_ssn`.",
+        "processing": "An access control policy (e.g., row-level security or column masking) is enforced, checking the user's role and permissions.",
+        "output": "The user either sees masked `customer_ssn` values, only rows relevant to their region, or receives an 'Access Denied' error."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5719,9 +5719,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Data Compliance Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A request to delete all data associated with `user_id: 12345` to comply with GDPR's 'right to be forgotten'.",
+        "processing": "An automated workflow identifies and purges all records linked to `user_id: 12345` across various data stores (e.g., transactional DB, data lake, backups).",
+        "output": "A verifiable audit log confirming the complete deletion of the specified user's data from all relevant systems."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5794,9 +5794,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Query Optimization Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A slow-running SQL query joining several large tables without proper filtering or indexing.",
+        "processing": "The database query optimizer analyzes the query plan, suggesting better join orders, using existing indexes, or recommending new ones.",
+        "output": "A significantly faster query execution time, consuming fewer computational resources, often achieved by rewriting the query or adding an index."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5869,9 +5869,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Partition Strategies Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large dataset of IoT sensor readings, continuously appended, with queries frequently filtering by `device_id` and `timestamp`.",
+        "processing": "The data is stored in a data lake (e.g., S3) partitioned by `year/month/day/device_id`.",
+        "output": "Queries filtering by date and device ID only scan relevant partitions, drastically reducing data scanned and improving query performance."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -5944,9 +5944,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Indexing Strategies Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A `users` table with millions of records, frequently queried by `email_address` for login authentication.",
+        "processing": "A B-tree index is created on the `email_address` column.",
+        "output": "Queries searching for a specific email address execute in near-constant time, avoiding full table scans and speeding up user authentication."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6019,9 +6019,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Storage Optimization Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "A large Parquet file containing historical sales data with many columns, some rarely queried, stored in an S3 bucket.",
+        "processing": "Apply Zstandard compression, partition the data by 'sale_date', and use column projection to select only frequently accessed columns for a specific query, converting to a more efficient format like Iceberg.",
+        "output": "A smaller, partitioned dataset with optimized read performance for common analytical queries, reducing storage costs and query latency for data consumers."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6094,9 +6094,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Design YouTube Analytics Pipeline Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Real-time stream of YouTube video events (views, likes, comments, shares) from various user interactions, arriving at high velocity.",
+        "processing": "Ingest events via Kafka, process with Flink for real-time aggregation (e.g., views per minute, trending topics), and store aggregated metrics in a time-series database like Druid or ClickHouse.",
+        "output": "Dashboards displaying live video performance metrics (e.g., current top trending videos, views per region) and historical trends for content creators and advertisers."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6169,9 +6169,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Design Uber Data Platform Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Diverse data sources including ride requests, GPS locations, driver availability, payment transactions, and user ratings, generated continuously.",
+        "processing": "Ingest data via Kafka, store raw data in S3/HDFS, process with Spark for batch analytics (e.g., surge pricing models) and Flink for real-time fraud detection and ETA calculations.",
+        "output": "A unified data lake and data warehouse supporting real-time operational decisions (e.g., driver dispatch), business intelligence (e.g., market analysis), and machine learning models (e.g., demand prediction)."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6244,9 +6244,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Design Netflix Recommendation Pipeline Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "User viewing history, explicit ratings, genre preferences, and rich metadata for movies/shows, updated frequently.",
+        "processing": "Use Spark to build collaborative filtering models (e.g., ALS) and content-based filtering models, then generate personalized recommendations based on user similarity and item features.",
+        "output": "A ranked list of recommended titles displayed to the user on their Netflix homepage, maximizing engagement and viewing time through personalized content discovery."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6319,9 +6319,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Design CDC Pipeline Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Transaction logs (e.g., MySQL binlog, PostgreSQL WAL) from an operational database containing inserts, updates, and deletes.",
+        "processing": "Debezium captures changes from the binlog, publishes them to Kafka, and a Kafka Connect sink writes these changes to a data lake (e.g., S3) in Parquet format, maintaining schema evolution.",
+        "output": "A near real-time, consistent replica of the operational database tables in a data lake, suitable for analytical queries without impacting the source OLTP system."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
@@ -6394,9 +6394,9 @@ export const deTopics: Topic[] = [
       ],
       "diagram": "Raw Inflow\n   ↓\n[ Design Real-time Analytics System Processor ]\n   ↓\nOutputs Ingested",
       "detailedExample": {
-        "input": "10,000 raw events containing user clicks.",
-        "processing": "Parsing, checking for duplicates, and writing to storage.",
-        "output": "A clean, verified analytical view."
+        "input": "Continuous stream of sensor data from IoT devices, including temperature, humidity, and device status, arriving at high frequency.",
+        "processing": "Ingest data via Kafka, use Flink to perform windowed aggregations (e.g., average temperature every 5 minutes) and detect anomalies, storing results in a low-latency database like Apache Pinot or Rockset.",
+        "output": "Live dashboards showing current environmental conditions and device health, enabling immediate alerts for anomalies or critical events and supporting operational monitoring."
       },
       "codeExample": "-- Databricks command\nOPTIMIZE delta_table;",
       "stepByStepBreakdown": "Line 1: Groups records together.\nLine 2: Performs the counting function.",
