@@ -3,10 +3,9 @@ import { Database, Layout, Server, ChevronRight, Lock } from 'lucide-react';
 
 interface DashboardProps {
   onSelectDomain: (domain: string) => void;
-  theme: 'light' | 'dark';
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain, theme }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain }) => {
   return (
     <div className="dashboard-container" style={{
       minHeight: '100vh',

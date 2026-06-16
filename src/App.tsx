@@ -70,7 +70,7 @@ export default function App() {
   const currentQuestions = allQuestions.filter(q => q.category === activeTopic?.category);
 
   if (currentDomain === 'dashboard') {
-    return <Dashboard onSelectDomain={(d) => setCurrentDomain(d as any)} theme={theme} />;
+    return <Dashboard onSelectDomain={(d) => setCurrentDomain(d as any)} />;
   }
 
   return (
