@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react';
-import { allTopics, allQuestions, allChallenges } from './data';
-import { Sidebar } from './components/Sidebar';
-import { LearnTab } from './components/LearnTab';
-import { InterviewTab } from './components/InterviewTab';
-import { PracticeTab } from './components/PracticeTab';
-import { PlaygroundTab } from './components/PlaygroundTab';
-import { GeminiTab } from './components/GeminiTab';
-import type { Topic } from './data/types';
-import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown } from 'lucide-react';
+import { allTopics, allQuestions, allChallenges } from './domains/data-engineering/data';
+import { Sidebar } from './core/components/Sidebar';
+import { LearnTab } from './domains/data-engineering/components/LearnTab';
+import { InterviewTab } from './domains/data-engineering/components/InterviewTab';
+import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
+import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
+import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
+import { Dashboard } from './core/components/Dashboard';
+import type { Topic } from './core/types/types';
+import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft } from 'lucide-react';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
+  const [currentDomain, setCurrentDomain] = useState<'dashboard' | 'data-engineering'>('dashboard');
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -67,6 +69,10 @@ export default function App() {
   // Filter questions and challenges for the active category
   const currentQuestions = allQuestions.filter(q => q.category === activeTopic?.category);
 
+  if (currentDomain === 'dashboard') {
+    return <Dashboard onSelectDomain={(d) => setCurrentDomain(d as any)} theme={theme} />;
+  }
+
   return (
     <div className="app-container">
       <div
@@ -104,13 +110,21 @@ export default function App() {
               >
                 <Menu size={20} />
               </button>
+              <button
+                onClick={() => setCurrentDomain('dashboard')}
+                title="Back to Dashboard"
+                style={{ position: 'absolute', left: '32px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                <ArrowLeft size={20} />
+              </button>
               <span style={{
                 fontSize: '18px',
                 fontWeight: 700,
                 letterSpacing: '-0.5px',
                 background: 'linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)',
                 WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent'
+                WebkitTextFillColor: 'transparent',
+                marginLeft: '32px'
               }}>
                 CN-DESIGN
               </span>
@@ -267,7 +281,18 @@ export default function App() {
           {/* ========================================================= */}
           <div className="desktop-only" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
 
-            <div style={{ display: 'flex', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              <button
+                onClick={() => setCurrentDomain('dashboard')}
+                title="Back to Dashboard"
+                style={{ 
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', 
+                  padding: '8px', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-muted)'
+                }}
+              >
+                <ArrowLeft size={20} />
+              </button>
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <h1 style={{
                   margin: 0,

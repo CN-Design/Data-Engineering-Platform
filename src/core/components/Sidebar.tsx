@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { Topic } from '../data/types';
+import type { Topic } from '../types/types';
 import { BookOpen, CheckCircle, Search, Star, ChevronDown, ChevronRight, X } from 'lucide-react';
 
 interface SidebarProps {
