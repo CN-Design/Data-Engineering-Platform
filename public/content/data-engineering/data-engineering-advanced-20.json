@@ -1,0 +1,428 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Change Data Capture (CDC) is the practice of detecting and propagating row-level changes (inserts, updates, deletes) from a source database to downstream systems in near-real-time.",
+      "A log-based CDC pipeline reads the database's transaction log (e.g., MySQL binlog, PostgreSQL WAL) rather than querying tables, capturing every change with minimal load on the source OLTP system.",
+      "The canonical modern stack is Debezium (a log-reader connector) producing change events to Kafka, with a sink that applies those changes to a warehouse or lake table, typically via MERGE/UPSERT, to keep a mirror in sync."
+    ],
+    "learningObjectives": [
+      "Understand log-based CDC and why it is preferred over query-based polling.",
+      "Design a Debezium + Kafka pipeline that captures inserts, updates, and deletes reliably.",
+      "Handle ordering, idempotency, and exactly-once semantics when applying changes to a target.",
+      "Manage schema evolution as the source schema changes over time.",
+      "Combine an initial consistent snapshot with continuous incremental streaming, and apply changes via MERGE."
+    ],
+    "formalDefinition": "A log-based CDC pipeline is a distributed data integration system that tails a source database's write-ahead/transaction log, serializes each committed row change into an ordered, durable change-event stream keyed by primary key, and applies those changes idempotently to a target store, preserving the source's state in near-real-time while handling snapshots, schema evolution, deletes, and exactly-once delivery.",
+    "simpleExplanation": "Imagine a database keeps a diary (the transaction log) of every change it makes. Instead of repeatedly asking the database 'what changed?', CDC reads this diary as it is written and forwards each change, like a row was added, updated, or deleted, to a copy of the data in a warehouse. A first full photocopy (snapshot) establishes the starting point, and then every new diary entry keeps the copy up to date almost instantly, without slowing down the original database.",
+    "historicalContext": "Early CDC was query-based: ETL jobs polled tables for rows where updated_at > last_run, which missed deletes and added load. Trigger-based CDC followed, writing changes to shadow tables but burdening the OLTP system. Log-based CDC matured as databases exposed their replication logs; Debezium (open-sourced by Red Hat around 2016) standardized log-based capture into Kafka, and the rise of cloud warehouses and lakehouses made low-latency replication a mainstream requirement, replacing nightly batch dumps.",
+    "whyItMatters": {
+      "business": "It enables near-real-time analytics, fraud detection, and operational reporting on fresh data instead of yesterday's nightly dump, and powers data products, search indexes, and caches that must stay in sync with the system of record.",
+      "engineering": "Log-based CDC offloads change extraction from application code and avoids expensive full-table scans, giving a reliable, low-impact, ordered stream of every change that many consumers can share.",
+      "scalability": "Reading the transaction log scales far better than polling: it captures only deltas, imposes near-constant load on the source regardless of table size, and lets Kafka fan out changes to many downstream sinks.",
+      "cost": "Replicating only changes (not full snapshots nightly) dramatically reduces compute and egress, and avoids the cost of heavy queries against production OLTP databases.",
+      "reliability": "Because it consumes a durable, ordered log with committed offsets, CDC can resume exactly where it left off after failures, guaranteeing no committed change is lost and enabling at-least-once or exactly-once delivery."
+    },
+    "coreComponents": [
+      {
+        "name": "Source Database Log",
+        "definition": "The database's write-ahead/transaction log: MySQL binlog (row format), PostgreSQL WAL via logical replication, Oracle redo logs, or SQL Server transaction log.",
+        "purpose": "Provide an ordered, durable record of every committed change to read from.",
+        "responsibilities": "Persist every row change with transaction ordering and LSN/position offsets for resumable reading.",
+        "examples": "MySQL binlog in ROW format; Postgres logical replication slot with wal2json/pgoutput."
+      },
+      {
+        "name": "CDC Connector (Debezium)",
+        "definition": "A Kafka Connect source connector that reads the log and emits structured change events.",
+        "purpose": "Translate low-level log records into well-typed change events (before/after images, op type) keyed by primary key.",
+        "responsibilities": "Perform initial snapshot, stream incremental changes, track log offsets, and emit schema metadata.",
+        "examples": "io.debezium.connector.mysql.MySqlConnector, io.debezium.connector.postgresql.PostgresConnector."
+      },
+      {
+        "name": "Event Backbone (Kafka)",
+        "definition": "A durable, partitioned log that buffers and distributes change events.",
+        "purpose": "Decouple capture from apply, enable replay, and preserve per-key ordering.",
+        "responsibilities": "Retain change events, key by primary key for ordering, and fan out to multiple sinks.",
+        "examples": "One topic per source table (server.db.table), keyed by primary key."
+      },
+      {
+        "name": "Schema Registry",
+        "definition": "A service storing versioned schemas (Avro/Protobuf/JSON Schema) for change events.",
+        "purpose": "Manage schema evolution and enforce compatibility between producers and consumers.",
+        "responsibilities": "Validate compatibility (backward/forward), assign schema IDs, and let consumers deserialize correctly.",
+        "examples": "Confluent Schema Registry with BACKWARD compatibility for added nullable columns."
+      },
+      {
+        "name": "Sink / Apply Layer",
+        "definition": "A consumer that reads change events and applies them to the target store, usually via MERGE/UPSERT.",
+        "purpose": "Maintain a target table that mirrors the source's current state (or a full history).",
+        "responsibilities": "Deduplicate, order by log position, translate op types (c/u/d) into MERGE operations, and handle deletes.",
+        "examples": "Kafka Connect JDBC/Iceberg sink, or a Spark/Flink job doing MERGE INTO into Snowflake/Delta/Iceberg."
+      },
+      {
+        "name": "Target Store (Warehouse/Lake)",
+        "definition": "The destination analytical store holding the replicated data.",
+        "purpose": "Serve analytics on near-real-time data that mirrors the OLTP source.",
+        "responsibilities": "Support upserts/merges and deletes (lakehouse table formats or warehouse MERGE).",
+        "examples": "Snowflake, BigQuery, Delta Lake, Apache Iceberg, ClickHouse (ReplacingMergeTree)."
+      }
+    ],
+    "internalWorking": [
+      "On startup, Debezium takes a consistent initial snapshot: it reads existing rows (optionally with a brief lock or a lock-free incremental snapshot) and records the exact log offset (LSN/binlog position) where the snapshot ends.",
+      "It then switches to streaming mode, tailing the transaction log from that offset and emitting a change event for every committed insert, update, and delete.",
+      "Each change event contains an op field (c=create, u=update, d=delete, r=read/snapshot), before and after row images, and source metadata (LSN, transaction id, timestamp).",
+      "Events are published to Kafka keyed by the table's primary key, so all changes to a given row land in one partition and stay strictly ordered.",
+      "The sink consumes events in offset order, and for each row applies a MERGE: insert on create, update on update, and delete (or soft-delete tombstone) on delete, using the log position to discard out-of-order or duplicate events.",
+      "Connector offsets are committed to Kafka so that after a crash the connector resumes from the last processed log position with no data loss (at-least-once), and idempotent apply makes the end state exactly-once."
+    ],
+    "architectureFlow": "Source DB (binlog/WAL) -> Debezium (snapshot + stream) -> Kafka (topic per table, keyed by PK) + Schema Registry -> Sink/Apply (Spark/Flink/Connect) -> MERGE INTO -> Target Warehouse/Lake",
+    "dataFlowWalkthrough": [
+      "1. A user updates their email in the OLTP customers table; the database writes the change to the binlog/WAL and commits.",
+      "2. Debezium reads the log record, builds a change event with op=u, before={email: old}, after={email: new}, and source.lsn, and publishes it to topic dbserver.app.customers keyed by customer_id.",
+      "3. Kafka durably stores the event in the partition determined by hashing customer_id, preserving order relative to other changes for that customer.",
+      "4. The sink consumes the event, sees op=u, and issues MERGE INTO target.customers ... WHEN MATCHED THEN UPDATE, using source.lsn to ignore any older event for that key.",
+      "5. If the user is later deleted, Debezium emits op=d (and optionally a null-value tombstone); the sink applies a delete or sets is_deleted=true.",
+      "6. After a connector restart, processing resumes from the committed offset, and the idempotent MERGE ensures replayed events do not corrupt the target."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Log-based vs. Query-based CDC",
+        "meaning": "Log-based reads the transaction log; query-based polls tables for changed rows using a timestamp/version column.",
+        "importance": "Log-based captures deletes, imposes minimal source load, and preserves exact ordering, which query-based cannot."
+      },
+      {
+        "term": "LSN / Binlog Position",
+        "meaning": "A monotonically increasing offset identifying a record's position in the transaction log.",
+        "importance": "It defines event ordering, enables resumable reads, and is used to discard stale/duplicate events during apply."
+      },
+      {
+        "term": "Snapshot vs. Incremental (Streaming)",
+        "meaning": "Snapshot captures the existing table state at a point in time; streaming captures subsequent changes from the log.",
+        "importance": "Together they give a complete, gap-free replica: snapshot establishes the baseline, streaming keeps it current."
+      },
+      {
+        "term": "Tombstone Event",
+        "meaning": "A change event with a null value emitted after a delete to signal that the key should be removed (used for log compaction).",
+        "importance": "It lets compacted Kafka topics and downstream caches correctly drop deleted keys."
+      },
+      {
+        "term": "Idempotent Apply",
+        "meaning": "Applying the same change event multiple times produces the same target state.",
+        "importance": "Combined with at-least-once delivery, it yields effectively exactly-once end state despite retries and replays."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Exactly-Once via Idempotency + Ordering",
+        "explanation": "Most CDC pipelines deliver at-least-once (events can be redelivered after failures). True end-to-end exactly-once is achieved by making the apply idempotent: key by primary key, order by LSN, and use MERGE so re-processing a duplicate or stale event is a no-op. The combination yields exactly-once effect on the target."
+      },
+      {
+        "concept": "Handling Deletes",
+        "explanation": "Deletes are the main weakness of query-based CDC and the main strength of log-based CDC. A delete emits op=d with the before image. The target can hard-delete the row, or soft-delete (set is_deleted=true) to preserve history for auditing and slowly-changing-dimension analytics."
+      },
+      {
+        "concept": "Schema Evolution",
+        "explanation": "When the source adds/drops/renames a column, Debezium emits a new schema version. Using a schema registry with backward-compatible rules (e.g., new columns must be nullable with defaults) lets sinks evolve without breaking. Incompatible changes (drops/type changes) require coordinated migrations and may need a re-snapshot."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Log-based CDC:** Reads transaction logs (Debezium); lowest source impact, captures deletes, exact order. The default modern choice.",
+      "**Query-based CDC:** Polls with updated_at/version columns; simple but misses deletes and adds query load.",
+      "**Trigger-based CDC:** Database triggers write changes to audit tables; captures everything but burdens the OLTP source.",
+      "**Snapshot-only (full refresh):** Periodically reloads the whole table; simple but high cost and high latency, used for small dimension tables."
+    ],
+    "advantages": [
+      "**Low source impact:** Reading the log avoids heavy table scans on the production database.",
+      "**Captures all operations:** Inserts, updates, and especially deletes are captured, unlike query-based CDC.",
+      "**Near-real-time:** Changes propagate within seconds, enabling fresh analytics.",
+      "**Replayable and resumable:** Durable Kafka + committed offsets allow recovery and reprocessing without data loss."
+    ],
+    "disadvantages": [
+      "**Operational complexity:** Running Debezium, Kafka, a schema registry, and sinks is a significant platform to operate.",
+      "**Schema evolution is hard:** Incompatible source changes can break consumers and may require re-snapshots.",
+      "**Source coupling:** Requires log access/privileges and careful retention so the log isn't purged before it is read.",
+      "**Initial snapshot cost:** Large tables can make the initial snapshot slow and resource-intensive (mitigated by incremental snapshots)."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use log-based CDC when you need near-real-time, low-impact replication that captures deletes, when multiple consumers must share the change stream, and when the source supports log access (binlog/WAL).",
+      "whenToAvoid": "Avoid full CDC for tiny, slowly-changing tables where a periodic full refresh is simpler, or when you cannot get log access and latency requirements are loose enough for query-based extraction."
+    },
+    "realWorldAnalogy": "Think of a building's security camera (the transaction log) that records everything happening. Instead of a guard walking through every room each hour to note what changed (query-based polling, which can miss someone who came and left, like a deleted row), you just watch the camera feed and instantly mirror every entry, exit, and movement to a logbook (the target). A first walkthrough photo (snapshot) establishes the baseline before you start watching the feed.",
+    "commonMisconceptions": [
+      {
+        "myth": "CDC gives you exactly-once delivery out of the box.",
+        "reality": "Most CDC stacks are at-least-once; events can be redelivered after failures. Exactly-once *effect* comes from idempotent apply (key + LSN ordering + MERGE), not from the transport itself."
+      },
+      {
+        "myth": "Query-based CDC (updated_at polling) is good enough.",
+        "reality": "It silently misses deletes and any change that doesn't bump the timestamp, can miss rows during clock skew or concurrent commits, and adds load. Log-based CDC captures every committed change in order."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Throughput is bounded by single-threaded log reading per source, so shard by database/schema and run multiple connectors; partition Kafka topics by primary key for parallel, ordered apply. Use incremental snapshots to avoid blocking on huge tables.",
+      "reliability": "Commit connector offsets only after Kafka acknowledges writes; size log retention so the connector can fall behind without the source purging unread log segments; alert on connector lag and replication-slot growth.",
+      "faultTolerance": "Kafka Connect restarts connectors from committed offsets; Kafka replication prevents event loss; idempotent MERGE apply tolerates redelivery. Postgres replication slots must be monitored so they don't bloat WAL when a connector is down.",
+      "monitoring": "Track end-to-end latency (source commit time to target apply), connector lag, snapshot progress, schema-change events, dead-letter queue depth, and replication-slot/binlog retention headroom.",
+      "security": "Grant the connector a least-privilege replication user, encrypt connections (TLS), mask/exclude PII columns at the connector, and enforce ACLs on Kafka topics carrying sensitive change data.",
+      "costOptimization": "Replicate only required tables/columns (column include/exclude lists), use log compaction for state topics, and batch MERGE applies (micro-batches) to reduce warehouse compute cost versus per-row writes.",
+      "performance": "Batch changes into micro-batches for MERGE to amortize warehouse merge cost, cluster/partition target tables on the merge key, and tune connector poll/heartbeat intervals; heartbeats keep low-traffic slots/offsets advancing."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Debezium MySQL Connector Configuration",
+        "overview": "A Kafka Connect connector config that captures changes from a MySQL database, performs an initial snapshot, then streams the binlog, publishing one topic per table.",
+        "code": "{\n  \"name\": \"mysql-cdc-orders\",\n  \"config\": {\n    \"connector.class\": \"io.debezium.connector.mysql.MySqlConnector\",\n    \"database.hostname\": \"mysql.prod.internal\",\n    \"database.port\": \"3306\",\n    \"database.user\": \"debezium\",\n    \"database.password\": \"${file:/secrets:mysql_pw}\",\n    \"database.server.id\": \"184054\",\n    \"topic.prefix\": \"dbserver1\",\n    \"database.include.list\": \"app\",\n    \"table.include.list\": \"app.customers,app.orders\",\n    \"snapshot.mode\": \"initial\",\n    \"snapshot.locking.mode\": \"minimal\",\n    \"incremental.snapshot.allow.schema.changes\": \"true\",\n    \"schema.history.internal.kafka.bootstrap.servers\": \"kafka:9092\",\n    \"schema.history.internal.kafka.topic\": \"schema-history.app\",\n    \"key.converter\": \"io.confluent.connect.avro.AvroConverter\",\n    \"value.converter\": \"io.confluent.connect.avro.AvroConverter\",\n    \"value.converter.schema.registry.url\": \"http://schema-registry:8081\",\n    \"tombstones.on.delete\": \"true\",\n    \"decimal.handling.mode\": \"string\"\n  }\n}\n",
+        "language": "JSON",
+        "breakdown": "snapshot.mode=initial takes a one-time consistent snapshot then streams the binlog. minimal locking reduces source impact. table.include.list restricts capture to needed tables. Avro + schema registry manages schema evolution. tombstones.on.delete=true emits null-value tombstones so compacted topics drop deleted keys. server.id must be unique among MySQL replicas.",
+        "expectedOutput": "Topics dbserver1.app.customers and dbserver1.app.orders are created; each receives snapshot read events (op=r) followed by streaming change events (op=c/u/d), keyed by primary key.",
+        "commonIssues": "Binlog not in ROW format yields incomplete change images; insufficient binlog retention causes the connector to fall off the log; duplicate server.id collides with replicas; missing REPLICATION privileges blocks the connector.",
+        "optimizationTips": "Use incremental (lock-free) snapshots for large tables, restrict captured columns to reduce volume, and size binlog retention to survive connector downtime."
+      },
+      {
+        "title": "Idempotent MERGE Apply (Spark / Delta Lake)",
+        "overview": "A micro-batch sink that consumes Debezium events and applies them to a Delta target via MERGE, ordering by LSN to discard stale/duplicate events and handling deletes.",
+        "code": "from pyspark.sql import functions as F, Window\nfrom delta.tables import DeltaTable\n\ndef apply_batch(micro_batch_df, batch_id):\n    # Deduplicate to the latest change per primary key within the batch\n    w = Window.partitionBy('after.customer_id').orderBy(F.col('source.lsn').desc())\n    latest = (micro_batch_df\n        .withColumn('rn', F.row_number().over(w))\n        .where('rn = 1').drop('rn'))\n\n    target = DeltaTable.forName(spark, 'lake.target.customers')\n    (target.alias('t')\n        .merge(latest.alias('s'), 't.customer_id = s.after.customer_id')\n        .whenMatchedDelete(condition=\"s.op = 'd'\")\n        .whenMatchedUpdate(\n            condition=\"s.op IN ('u','c') AND s.source.lsn > t.lsn\",\n            set={'email': 's.after.email', 'name': 's.after.name', 'lsn': 's.source.lsn'})\n        .whenNotMatchedInsert(\n            condition=\"s.op IN ('c','u','r')\",\n            values={'customer_id': 's.after.customer_id', 'email': 's.after.email',\n                    'name': 's.after.name', 'lsn': 's.source.lsn'})\n        .execute())\n\n(spark.readStream.format('kafka')\n    .option('subscribe', 'dbserver1.app.customers').load()\n    .writeStream.foreachBatch(apply_batch)\n    .option('checkpointLocation', '/chk/customers').start())\n",
+        "language": "Python",
+        "breakdown": "Each micro-batch is first deduplicated to the latest change per primary key by LSN. The MERGE deletes when op=d, updates when the incoming LSN is newer than the target's stored LSN (rejecting stale/duplicate events), and inserts new keys. Storing lsn on the target makes the apply idempotent and exactly-once in effect.",
+        "expectedOutput": "The Delta table lake.target.customers continuously reflects the source's current state: inserts appear, updates overwrite, deletes remove rows, and replayed events are no-ops.",
+        "commonIssues": "Omitting the LSN comparison lets an out-of-order or replayed older event overwrite newer data; not deduplicating within a batch causes MERGE to fail on multiple matches for one key; ignoring op=d leaves deleted rows in the target.",
+        "optimizationTips": "Use micro-batches (not per-row) to amortize MERGE cost, Z-order/cluster the target on customer_id, and store lsn as a tiebreaker column to enforce ordering across batches."
+      },
+      {
+        "title": "Postgres CDC Source Setup (WAL / Logical Replication)",
+        "overview": "SQL and config to prepare PostgreSQL for log-based CDC with Debezium via a logical replication slot and publication.",
+        "code": "-- postgresql.conf\n-- wal_level = logical\n-- max_replication_slots = 4\n-- max_wal_senders = 4\n\n-- Create a least-privilege replication user\nCREATE ROLE debezium WITH REPLICATION LOGIN PASSWORD 'secret';\nGRANT USAGE ON SCHEMA app TO debezium;\nGRANT SELECT ON ALL TABLES IN SCHEMA app TO debezium;\n\n-- Publication defining which tables to capture\nCREATE PUBLICATION dbz_pub FOR TABLE app.customers, app.orders;\n\n-- Debezium will create the logical replication slot automatically, e.g.:\n-- SELECT * FROM pg_create_logical_replication_slot('dbz_slot', 'pgoutput');\n\n-- Monitor slot lag so WAL is not retained indefinitely if the connector is down\nSELECT slot_name, active,\n       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal\nFROM pg_replication_slots;\n",
+        "language": "SQL",
+        "breakdown": "wal_level=logical enables logical decoding. A publication declares which tables to capture. Debezium uses the pgoutput plugin and a replication slot to read committed changes. The monitoring query reveals how much WAL the slot is retaining, critical because an inactive slot can fill the disk.",
+        "expectedOutput": "Postgres exposes a logical replication slot and publication; Debezium streams committed inserts/updates/deletes from the WAL into Kafka.",
+        "commonIssues": "Forgetting wal_level=logical prevents logical decoding; an abandoned/inactive slot retains WAL forever and can fill the disk; tables without a primary key or REPLICA IDENTITY produce incomplete before-images for updates/deletes.",
+        "optimizationTips": "Set REPLICA IDENTITY FULL on tables needing complete before-images, monitor and alert on slot lag, and drop unused slots promptly."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "An e-commerce company runs its orders and customers system on a MySQL OLTP database. The analytics team needs near-real-time dashboards (orders per minute, revenue, cancellations) and a fraud team needs fresh data, but nightly batch dumps are 24 hours stale and full-table scans hurt the production database. They need to replicate the OLTP tables into a lakehouse within seconds, correctly reflecting inserts, updates, and deletes (e.g., cancelled orders), while tolerating failures and source schema changes, at a volume of tens of thousands of change events per second.",
+    "inputData": "MySQL binlog (ROW format) for tables app.customers (customer_id PK) and app.orders (order_id PK). Each binlog record represents a committed insert/update/delete with before/after row images and a binlog position. Source schema occasionally evolves (e.g., adding a discount_code column to orders).",
+    "architecture": "MySQL (binlog ROW format) -> Debezium MySQL connector running on Kafka Connect (initial snapshot then binlog streaming) -> Kafka topics dbserver1.app.customers and dbserver1.app.orders, keyed by primary key, with Avro schemas in a Schema Registry -> a Spark Structured Streaming job consuming each topic and applying idempotent MERGE INTO operations -> Delta Lake / Iceberg target tables on S3 -> served to BI dashboards. A dead-letter topic captures unparseable events.",
+    "processingSteps": [
+      "1. Snapshot: Debezium takes a consistent (lock-free incremental) snapshot of customers and orders, emitting op=r events, and records the binlog position where streaming begins.",
+      "2. Stream: Debezium tails the binlog and emits op=c/u/d change events keyed by primary key to the respective Kafka topics.",
+      "3. Schema management: Avro schemas are registered; backward-compatible changes (new nullable columns) are auto-handled by the registry.",
+      "4. Consume: A Spark Structured Streaming job reads each topic in micro-batches.",
+      "5. Deduplicate + order: Within each batch, events are reduced to the latest change per primary key by binlog LSN.",
+      "6. Apply: A MERGE INTO inserts new rows, updates matched rows only when the incoming LSN is newer, and deletes rows on op=d, storing lsn on the target for idempotency.",
+      "7. Serve: Dashboards query the near-real-time Delta/Iceberg tables; cancelled orders disappear (or are flagged) within seconds."
+    ],
+    "output": "Lakehouse tables target.customers and target.orders that mirror the MySQL source in near-real-time, including deletes, with each row carrying the binlog LSN of its last applied change for idempotency and audit.",
+    "monitoring": "Track source-commit-to-target-apply latency, Kafka Connect connector lag, snapshot completion, binlog retention headroom, schema-change events on the schema-history topic, MERGE batch durations, and dead-letter-topic depth. Alert on rising lag and shrinking binlog retention.",
+    "errorHandling": "At-least-once delivery plus idempotent LSN-guarded MERGE means redelivered or out-of-order events are safely ignored. Unparseable or schema-incompatible events route to a dead-letter topic. After a Connect failure, the connector resumes from its committed binlog offset; after a Spark failure, the streaming checkpoint resumes the micro-batch. Tables without primary keys are rejected at onboarding.",
+    "finalResult": "Analysts and the fraud team work on data that is seconds-fresh instead of a day stale, deletes and cancellations are reflected correctly, the production OLTP database sees negligible additional load, and the pipeline self-heals from failures without data loss or duplication in the target."
+  },
+  "industryUseCases": [
+    {
+      "company": "Airbnb",
+      "problem": "Keep derived data stores, search indexes, and the data warehouse in sync with hundreds of OLTP databases without nightly batch lag.",
+      "solution": "SpinalTap, an internal log-based CDC system reading MySQL binlogs and publishing changes to Kafka for downstream consumers.",
+      "benefits": "Near-real-time propagation of changes to search, caches, and analytics with low source impact and a shared, reliable change stream."
+    },
+    {
+      "company": "Shopify / merchants on Debezium",
+      "problem": "Replicate transactional commerce data to a warehouse for analytics while capturing order cancellations and refunds (deletes/updates).",
+      "solution": "Debezium + Kafka streaming changes into a lakehouse, applied via MERGE with LSN-based idempotency.",
+      "benefits": "Fresh analytics that correctly reflect cancellations and updates, replacing stale nightly extracts."
+    },
+    {
+      "company": "Financial institutions (e.g., ING)",
+      "problem": "Stream account and transaction changes from core OLTP systems to fraud detection and reporting platforms in near-real-time.",
+      "solution": "Debezium-based CDC into Kafka feeding stream processors and a warehouse, with strict ordering and exactly-once apply.",
+      "benefits": "Timely fraud detection and regulatory reporting on fresh, ordered, auditable change streams without burdening core banking systems."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Per-source log reading is single-threaded, so scale horizontally by running separate connectors per database/schema and partitioning Kafka topics by primary key for parallel, ordered apply. Use incremental (lock-free) snapshots so onboarding huge tables does not block streaming, and chunk snapshots to control resource use.",
+    "faultTolerance": "Kafka Connect persists connector offsets and restarts from the last committed log position; Kafka replication prevents event loss; idempotent LSN-guarded MERGE tolerates redelivery and reordering. Postgres replication slots and MySQL binlog retention must be sized so the connector can recover after extended downtime.",
+    "highAvailability": "Run Kafka Connect in distributed mode with multiple workers so a failed worker's connectors rebalance to survivors; replicate Kafka and the schema registry across AZs; the source database's own HA (replicas/failover) must preserve the log position the connector reads.",
+    "disasterRecovery": "The target can be fully rebuilt by re-snapshotting the source and replaying retained change events. Persist connector offsets, schema history, and the schema registry in durable, replicated storage. Document RTO/RPO and test re-snapshot + replay procedures.",
+    "performanceOptimization": "Apply changes in micro-batches via MERGE rather than per-row writes to amortize warehouse compute; cluster/partition target tables on the merge key; tune connector poll, heartbeat, and batch sizes; restrict captured columns to reduce serialization and Kafka volume.",
+    "costOptimization": "Capture only required tables/columns, compact state topics, batch MERGE applies, and tier cold target data. Avoid redundant full refreshes; CDC's delta-only nature is the primary cost saver versus nightly full dumps.",
+    "securityConsiderations": "Use a least-privilege replication user, TLS for source and Kafka connections, column masking/exclusion for PII at the connector, topic ACLs for sensitive change data, and ensure deletes/anonymization for privacy requests propagate to the target.",
+    "monitoringAndObservability": "Expose connector metrics (lag, snapshot progress, events emitted), end-to-end latency, replication-slot/binlog retention headroom, schema-change events, MERGE durations, and dead-letter depth. Trace an individual change from source commit to target apply for debugging.",
+    "dataQualityValidation": "Periodically reconcile row counts and checksums between source and target, validate primary-key uniqueness in the target, monitor for out-of-order LSNs, and assert that delete events result in target removals.",
+    "loggingAndAlerting": "Centralize connector and sink logs; alert on connector failures, growing lag, shrinking log retention (risk of falling off the log), replication-slot bloat (Postgres), schema-incompatibility errors, and dead-letter-topic growth."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Key topics by primary key:** Guarantees per-row ordering and enables idempotent, parallel apply.",
+      "**Make apply idempotent with LSN ordering:** Store the last-applied LSN on the target and MERGE only when the incoming LSN is newer.",
+      "**Use a schema registry with compatibility rules:** Enforce backward-compatible evolution (new columns nullable with defaults).",
+      "**Size log retention generously:** Ensure binlog/WAL survives connector downtime so the connector never falls off the log."
+    ],
+    "engineeringStandards": [
+      "Every captured table must have a primary key (and Postgres tables needing full before-images must set REPLICA IDENTITY FULL).",
+      "MySQL binlog must be in ROW format; Postgres must run wal_level=logical.",
+      "All deletes must be handled explicitly (hard-delete or soft-delete tombstone), never silently dropped.",
+      "Connectors must run with least-privilege replication credentials over TLS."
+    ],
+    "designRecommendations": [
+      "Apply changes in micro-batches via MERGE, not per-row, to control warehouse cost.",
+      "Decide hard-delete vs. soft-delete per table based on audit/SCD requirements.",
+      "Use incremental/lock-free snapshots for large tables to avoid blocking streaming.",
+      "Route unparseable events to a dead-letter topic instead of failing the pipeline."
+    ],
+    "namingConventions": [
+      "Topics: <server>.<database>.<table> (e.g., dbserver1.app.orders).",
+      "Connectors: <db>-cdc-<scope> (e.g., mysql-cdc-orders).",
+      "Replication slots: dbz_<purpose>; publications: dbz_pub.",
+      "Target tables: target.<table> with an lsn column for idempotency."
+    ],
+    "documentationStandards": [
+      "Document captured tables, primary keys, and delete-handling policy per table.",
+      "Document schema-evolution rules and the compatibility mode in the registry.",
+      "Record the snapshot strategy (initial vs. incremental) and binlog/WAL retention settings.",
+      "Maintain a runbook for connector recovery, slot bloat, and re-snapshot procedures."
+    ],
+    "testingStrategies": [
+      "Test insert/update/delete propagation end-to-end against a target and reconcile counts/checksums.",
+      "Inject out-of-order and duplicate events to verify LSN-guarded idempotent apply.",
+      "Simulate connector restart and verify resume-from-offset with no loss or duplication in the target.",
+      "Test schema evolution (add nullable column) and confirm sinks continue without breakage."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Using query-based CDC (updated_at polling) and assuming it captures everything.",
+      "whyItHappens": "It is the easiest to implement with existing batch ETL tooling.",
+      "impact": "Deletes are silently missed, rows can be skipped under clock skew/concurrent commits, and the source is burdened with scans, producing a drifting, incorrect replica.",
+      "correctApproach": "Use log-based CDC (Debezium) to capture every committed change including deletes, in order, with minimal source load."
+    },
+    {
+      "mistake": "Applying changes without LSN ordering or idempotency.",
+      "whyItHappens": "Assuming the transport delivers events exactly once and in order.",
+      "impact": "Redelivered or out-of-order events overwrite newer data, corrupting the target during retries, failovers, and replays.",
+      "correctApproach": "Store the last-applied LSN on each target row and MERGE/update only when the incoming LSN is strictly newer; deduplicate per key within each batch."
+    },
+    {
+      "mistake": "Letting an inactive Postgres replication slot or short binlog retention go unmonitored.",
+      "whyItHappens": "Slots and retention are easy to forget once the pipeline runs.",
+      "impact": "An inactive slot retains WAL until the disk fills (outage); too-short binlog retention makes the connector fall off the log, forcing a full re-snapshot.",
+      "correctApproach": "Monitor and alert on slot lag and log-retention headroom; drop unused slots; size retention to survive connector downtime."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Change capture method",
+      "optionA": "Log-based CDC (Debezium)",
+      "optionB": "Query-based CDC (timestamp polling)",
+      "explanation": "Log-based reads the transaction log, capturing inserts/updates/deletes in exact order with minimal source impact. Query-based polls tables and silently misses deletes and changes that don't bump the timestamp, while adding scan load to the source."
+    },
+    {
+      "feature": "Delivery semantics",
+      "optionA": "At-least-once transport + idempotent apply",
+      "optionB": "Best-effort / non-idempotent apply",
+      "explanation": "At-least-once plus LSN-guarded idempotent MERGE yields exactly-once *effect* on the target, surviving retries and replays. Non-idempotent apply corrupts the target whenever events are redelivered or arrive out of order, which is inevitable in distributed systems."
+    },
+    {
+      "feature": "Delete handling in target",
+      "optionA": "Hard delete",
+      "optionB": "Soft delete (is_deleted flag)",
+      "explanation": "Hard delete keeps the target an exact mirror and is storage-efficient. Soft delete preserves history for auditing and slowly-changing-dimension analytics at the cost of extra storage and filtering, often preferred in warehouses."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is Change Data Capture and why use log-based CDC?",
+        "answer": "CDC detects and propagates row-level changes (inserts/updates/deletes) from a source database to downstream systems. Log-based CDC reads the database's transaction log (binlog/WAL) instead of polling tables, so it captures every committed change including deletes, in exact order, with minimal load on the source.",
+        "explanation": "Stress the three operation types, ordering, low source impact, and the contrast with query-based polling."
+      },
+      {
+        "question": "What roles do Debezium and Kafka play in a CDC pipeline?",
+        "answer": "Debezium is a connector that reads the source transaction log and emits structured change events. Kafka is the durable, partitioned log that buffers those events, preserves per-key order, allows replay, and fans them out to multiple sinks that apply the changes to targets.",
+        "explanation": "Separate the capture role (Debezium) from the durable transport/decoupling role (Kafka)."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How do you handle deletes in a CDC pipeline to a warehouse?",
+        "answer": "A delete emits a change event with op=d and the row's before image, and optionally a null-value tombstone. The sink either hard-deletes the row from the target (exact mirror) or soft-deletes it by setting is_deleted=true to preserve history. Query-based CDC cannot capture deletes, which is a key reason to use log-based CDC.",
+        "explanation": "Mention op=d, tombstones, and the hard- vs. soft-delete choice driven by audit/SCD needs."
+      },
+      {
+        "question": "How do snapshot and incremental streaming work together?",
+        "answer": "On startup the connector takes a consistent snapshot of existing rows (op=r) and records the log offset where the snapshot ends. It then streams changes from that exact offset onward. This gives a gap-free replica: the snapshot is the baseline and streaming keeps it current. Incremental (lock-free) snapshots let large tables be snapshotted in chunks without blocking streaming.",
+        "explanation": "The key insight is the handoff at a recorded log offset that guarantees no gaps and no overlap loss."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How do you achieve exactly-once semantics when applying CDC changes to a target?",
+        "answer": "The transport is typically at-least-once, so you achieve exactly-once *effect* by making the apply idempotent: key events by primary key, order them by LSN, store the last-applied LSN on each target row, and use MERGE to update only when the incoming LSN is strictly newer (rejecting stale and duplicate events). Deduplicate to the latest event per key within each micro-batch before merging.",
+        "explanation": "The interviewer wants 'at-least-once transport + idempotent LSN-guarded MERGE = exactly-once effect', not a claim that the transport itself is exactly-once."
+      },
+      {
+        "question": "How do you handle schema evolution in a CDC pipeline?",
+        "answer": "Register change-event schemas in a schema registry with compatibility rules. Backward-compatible changes, like adding a nullable column with a default, are handled automatically: Debezium emits the new schema version and sinks tolerate it. Incompatible changes (drops, type changes, renames) require coordinated migration of the sink and target and may require re-snapshotting the affected table. Debezium also writes a schema-history topic so it can correctly interpret historical log records.",
+        "explanation": "Cover compatibility modes, the easy case (additive/nullable), the hard case (breaking changes), and the schema-history topic."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "After a Kafka Connect worker crash, your sink reprocesses a batch of change events. Some rows in the warehouse now show older values than the source. What went wrong and how do you fix it?",
+        "thinkingProcess": "Reprocessing implies at-least-once redelivery, possibly with reordering. If the apply blindly overwrites on match, an older replayed event can clobber newer data. The fix is ordering-aware idempotency.",
+        "expectedAnswer": "The apply was not idempotent/ordered: a redelivered older event overwrote a newer value. Fix by storing the last-applied LSN on each target row and changing the MERGE to update only WHEN the incoming LSN > stored LSN, and deduplicate to the latest event per primary key within each batch. Then backfill correctness by replaying from a safe offset; idempotent apply makes the replay safe."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a CDC pipeline that replicates a MySQL OLTP database (orders, customers) to a lakehouse in near-real-time. It must handle inserts/updates/deletes, ordering, idempotency/exactly-once, schema evolution, an initial snapshot plus incremental streaming, and apply changes via MERGE, at tens of thousands of changes/sec.",
+        "designApproach": "Enable MySQL binlog in ROW format. Run Debezium on Kafka Connect with snapshot.mode=initial (incremental/lock-free for big tables), publishing one Kafka topic per table keyed by primary key, with Avro schemas in a schema registry for evolution. A Spark Structured Streaming (or Flink) sink consumes each topic in micro-batches, deduplicates to the latest event per key by LSN, and applies MERGE INTO the lakehouse target: insert on op=c, update on op=u when LSN is newer, delete (or soft-delete) on op=d. Store the applied LSN on the target for idempotency. Route unparseable events to a dead-letter topic.",
+        "tradeOffs": "Log-based vs. query-based: log-based captures deletes and exact order at the cost of operational complexity and log-access requirements. At-least-once transport + idempotent MERGE gives exactly-once effect rather than relying on transactional exactly-once transport. Hard- vs. soft-delete trades exact mirroring against auditability. Micro-batch MERGE trades a little latency for much lower warehouse cost than per-row writes.",
+        "scalingStrategy": "Shard by database/schema with separate connectors (log read is single-threaded per source); partition topics by primary key for parallel ordered apply; use incremental snapshots so large tables don't block streaming; micro-batch the MERGE and cluster the target on the merge key; size binlog/WAL retention and monitor connector lag and replication-slot growth; run Connect in distributed mode and replicate Kafka across AZs for HA, rebuilding the target via re-snapshot + replay for DR."
+      }
+    ],
+    "followUpQuestions": [
+      "How would you replicate a table that has no primary key?",
+      "What happens if the connector is down longer than the binlog retention period?",
+      "How do you propagate a GDPR delete from the source through Kafka to the target?",
+      "How would you add a second consumer (e.g., a search index) to the same change stream?",
+      "How do you reconcile and detect drift between source and target?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "A log-based CDC pipeline tails a source database's transaction log via Debezium, streams ordered per-key change events through Kafka, and applies them idempotently to a warehouse/lake via MERGE for near-real-time replication.",
+    "keyConcepts": [
+      "Log-based > query-based: captures deletes, exact order, low source impact.",
+      "Snapshot + streaming: snapshot baseline, stream from recorded log offset (gap-free).",
+      "op codes: c=create, u=update, d=delete, r=snapshot read.",
+      "Idempotent apply: key by PK + order by LSN + MERGE = exactly-once effect.",
+      "Schema evolution: registry + backward-compatible (nullable) changes."
+    ],
+    "formulas": [],
+    "commands": [
+      "# Debezium snapshot then stream\n\"snapshot.mode\": \"initial\"",
+      "# Idempotent merge condition\nWHEN MATCHED AND s.lsn > t.lsn THEN UPDATE ...",
+      "-- Postgres: enable logical decoding\n-- wal_level = logical"
+    ],
+    "interviewPoints": [
+      "Exactly-once = at-least-once transport + idempotent LSN-guarded MERGE.",
+      "Log-based CDC captures deletes; query-based does not.",
+      "Key topics by primary key for per-row ordering.",
+      "Handle deletes explicitly (hard or soft), never drop them.",
+      "Size log retention so the connector never falls off the log."
+    ],
+    "quickNotes": [
+      "MySQL needs binlog ROW format; Postgres needs wal_level=logical.",
+      "Inactive Postgres replication slot can fill the disk, monitor it.",
+      "Tombstone (null value) events let compacted topics drop deleted keys.",
+      "Micro-batch the MERGE to cut warehouse cost vs. per-row writes.",
+      "Breaking schema changes may require a re-snapshot of the table."
+    ]
+  },
+  "keyTakeaways": [
+    "Log-based CDC (Debezium reading binlog/WAL) is preferred over query-based polling because it captures inserts, updates, and especially deletes in exact order with minimal load on the source database.",
+    "Exactly-once is achieved not by the transport but by idempotent apply: key events by primary key, order by LSN, store the applied LSN on the target, and MERGE only when the incoming change is newer.",
+    "A consistent initial snapshot handed off at a recorded log offset, followed by incremental streaming, produces a gap-free replica; incremental/lock-free snapshots avoid blocking on large tables.",
+    "Operational discipline is essential: handle deletes explicitly, manage schema evolution through a registry with compatibility rules, and size and monitor log/slot retention so the connector never falls off the log."
+  ]
+}
