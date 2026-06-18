@@ -101,33 +101,47 @@ export default function App() {
           <div className="mobile-only" style={{ flexDirection: 'column', gap: '16px', width: '100%' }}>
 
             {/* Mobile Row 1: Menu Button & Centered Logo */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-              <button
-                className="menu-toggle-btn"
-                onClick={() => setIsSidebarOpen(true)}
-                title="Open Sidebar"
-                style={{ position: 'absolute', left: 0 }}
-              >
-                <Menu size={20} />
-              </button>
-              <button
-                onClick={() => setCurrentDomain('dashboard')}
-                title="Back to Dashboard"
-                style={{ position: 'absolute', left: '32px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
-              >
-                <ArrowLeft size={20} />
-              </button>
-              <span style={{
-                fontSize: '18px',
-                fontWeight: 700,
-                letterSpacing: '-0.5px',
-                background: 'linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                marginLeft: '32px'
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', width: '100%', minHeight: '36px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', zIndex: 10 }}>
+                <button
+                  className="menu-toggle-btn"
+                  onClick={() => setIsSidebarOpen(true)}
+                  title="Open Sidebar"
+                >
+                  <Menu size={20} />
+                </button>
+                <button
+                  onClick={() => setCurrentDomain('dashboard')}
+                  title="Back to Dashboard"
+                  style={{ 
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', 
+                    padding: '8px', borderRadius: '8px', cursor: 'pointer', color: 'var(--text-muted)'
+                  }}
+                >
+                  <ArrowLeft size={20} />
+                </button>
+              </div>
+              <div style={{
+                position: 'absolute',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
               }}>
-                CN-DESIGN
-              </span>
+                <img src="/logo.svg" alt="CN-DESIGN Logo" style={{ width: '32px', height: '32px' }} />
+                <span style={{
+                  fontSize: '18px',
+                  fontWeight: 700,
+                  letterSpacing: '-0.5px',
+                  background: 'linear-gradient(135deg, #3b82f6 0%, #a855f7 100%)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent'
+                }}>
+                  CN-DESIGN
+                </span>
+              </div>
             </div>
 
             {/* Mobile Row 2: Dropdown Menu & Theme Toggle */}
@@ -293,30 +307,6 @@ export default function App() {
               >
                 <ArrowLeft size={20} />
               </button>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <h1 style={{
-                  margin: 0,
-                  fontSize: '22px',
-                  fontWeight: 700,
-                  background: 'linear-gradient(135deg, var(--text-primary) 0%, var(--text-muted) 100%)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  letterSpacing: '-0.5px'
-                }}>
-                  {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
-                </h1>
-                <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : activeTopic ? (
-                    <>
-                      <span style={{
-                        width: '6px', height: '6px', borderRadius: '50%',
-                        background: activeTopic.difficulty === 'beginner' ? '#10b981' : activeTopic.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444'
-                      }} />
-                      {activeTopic.difficulty.charAt(0).toUpperCase() + activeTopic.difficulty.slice(1)}
-                    </>
-                  ) : ''}
-                </span>
-              </div>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -398,6 +388,34 @@ export default function App() {
         </header>
 
         <div className="tab-content animate-fade-in" key={activeTab}>
+          {/* ========================================================= */}
+          {/* DESKTOP TOPIC TITLE & DIFFICULTY (Below header)           */}
+          {/* ========================================================= */}
+          <div className="desktop-only" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '24px' }}>
+            <h1 style={{
+              margin: 0,
+              fontSize: '26px',
+              fontWeight: 700,
+              background: 'linear-gradient(135deg, var(--text-primary) 0%, var(--text-muted) 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              letterSpacing: '-0.5px'
+            }}>
+              {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
+            </h1>
+            <span style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-inner)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
+              {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : activeTopic ? (
+                <>
+                  <span style={{
+                    width: '8px', height: '8px', borderRadius: '50%',
+                    background: activeTopic.difficulty === 'beginner' ? '#10b981' : activeTopic.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444',
+                    boxShadow: activeTopic.difficulty === 'beginner' ? '0 0 8px rgba(16,185,129,0.4)' : activeTopic.difficulty === 'intermediate' ? '0 0 8px rgba(245,158,11,0.4)' : '0 0 8px rgba(239,68,68,0.4)'
+                  }} />
+                  {activeTopic.difficulty.charAt(0).toUpperCase() + activeTopic.difficulty.slice(1)}
+                </>
+              ) : ''}
+            </span>
+          </div>
           {activeTab === 'learn' && (
             <LearnTab
               topic={activeTopic}

@@ -81,9 +81,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <div className={`sidebar ${isOpen ? 'open' : ''}`} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div className="sidebar-header" style={{ display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-          <h1 className="logo-text" style={{ margin: 0 }}>
-            <span>CN-DESIGN</span>
-          </h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <img src="/logo.svg" alt="CN-DESIGN Logo" style={{ width: '32px', height: '32px' }} />
+            <h1 className="logo-text" style={{ margin: 0 }}>
+              <span>CN-DESIGN</span>
+            </h1>
+          </div>
           {onClose && (
             <button className="sidebar-close-btn" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <X size={20} />
