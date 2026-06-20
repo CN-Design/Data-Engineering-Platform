@@ -142,6 +142,7 @@ export interface CodingChallenge {
   type: 'sql' | 'pyspark' | 'python' | 'scenario';
   initialCode: string;
   solutionCode: string;
+  testCases?: { input: any; expected: any }[];
   schema?: string;
   setupSql?: string;
   pysparkSetup?: string;

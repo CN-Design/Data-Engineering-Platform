@@ -6,6 +6,13 @@ import {
   Trophy, Flame, Award, ChevronDown, ChevronUp 
 } from 'lucide-react';
 
+declare global {
+  interface Window {
+    initSqlJs: any;
+    loadPyodide: any;
+  }
+}
+
 interface PracticeTabProps {
   challenges: CodingChallenge[];
   onCompleteChallenge: (challengeId: string) => void;
@@ -31,6 +38,7 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
   const [sqlDb, setSqlDb] = useState<any>(null);
+  const [pyodide, setPyodide] = useState<any>(null);
 
   // Load completed items from localstorage
   const [solvedChallenges, setSolvedChallenges] = useState<Record<string, boolean>>(() => {
@@ -46,13 +54,32 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
   useEffect(() => {
     const loadSql = async () => {
       try {
-        const SQL = await window.initSqlJs({ locateFile: (file: string) => `/${file}` });
-        setSqlDb(new SQL.Database());
+        if (window.initSqlJs) {
+          const SQL = await window.initSqlJs({ locateFile: (file: string) => `/${file}` });
+          setSqlDb(new SQL.Database());
+        }
       } catch (err) {
         console.error("Failed to load SQL in practice:", err);
       }
     };
     loadSql();
+  }, []);
+
+  // Pyodide init
+  useEffect(() => {
+    const loadPyodideEngine = async () => {
+      try {
+        if (!window.loadPyodide) return;
+        const py = await window.loadPyodide();
+        setPyodide(py);
+      } catch (err) {
+        console.error("Failed to load Pyodide in practice:", err);
+      }
+    };
+    // Delay slightly to ensure script is loaded
+    setTimeout(() => {
+      loadPyodideEngine();
+    }, 500);
   }, []);
 
   // Update solved challenges state when completion triggers
@@ -130,9 +157,79 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
         }
       } else {
         // PySpark & Python
-        isCorrect = code.trim().length > selectedChallenge.initialCode.trim().length + 5;
-        setOutput([{ status: "Transformation executed successfully" }]);
-        setColumns(["status"]);
+        if (!pyodide) {
+          setError("Python environment initializing...");
+          setStatus('failed');
+          return;
+        }
+
+        try {
+          // Redirect stdout/stderr in python
+          pyodide.runPython(`
+import sys
+import io
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+`);
+          // run user code
+          pyodide.runPython(code);
+          
+          let testsPassed = true;
+          let testOutputs: string[] = [];
+          
+          if (selectedChallenge.testCases && selectedChallenge.testCases.length > 0) {
+            for (let i = 0; i < selectedChallenge.testCases.length; i++) {
+              const tc = selectedChallenge.testCases[i];
+              pyodide.runPython(`
+try:
+    __result = str(solve(${tc.input}))
+except Exception as e:
+    __result = "Error: " + str(e)
+`);
+              const resStr = pyodide.runPython("__result");
+              const expectedStr = String(tc.expected);
+              
+              if (resStr === expectedStr) {
+                 testOutputs.push(`Test ${i+1}: Passed`);
+              } else {
+                 testOutputs.push(`Test ${i+1}: Failed (Expected ${expectedStr}, Got ${resStr})`);
+                 testsPassed = false;
+              }
+            }
+          } else {
+             testsPassed = code.trim() !== selectedChallenge.initialCode.trim();
+          }
+
+          // read output
+          const stdoutVal = pyodide.runPython("sys.stdout.getvalue()");
+          const stderrVal = pyodide.runPython("sys.stderr.getvalue()");
+
+          if (stderrVal) {
+            setError(stderrVal);
+            setOutput(null);
+            isCorrect = false;
+          } else {
+            let outLines = stdoutVal.split('\\n').filter((l: string) => l.length > 0);
+            outLines = outLines.concat(testOutputs);
+            
+            if (outLines.length === 0) {
+                setOutput([{ status: "Execution successful (no output)" }]);
+                setColumns(["status"]);
+            } else {
+                const formattedOutput = outLines.map((line: string) => ({ output: line }));
+                setOutput(formattedOutput);
+                setColumns(["output"]);
+            }
+            
+            // Mark correct if they actually passed the tests
+            isCorrect = testsPassed;
+            setError(null);
+          }
+        } catch (err: any) {
+          setError(err.message);
+          setOutput(null);
+          isCorrect = false;
+        }
       }
 
       if (isCorrect) {
@@ -352,12 +449,12 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
 
                     <div>
                       <strong style={{ display: 'block', marginBottom: '4px' }}>Example Input:</strong>
-                      <pre style={{ background: '#07080b', padding: '10px', borderRadius: '4px', fontSize: '12px' }}>{selectedChallenge.exampleInput}</pre>
+                      <pre style={{ background: '#07080b', color: '#e2e8f0', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleInput}</pre>
                     </div>
 
                     <div>
                       <strong style={{ display: 'block', marginBottom: '4px' }}>Example Output:</strong>
-                      <pre style={{ background: '#07080b', padding: '10px', borderRadius: '4px', fontSize: '12px' }}>{selectedChallenge.exampleOutput}</pre>
+                      <pre style={{ background: '#07080b', color: '#e2e8f0', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleOutput}</pre>
                     </div>
 
                     <div>

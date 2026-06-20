@@ -293,11 +293,15 @@ export default function App() {
                 flex: 1,
                 paddingRight: '12px'
               }}>
-                {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
+                {activeTab === 'playground' ? 'Interactive Playground' : 
+                 activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
+                 activeTab === 'interview' ? 'Interview Preparation' :
+                 activeTab === 'practice' ? 'Coding Practice' :
+                 'Ask Gemini'}
               </h1>
 
               <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}>
-                {activeTab === 'playground' ? '' : activeTopic ? (
+                {activeTab === 'learn' && activeTopic ? (
                   <>
                     <span style={{
                       width: '6px', height: '6px', borderRadius: '50%',
@@ -423,10 +427,15 @@ export default function App() {
               WebkitTextFillColor: 'transparent',
               letterSpacing: '-0.5px'
             }}>
-              {activeTab === 'playground' ? 'Interactive Playground' : activeTopic ? activeTopic.title : 'Data Engineering Prep'}
+              {activeTab === 'playground' ? 'Interactive Playground' : 
+               activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
+               activeTab === 'interview' ? 'Interview Preparation' :
+               activeTab === 'practice' ? 'Coding Practice' :
+               'Ask Gemini'}
             </h1>
             <span style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-inner)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
-              {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : activeTopic ? (
+              {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : 
+               activeTab === 'learn' && activeTopic ? (
                 <>
                   <span style={{
                     width: '8px', height: '8px', borderRadius: '50%',
@@ -435,7 +444,9 @@ export default function App() {
                   }} />
                   {activeTopic.difficulty.charAt(0).toUpperCase() + activeTopic.difficulty.slice(1)}
                 </>
-              ) : ''}
+              ) : activeTab === 'interview' ? 'Q&A Flashcards' :
+                 activeTab === 'practice' ? 'Interactive Challenges' :
+                 'AI Assistant'}
             </span>
           </div>
           {activeTab === 'learn' && (
