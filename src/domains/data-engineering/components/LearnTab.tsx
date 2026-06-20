@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import type { Topic } from '../../../core/types/types';
 import {
   Book, Lightbulb, Code, ShieldCheck, AlertTriangle, CheckCircle2,
-  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight, Loader2
+  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight, ArrowLeft, Loader2
 } from 'lucide-react';
 import type { PremiumTopicData } from '../../../core/types/types';
 import { PremiumTopicRenderer } from './PremiumTopicRenderer';
@@ -14,11 +14,13 @@ interface LearnTabProps {
   topic: Topic | null;
   isCompleted: boolean;
   onToggleComplete: () => void;
+  onPrevious?: () => void;
+  onNext?: () => void;
 }
 
 
 
-export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete }) => {
+export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete, onPrevious, onNext }) => {
   const [activeSubTab, setActiveSubTab] = useState<'concept' | 'examples' | 'bestpractices' | 'interview'>('concept');
   const [revealedQs, setRevealedQs] = useState<Record<number, boolean>>({});
   const [premiumData, setPremiumData] = useState<PremiumTopicData | null>(null);
@@ -448,15 +450,35 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         )}
       </div>
 
-      {/* Complete trigger */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}>
+      {/* Complete trigger and Navigation */}
+      <div className="nav-buttons-row">
+        <button
+          onClick={onPrevious}
+          disabled={!onPrevious}
+          className="btn btn-secondary"
+          style={{ padding: '10px 20px', fontSize: '14px', opacity: onPrevious ? 1 : 0.5, cursor: onPrevious ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <ArrowLeft size={16} />
+          <span>Previous</span>
+        </button>
+
         <button
           onClick={onToggleComplete}
           className={`btn ${isCompleted ? 'btn-secondary' : 'btn-primary'}`}
-          style={{ padding: '10px 20px', fontSize: '14px' }}
+          style={{ padding: '10px 24px', fontSize: '15px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}
         >
-          <CheckCircle2 size={16} />
-          {isCompleted ? 'Completed (Click to Undo)' : 'Mark Topic as Completed'}
+          <CheckCircle2 size={18} />
+          {isCompleted ? 'Completed (Undo)' : 'Mark as Completed'}
+        </button>
+
+        <button
+          onClick={onNext}
+          disabled={!onNext}
+          className="btn btn-secondary"
+          style={{ padding: '10px 20px', fontSize: '14px', opacity: onNext ? 1 : 0.5, cursor: onNext ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <span>Next</span>
+          <ArrowRight size={16} />
         </button>
       </div>
     </div>

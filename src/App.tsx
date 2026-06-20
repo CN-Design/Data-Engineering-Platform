@@ -1,18 +1,20 @@
 import { useState, useEffect } from 'react';
-import { allTopics, allQuestions, allChallenges } from './domains/data-engineering/data';
+import { allTopics, allChallenges } from './domains/data-engineering/data';
 import { Sidebar } from './core/components/Sidebar';
 import { LearnTab } from './domains/data-engineering/components/LearnTab';
-import { InterviewTab } from './domains/data-engineering/components/InterviewTab';
+import { InterviewPrepTab } from './domains/data-engineering/components/InterviewPrepTab';
 import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
 import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
 import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
-import type { Topic } from './core/types/types';
+import type { Topic, Category } from './core/types/types';
 import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft } from 'lucide-react';
+import { PathSelection } from './domains/data-engineering/components/PathSelection';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
   const [currentDomain, setCurrentDomain] = useState<'dashboard' | 'data-engineering'>('dashboard');
+  const [selectedTech, setSelectedTech] = useState<Category | null>(null);
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -66,12 +68,32 @@ export default function App() {
     localStorage.setItem('de_completed_challenges', JSON.stringify(updated));
   };
 
-  // Filter questions and challenges for the active category
-  const currentQuestions = allQuestions.filter(q => q.category === activeTopic?.category);
-
   if (currentDomain === 'dashboard') {
-    return <Dashboard onSelectDomain={(d) => setCurrentDomain(d as any)} />;
+    return <Dashboard onSelectDomain={(d) => {
+      setCurrentDomain(d as any);
+      setSelectedTech(null); // Reset tech selection on domain change
+    }} />;
   }
+
+  if (currentDomain === 'data-engineering' && !selectedTech) {
+    return <PathSelection 
+      onSelectTech={(tech) => {
+        setSelectedTech(tech);
+        const techTopics = allTopics.filter(t => t.category === tech);
+        if (techTopics.length > 0) {
+          setActiveTopic(techTopics[0]);
+        }
+      }} 
+      onBack={() => setCurrentDomain('dashboard')} 
+    />;
+  }
+
+  // Filter topics for the sidebar based on selected tech
+  const sidebarTopics = allTopics.filter(t => t.category === selectedTech);
+  
+  const currentTopicIndex = sidebarTopics.findIndex(t => t.id === activeTopic?.id);
+  const previousTopic = currentTopicIndex > 0 ? sidebarTopics[currentTopicIndex - 1] : null;
+  const nextTopic = currentTopicIndex >= 0 && currentTopicIndex < sidebarTopics.length - 1 ? sidebarTopics[currentTopicIndex + 1] : null;
 
   return (
     <div className="app-container">
@@ -81,7 +103,7 @@ export default function App() {
       />
 
       <Sidebar
-        topics={allTopics}
+        topics={sidebarTopics}
         activeTopic={activeTopic}
         setActiveTopic={(t) => {
           setActiveTopic(t);
@@ -111,8 +133,8 @@ export default function App() {
                   <Menu size={20} />
                 </button>
                 <button
-                  onClick={() => setCurrentDomain('dashboard')}
-                  title="Back to Dashboard"
+                  onClick={() => setSelectedTech(null)}
+                  title="Back to Tech Selection"
                   style={{ 
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', 
@@ -297,8 +319,8 @@ export default function App() {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               <button
-                onClick={() => setCurrentDomain('dashboard')}
-                title="Back to Dashboard"
+                onClick={() => setSelectedTech(null)}
+                title="Back to Tech Selection"
                 style={{ 
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', 
@@ -421,14 +443,13 @@ export default function App() {
               topic={activeTopic}
               isCompleted={!!completedTopics[activeTopic?.id || '']}
               onToggleComplete={toggleTopicCompleted}
+              onPrevious={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
+              onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
             />
           )}
 
-          {activeTab === 'interview' && (
-            <InterviewTab
-              topic={activeTopic}
-              questions={currentQuestions}
-            />
+          {activeTab === 'interview' && selectedTech && (
+            <InterviewPrepTab tech={selectedTech} />
           )}
 
           {activeTab === 'practice' && (

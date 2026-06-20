@@ -163,3 +163,101 @@ export interface CodingChallenge {
     followUps: string[];
   };
 }
+
+// ============================================================
+// Interview Prep (tech-scoped, category-based) types
+// ============================================================
+
+// The 8 interview categories (tech-based, not topic-based).
+export type InterviewCategory =
+  | 'basic'
+  | 'intermediate'
+  | 'advanced'
+  | 'scenario'
+  | 'production'
+  | 'architecture'
+  | 'optimization'
+  | 'coding';
+
+export interface InterviewFollowUp {
+  question: string;
+  answer: string;
+}
+
+export interface InterviewNestedTopic {
+  title: string;
+  explanation: string;
+}
+
+// Conceptual questions: basic, intermediate, advanced, scenario,
+// production, architecture, optimization.
+export interface ConceptualInterviewQuestion {
+  id: string;
+  tech: Category;
+  category: Exclude<InterviewCategory, 'coding'>;
+  difficulty: Difficulty;
+  question: string;
+  // A concise answer the candidate can speak directly in the interview.
+  directAnswer: string;
+  // Plain-language explanation of the concept.
+  detailedExplanation: {
+    whatItIs: string;
+    whyItExists: string;
+    howItWorks: string;
+  };
+  // Business / engineering relevance.
+  whyImportant: string;
+  // Optional — only when an example improves understanding.
+  realWorldExample?: string;
+  // Important subtopics explained automatically alongside the answer.
+  nestedTopics: InterviewNestedTopic[];
+  // Likely follow-up questions, each with a full answer.
+  followUps: InterviewFollowUp[];
+  tags?: string[];
+}
+
+// Coding questions: shown as question first, answer revealed on demand.
+export interface CodingInterviewQuestion {
+  id: string;
+  tech: Category;
+  category: 'coding';
+  difficulty: Difficulty;
+  question: string;
+  // How an interviewer expects the candidate to reason about the problem.
+  thoughtProcess: string;
+  solution: {
+    code: string;
+    language: string;
+  };
+  // Explanation of every important line.
+  lineByLine: string;
+  timeComplexity: string;
+  spaceComplexity: string;
+  alternativeApproaches: Array<{
+    title: string;
+    explanation: string;
+    code?: string;
+  }>;
+  followUps: InterviewFollowUp[];
+  tags?: string[];
+}
+
+export type InterviewPrepQuestion = ConceptualInterviewQuestion | CodingInterviewQuestion;
+
+// Ordered category metadata for the Interview Prep tab navigation.
+export interface InterviewCategoryMeta {
+  id: InterviewCategory;
+  label: string;
+  description: string;
+}
+
+export const INTERVIEW_CATEGORIES: InterviewCategoryMeta[] = [
+  { id: 'basic', label: 'Basic', description: 'Fundamental concepts' },
+  { id: 'intermediate', label: 'Intermediate', description: 'Practical concepts used in projects' },
+  { id: 'advanced', label: 'Advanced', description: 'Senior-level discussions' },
+  { id: 'scenario', label: 'Scenario-Based', description: 'Real interview scenarios' },
+  { id: 'production', label: 'Production Support', description: 'Support & troubleshooting' },
+  { id: 'architecture', label: 'Architecture', description: 'System design & large-scale' },
+  { id: 'optimization', label: 'Optimization', description: 'Performance tuning' },
+  { id: 'coding', label: 'Coding', description: 'Coding interview questions' },
+];
