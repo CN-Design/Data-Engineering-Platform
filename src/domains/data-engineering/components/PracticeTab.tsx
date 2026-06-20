@@ -348,8 +348,8 @@ except Exception as e:
           </div>
 
           {/* Challenges List Table */}
-          <div className="glass-panel" style={{ overflow: 'hidden' }}>
-            <table className="sql-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div className="glass-panel" style={{ overflowX: 'auto' }}>
+            <table className="sql-table" style={{ width: '100%', borderCollapse: 'collapse', minWidth: '600px' }}>
               <thead>
                 <tr style={{ background: 'var(--bg-secondary)' }}>
                   <th style={{ padding: '12px' }}>Status</th>
@@ -396,7 +396,7 @@ except Exception as e:
         <div className="grid-workspace">
           
           {/* Left panel: Problem, Hints, Solution tabs */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflow: 'hidden' }}>
+          <div className="practice-left-panel" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <button onClick={() => setSelectedChallenge(null)} className="btn btn-secondary" style={{ padding: '6px 12px' }}>
                 <ArrowLeft size={14} /> Back to List
