@@ -15,7 +15,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
     <div className="premium-content-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '32px', fontFamily: '"Outfit", sans-serif' }}>
       
       {/* Overview Section */}
-      <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+      <section className="glass-panel premium-section">
         <h2 style={{ 
           display: 'flex', 
           alignItems: 'center', 
@@ -52,7 +52,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
       </section>
 
       {/* Why it Matters */}
-      <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+      <section className="glass-panel premium-section">
         <h2 style={{ 
           display: 'flex', 
           alignItems: 'center', 
@@ -91,7 +91,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
       </section>
 
       {/* Core Components */}
-      <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+      <section className="glass-panel premium-section">
         <h2 style={{ 
           display: 'flex', 
           alignItems: 'center', 
@@ -107,15 +107,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
         </h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {coreConcept.coreComponents?.map((comp, i) => (
-            <div key={i} style={{ 
-              padding: '20px', 
-              background: 'var(--bg-secondary)', 
-              borderRadius: '8px', 
-              border: '1px solid var(--border-glass)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '12px'
-            }}>
+            <div key={i} className="premium-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '17px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <CheckCircle2 size={16} color="#a855f7" />
                 {comp.name}
@@ -149,7 +141,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
       </section>
 
       {/* Architecture Flow */}
-      <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+      <section className="glass-panel premium-section">
         <h2 style={{ 
           display: 'flex', 
           alignItems: 'center', 
@@ -193,7 +185,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
 
       {/* Industry Use Cases */}
       {industryUseCases && industryUseCases.length > 0 && (
-        <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+        <section className="glass-panel premium-section">
           <h2 style={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -252,7 +244,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
 
       {/* Comparison Section */}
       {comparisonSection && comparisonSection.length > 0 && (
-        <section className="glass-panel" style={{ padding: '32px', borderRadius: '12px', border: '1px solid var(--border-glass)', background: 'var(--bg-glass)' }}>
+        <section className="glass-panel premium-section">
           <h2 style={{ 
             display: 'flex', 
             alignItems: 'center', 

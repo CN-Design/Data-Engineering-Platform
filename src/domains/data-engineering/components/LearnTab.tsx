@@ -194,7 +194,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
                   <div className="section-body">
                     <pre style={{
                       fontFamily: 'Fira Code, monospace',
-                      background: '#07080b',
+                      background: 'var(--bg-code)',
                       padding: '16px',
                       borderRadius: '8px',
                       border: '1px solid var(--border-glass)',

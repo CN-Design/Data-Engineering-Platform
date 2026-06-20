@@ -318,7 +318,7 @@ except Exception as e:
                   border: '1px solid var(--border-glass)',
                   borderRadius: '6px',
                   padding: '8px 12px',
-                  color: '#fff',
+                  color: 'var(--text-primary)',
                   fontSize: '13px'
                 }}
               />
@@ -327,7 +327,7 @@ except Exception as e:
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', color: '#fff', padding: '8px 12px', borderRadius: '6px' }}
+              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '6px' }}
             >
               <option value="all">All Languages</option>
               <option value="sql">SQL Only</option>
@@ -338,7 +338,7 @@ except Exception as e:
             <select
               value={difficultyFilter}
               onChange={(e) => setDifficultyFilter(e.target.value)}
-              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', color: '#fff', padding: '8px 12px', borderRadius: '6px' }}
+              style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '6px' }}
             >
               <option value="all">All Difficulties</option>
               <option value="easy">Easy</option>
@@ -449,12 +449,12 @@ except Exception as e:
 
                     <div>
                       <strong style={{ display: 'block', marginBottom: '4px' }}>Example Input:</strong>
-                      <pre style={{ background: '#07080b', color: '#e2e8f0', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleInput}</pre>
+                      <pre style={{ background: 'var(--bg-code)', color: 'var(--text-code)', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleInput}</pre>
                     </div>
 
                     <div>
                       <strong style={{ display: 'block', marginBottom: '4px' }}>Example Output:</strong>
-                      <pre style={{ background: '#07080b', color: '#e2e8f0', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleOutput}</pre>
+                      <pre style={{ background: 'var(--bg-code)', color: 'var(--text-code)', padding: '10px', borderRadius: '4px', fontSize: '13px', whiteSpace: 'pre-wrap' }}>{selectedChallenge.exampleOutput}</pre>
                     </div>
 
                     <div>
@@ -490,17 +490,17 @@ except Exception as e:
                       <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{selectedChallenge.optimized}</p>
                     </div>
                     <div>
-                      <strong style={{ color: '#f97316', display: 'block', marginBottom: '4px' }}>Brute Force Approach:</strong>
+                      <strong style={{ color: 'var(--color-medium)', display: 'block', marginBottom: '4px' }}>Brute Force Approach:</strong>
                       <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{selectedChallenge.bruteForce}</p>
                     </div>
                     <div style={{ borderTop: '1px solid var(--border-glass)', paddingTop: '12px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                       <div>
-                        <strong>Time Complexity:</strong>
-                        <pre style={{ background: '#07080b', padding: '6px', borderRadius: '4px', fontSize: '11px', marginTop: '4px' }}>{selectedChallenge.complexity.time}</pre>
+                        <strong style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Time Complexity:</strong>
+                        <pre style={{ background: 'var(--bg-code)', color: 'var(--text-code)', padding: '6px', borderRadius: '4px', fontSize: '11px', marginTop: '4px' }}>{selectedChallenge.complexity.time}</pre>
                       </div>
                       <div>
-                        <strong>Space Complexity:</strong>
-                        <pre style={{ background: '#07080b', padding: '6px', borderRadius: '4px', fontSize: '11px', marginTop: '4px' }}>{selectedChallenge.complexity.space}</pre>
+                        <strong style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Space Complexity:</strong>
+                        <pre style={{ background: 'var(--bg-code)', color: 'var(--text-code)', padding: '6px', borderRadius: '4px', fontSize: '11px', marginTop: '4px' }}>{selectedChallenge.complexity.space}</pre>
                       </div>
                     </div>
                   </div>

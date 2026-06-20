@@ -124,7 +124,7 @@ export const GeminiTab: React.FC<GeminiTabProps> = ({ topic }) => {
                 border: '1px solid var(--border-glass)',
                 borderRadius: '6px',
                 padding: '10px',
-                color: '#fff',
+                color: 'var(--text-primary)',
                 fontSize: '13px'
               }}
             />
@@ -198,7 +198,7 @@ export const GeminiTab: React.FC<GeminiTabProps> = ({ topic }) => {
             border: '1px solid var(--border-glass)',
             borderRadius: '6px',
             padding: '12px',
-            color: '#fff',
+            color: 'var(--text-primary)',
             fontSize: '14px'
           }}
         />

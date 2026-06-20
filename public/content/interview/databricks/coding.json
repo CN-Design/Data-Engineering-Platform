@@ -1,0 +1,668 @@
+[
+  {
+    "id": "databricks-iv-coding-1",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Create a managed Delta table `customers` (columns: customer_id INT, name STRING, email STRING, updated_at TIMESTAMP) and write an idempotent upsert that loads a daily staging batch. The staging data is in a temp view `staging_customers` with the same columns. Running the job twice on the same batch must not create duplicates or change results. Implement it in Delta SQL.",
+    "thoughtProcess": "The interviewer wants to see that I understand Delta Lake gives ACID transactions on the lakehouse and that MERGE is the standard upsert primitive. I would first restate idempotency: re-running the same input must converge to the same state. A plain INSERT is not idempotent because it appends duplicates; MERGE keyed on the primary key is, because it matches existing rows and updates instead of inserting. I would define the table with CREATE TABLE ... USING DELTA so it is a Delta table (Parquet plus a transaction log). Then I would MERGE on customer_id: WHEN MATCHED update the mutable columns, WHEN NOT MATCHED insert. I would mention that to avoid useless rewrites I can guard the update with a condition comparing updated_at so only genuinely newer rows are touched, which also keeps the job idempotent on replays.",
+    "solution": {
+      "code": "-- Create the Delta table once\nCREATE TABLE IF NOT EXISTS customers (\n  customer_id INT,\n  name        STRING,\n  email       STRING,\n  updated_at  TIMESTAMP\n) USING DELTA;\n\n-- Idempotent upsert from the staging view\nMERGE INTO customers AS t\nUSING staging_customers AS s\nON t.customer_id = s.customer_id\nWHEN MATCHED AND s.updated_at > t.updated_at THEN\n  UPDATE SET\n    t.name       = s.name,\n    t.email      = s.email,\n    t.updated_at = s.updated_at\nWHEN NOT MATCHED THEN\n  INSERT (customer_id, name, email, updated_at)\n  VALUES (s.customer_id, s.name, s.email, s.updated_at);",
+      "language": "sql"
+    },
+    "lineByLine": "CREATE TABLE IF NOT EXISTS ... USING DELTA defines a Delta-backed managed table and is safe to re-run. MERGE INTO customers AS t USING staging_customers AS s declares the target and source. ON t.customer_id = s.customer_id is the match key (the business primary key). WHEN MATCHED AND s.updated_at > t.updated_at THEN UPDATE only overwrites a row when the staged record is strictly newer, so replaying the same batch (equal timestamps) is a no-op and stays idempotent. WHEN NOT MATCHED THEN INSERT adds brand-new customers. Because matching is by key, a second run finds the rows already present and does nothing new.",
+    "timeComplexity": "MERGE scans the source and reads only the target files that may contain matching keys. Cost is dominated by a shuffle/join between source and target on customer_id and rewriting touched data files (copy-on-write). Roughly O(S + matched_target_files); avoid full-table rewrites by pruning/partitioning on the join key.",
+    "spaceComplexity": "O(S) for the source side of the join plus temporary space to rewrite the data files that contain matched rows. The Delta transaction log grows by one commit (a JSON action) per MERGE.",
+    "alternativeApproaches": [
+      {
+        "title": "PySpark DeltaTable.merge API",
+        "explanation": "The same operation expressed through the Python DeltaTable builder, useful when the upsert is part of a larger PySpark job or a foreachBatch streaming sink.",
+        "code": "from delta.tables import DeltaTable\ntgt = DeltaTable.forName(spark, \"customers\")\n(tgt.alias(\"t\")\n   .merge(staging.alias(\"s\"), \"t.customer_id = s.customer_id\")\n   .whenMatchedUpdateAll(condition=\"s.updated_at > t.updated_at\")\n   .whenNotMatchedInsertAll()\n   .execute())"
+      },
+      {
+        "title": "INSERT OVERWRITE with full snapshot",
+        "explanation": "If the staging set is a complete snapshot of all customers each day, you can simply INSERT OVERWRITE the table (or a partition). This is trivially idempotent and avoids MERGE join cost, but only works when the source is a full replacement, not a delta of changes."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What makes Delta MERGE atomic and how do concurrent writers behave?",
+        "answer": "Delta uses optimistic concurrency control backed by the transaction log. A MERGE reads a consistent snapshot, computes the new and removed files, then commits a single atomic transaction by writing a new log entry. Readers always see either the pre-MERGE or post-MERGE state, never a partial one. If two writers commit conflicting changes to overlapping files, the later commit detects the conflict at log-write time and fails with a ConcurrentModificationException, which the job should retry. Partitioning so writers touch disjoint files reduces conflicts."
+      },
+      {
+        "question": "If staging can itself contain duplicate customer_ids, why does MERGE fail and how do you fix it?",
+        "answer": "Delta MERGE raises an error if a single target row could match multiple source rows, because the result would be non-deterministic. Fix it by deduplicating the source first to one row per key, choosing the latest with a window: pick row_number() = 1 ordered by updated_at desc per customer_id, then MERGE the deduplicated source. This guarantees each target row has at most one matching source row."
+      }
+    ],
+    "tags": ["delta", "merge", "upsert", "idempotent", "sql", "beginner"]
+  },
+  {
+    "id": "databricks-iv-coding-2",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Implement Slowly Changing Dimension Type 2 on a Delta table `dim_customer` (columns: customer_id, name, address, is_current BOOLEAN, effective_from TIMESTAMP, effective_to TIMESTAMP) using a single MERGE. Incoming changes are in temp view `updates(customer_id, name, address, change_ts)`. When a tracked attribute changes, close the existing current row (set is_current = false, effective_to = change_ts) and insert a new current row. Use Delta SQL.",
+    "thoughtProcess": "SCD2 preserves history: instead of overwriting a dimension row, we expire the old version and add a new one. The classic challenge is that a single MERGE statement cannot both update the old row AND insert a new row for the same key in one pass. The standard trick is to widen the source so each changed key appears twice: once with a NULL merge key (which can never match, forcing an INSERT of the new version) and once with the real key (which matches, forcing the UPDATE that closes the old row). I would build that union in a subquery. The MERGE matches on customer_id only when the row is current and an attribute actually changed, so unchanged keys are skipped. I must also handle brand-new customers (insert with no prior version to close).",
+    "solution": {
+      "code": "MERGE INTO dim_customer AS t\nUSING (\n  -- Row 1: real key -> closes the old current row when attributes changed\n  SELECT u.customer_id AS merge_key, u.customer_id, u.name, u.address, u.change_ts\n  FROM updates u\n  UNION ALL\n  -- Row 2: NULL key -> never matches, forces INSERT of the new version\n  SELECT NULL AS merge_key, u.customer_id, u.name, u.address, u.change_ts\n  FROM updates u\n  JOIN dim_customer d\n    ON u.customer_id = d.customer_id AND d.is_current = true\n  WHERE u.name <> d.name OR u.address <> d.address\n) AS s\nON t.customer_id = s.merge_key AND t.is_current = true\nWHEN MATCHED AND (t.name <> s.name OR t.address <> s.address) THEN\n  UPDATE SET t.is_current = false, t.effective_to = s.change_ts\nWHEN NOT MATCHED THEN\n  INSERT (customer_id, name, address, is_current, effective_from, effective_to)\n  VALUES (s.customer_id, s.name, s.address, true, s.change_ts, NULL);",
+      "language": "sql"
+    },
+    "lineByLine": "The USING subquery produces two rows per changed customer. The first SELECT keeps the real customer_id as merge_key so it can MATCH the current row in the target. The second SELECT sets merge_key to NULL; NULL never equals anything in the ON clause, so it is guaranteed NOT MATCHED and triggers an insert of the new version. That second SELECT is filtered to only customers whose attributes actually changed (the join + WHERE), so unchanged rows generate no new version. ON t.customer_id = s.merge_key AND t.is_current = true restricts matching to the active row. WHEN MATCHED with the change predicate closes the old row (is_current = false, effective_to = change_ts). WHEN NOT MATCHED inserts the new current row (is_current = true, effective_from = change_ts, open-ended effective_to). Brand-new customers (not in dim) only appear via the first SELECT, are NOT MATCHED, and get inserted directly.",
+    "timeComplexity": "Two passes over the updates set plus a join to the current dimension rows for change detection, then a MERGE that rewrites the data files holding matched current rows. Dominated by shuffles for the join and the MERGE match; roughly O(U + current_dim_files_touched).",
+    "spaceComplexity": "O(U) for the doubled source (union all) plus rewrite space for the data files containing closed rows. History grows monotonically, so plan periodic OPTIMIZE and partitioning (e.g., by is_current or effective_from) for the ever-growing table.",
+    "alternativeApproaches": [
+      {
+        "title": "DLT APPLY CHANGES INTO with SCD TYPE 2",
+        "explanation": "Delta Live Tables can manage SCD2 declaratively. You declare APPLY CHANGES ... STORED AS SCD TYPE 2 with a key and sequence column, and DLT maintains __START_AT / __END_AT history and ordering for you, eliminating the hand-written double-MERGE.",
+        "code": "APPLY CHANGES INTO live.dim_customer\nFROM stream(live.updates)\nKEYS (customer_id)\nSEQUENCE BY change_ts\nSTORED AS SCD TYPE 2;"
+      },
+      {
+        "title": "Two-statement approach in a transaction-like sequence",
+        "explanation": "Run an UPDATE to expire changed current rows, then an INSERT for the new versions, wrapped so they commit together logically. Simpler to read but two commits means a brief window where a reader could see expired rows before the new versions land; the single MERGE avoids that by being one atomic commit."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why does the single-MERGE pattern need the NULL merge key trick?",
+        "answer": "A MERGE acts on each target row at most once per match: a matched row can be updated OR deleted, and an unmatched source row can be inserted, but you cannot update an existing version and insert a new version for the same key in one matched branch. By emitting two source rows per changed key, the real-key row matches and updates (closes) the old version, while the NULL-key row is forced unmatched and inserts the new version. This is the canonical way to express SCD2 as one atomic Delta transaction."
+      },
+      {
+        "question": "How would you make this idempotent against reprocessing the same change batch?",
+        "answer": "Add the change_ts (or a hash of the tracked attributes) to the change-detection predicate so a replay sees that the current row already reflects the change and produces no new version. Concretely, only expire/insert when the incoming attributes differ from the current row AND change_ts is newer than the current effective_from. A deterministic comparison means re-running the same batch leaves the dimension unchanged. You can also deduplicate the updates source to the latest change per key before merging."
+      }
+    ],
+    "tags": ["delta", "merge", "scd2", "dimensional-modeling", "sql", "advanced"]
+  },
+  {
+    "id": "databricks-iv-coding-3",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "You have a DataFrame `events(user_id INT, event_type STRING, payload STRING, event_ts TIMESTAMP)` with duplicate records produced by an at-least-once source. Keep exactly one record per (user_id, event_type) — the latest by event_ts. Write it in PySpark.",
+    "thoughtProcess": "This is deterministic deduplication by key. dropDuplicates(['user_id','event_type']) removes duplicates but does NOT guarantee which row survives, so it is wrong when I specifically need the latest. The correct tool is a window: partition by the key columns, order by event_ts descending, assign row_number, and keep rank 1. I should add a tiebreaker for equal timestamps so the result is fully deterministic. I would mention that the window forces a shuffle by the partition key plus a sort within each partition, and that a hot key (one user/event with many duplicates) is a skew risk.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\nfrom pyspark.sql.window import Window\n\nw = (Window\n     .partitionBy(\"user_id\", \"event_type\")\n     .orderBy(F.col(\"event_ts\").desc(), F.col(\"payload\").asc()))\n\nlatest = (events\n    .withColumn(\"rn\", F.row_number().over(w))\n    .filter(F.col(\"rn\") == 1)\n    .drop(\"rn\"))\n\nlatest.show()",
+      "language": "python"
+    },
+    "lineByLine": "Window.partitionBy('user_id','event_type') groups all duplicate candidates for a key together. orderBy(event_ts desc, payload asc) puts the most recent row first and uses payload as a deterministic tiebreaker for equal timestamps. row_number().over(w) numbers rows 1,2,3... within each partition. filter(rn == 1) keeps only the single latest row per key. drop('rn') removes the helper column. row_number (not rank/dense_rank) guarantees exactly one surviving row even on ties.",
+    "timeComplexity": "One shuffle to hash-partition by (user_id, event_type) plus an in-partition sort, so about O(N log N) per partition distributed across executors. The filter is a cheap local scan after the window.",
+    "spaceComplexity": "O(N) for the shuffled rows; each partition's rows must be sortable in memory or spill to disk. Skew on a hot key increases the largest partition's footprint.",
+    "alternativeApproaches": [
+      {
+        "title": "dropDuplicatesWithinWatermark / dropDuplicates for streaming",
+        "explanation": "In a streaming pipeline use dropDuplicates(['user_id','event_type']) with a watermark (dropDuplicatesWithinWatermark) so state for old keys is evicted. This deduplicates on arrival but does not pick the latest by a value column, so it suits idempotent event keys rather than 'newest wins'."
+      },
+      {
+        "title": "Aggregation with struct argmax",
+        "explanation": "Group by the key and take max of a struct that leads with event_ts, which carries the whole row of the max timestamp. Avoids a full sort by using a max aggregation, often cheaper than row_number.",
+        "code": "from pyspark.sql import functions as F\nlatest = (events\n  .groupBy(\"user_id\",\"event_type\")\n  .agg(F.max(F.struct(\"event_ts\",\"payload\")).alias(\"m\"))\n  .select(\"user_id\",\"event_type\",\"m.event_ts\",\"m.payload\"))"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why not just use dropDuplicates(['user_id','event_type'])?",
+        "answer": "dropDuplicates keeps an arbitrary row among the duplicates; Spark does not promise it is the latest by event_ts. The choice can even differ between runs depending on partitioning and task scheduling, so results are non-deterministic. When the requirement is 'latest wins', you must impose an explicit ordering, which is exactly what the row_number window or the struct-max aggregation provides."
+      },
+      {
+        "question": "How would you handle skew if one (user_id, event_type) has millions of duplicates?",
+        "answer": "The hot key concentrates all duplicates in one partition, causing a straggler task and possible spill. Mitigations: enable Adaptive Query Execution (spark.sql.adaptive.enabled and skewJoin), or pre-aggregate with the struct-max approach which combines partial maxes map-side so the shuffle carries only one row per key per partition. Salting is less applicable here since the partition key is the dedup key, but pre-combining before the final reduce is the main lever."
+      }
+    ],
+    "tags": ["deduplication", "window", "row_number", "pyspark", "beginner"]
+  },
+  {
+    "id": "databricks-iv-coding-4",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Set up an incremental ingestion job that continuously loads new JSON files landing in `s3://datalake/raw/orders/` into a Delta table `bronze_orders` using Databricks Auto Loader (cloudFiles). It must process only new files, infer and evolve schema, and be restartable. Write it in PySpark.",
+    "thoughtProcess": "Auto Loader is Databricks' incremental file ingestion engine. The key value is that it tracks which files it has already seen using a scalable file-notification/listing mechanism backed by RocksDB checkpoint state, so I do not re-read old files. I would configure format cloudFiles with cloudFiles.format json, point cloudFiles.schemaLocation at a stable path so inferred schema is persisted and can evolve, and set schema evolution mode to addNewColumns. I write as a streaming query with a checkpointLocation for exactly-once restartability, and use trigger availableNow for a batch-style incremental run (process all new files then stop) or a continuous trigger for always-on. I would write into the Delta table with .toTable.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\n\nbronze = (spark.readStream\n    .format(\"cloudFiles\")\n    .option(\"cloudFiles.format\", \"json\")\n    .option(\"cloudFiles.schemaLocation\", \"/mnt/chk/orders/_schema\")\n    .option(\"cloudFiles.schemaEvolutionMode\", \"addNewColumns\")\n    .option(\"cloudFiles.inferColumnTypes\", \"true\")\n    .load(\"s3://datalake/raw/orders/\")\n    .withColumn(\"_ingest_ts\", F.current_timestamp())\n    .withColumn(\"_source_file\", F.col(\"_metadata.file_path\")))\n\n(bronze.writeStream\n    .format(\"delta\")\n    .option(\"checkpointLocation\", \"/mnt/chk/orders/_checkpoint\")\n    .option(\"mergeSchema\", \"true\")\n    .trigger(availableNow=True)\n    .toTable(\"bronze_orders\"))",
+      "language": "python"
+    },
+    "lineByLine": "format('cloudFiles') selects Auto Loader. cloudFiles.format json tells it the source files are JSON. cloudFiles.schemaLocation persists the inferred schema so the stream remembers columns across restarts and can evolve them. schemaEvolutionMode addNewColumns means when a new field appears the stream fails once, records the new column, and succeeds on restart, so no data is lost. inferColumnTypes infers types rather than treating everything as string. load points at the input directory; Auto Loader internally tracks processed files. _metadata.file_path captures provenance. The writeStream sink writes Delta; checkpointLocation stores stream progress and file-tracking state for exactly-once, restartable processing. mergeSchema true lets the target Delta table accept the evolved schema. trigger(availableNow=True) processes all currently available new files in micro-batches then stops, ideal for scheduled incremental loads. toTable registers the output as the managed table bronze_orders.",
+    "timeComplexity": "Per run, work is proportional to the bytes in newly arrived files only, not the whole directory, because Auto Loader skips already-processed files via its checkpoint. File discovery is O(new_files) with notification mode, avoiding repeated full directory listings.",
+    "spaceComplexity": "O(tracked_file_metadata) held in the RocksDB-backed checkpoint state, which grows with the number of ingested files (compacted periodically). Plus transient memory for the current micro-batch.",
+    "alternativeApproaches": [
+      {
+        "title": "COPY INTO (SQL)",
+        "explanation": "For simpler, periodic incremental loads COPY INTO offers idempotent, exactly-once file ingestion in pure SQL without managing a streaming query. It tracks loaded files internally too. Auto Loader scales better to very high file counts and supports continuous streaming.",
+        "code": "COPY INTO bronze_orders\nFROM 's3://datalake/raw/orders/'\nFILEFORMAT = JSON\nFORMAT_OPTIONS ('inferSchema' = 'true')\nCOPY_OPTIONS ('mergeSchema' = 'true');"
+      },
+      {
+        "title": "File-notification mode for scale",
+        "explanation": "Set cloudFiles.useNotifications=true so Auto Loader uses the cloud provider's event notifications (e.g., SQS/Event Grid) instead of directory listing. This is essential when millions of files land, since listing becomes the bottleneck."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How does Auto Loader guarantee each file is processed exactly once across restarts?",
+        "answer": "It maintains durable state in the checkpoint location (a RocksDB key-value store) recording every file it has committed. On restart it reads the checkpoint, skips files already marked processed, and resumes the micro-batch that was in flight using the structured-streaming offset/commit protocol. Combined with the Delta sink's atomic commits, the end-to-end pipeline is exactly-once even after failures."
+      },
+      {
+        "question": "What is the rescued data column and why does it matter?",
+        "answer": "Auto Loader can add a _rescued_data column that captures fields that did not match the inferred schema or could not be parsed into the target type, instead of dropping them or failing. This prevents silent data loss during schema drift: malformed or unexpected values are preserved as JSON in _rescued_data so you can inspect and reprocess them later. You control it with cloudFiles.rescuedDataColumn."
+      }
+    ],
+    "tags": ["auto-loader", "cloudfiles", "incremental", "streaming", "schema-evolution", "pyspark", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-5",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Build a bronze-to-silver transformation. Bronze Delta table `bronze_orders` holds raw, possibly-dirty order events (order_id STRING, customer_id STRING, amount STRING, status STRING, event_ts STRING, plus _rescued_data). Produce `silver_orders` that: casts types, drops rows with null order_id, normalizes status to lowercase, filters out negative amounts, and keeps the latest record per order_id. Write it in PySpark.",
+    "thoughtProcess": "The silver layer enforces a clean, typed, deduplicated contract for downstream consumers. I would walk through the cleaning steps in order: cast string amount and event_ts to proper types so arithmetic and ordering work; drop rows missing the business key order_id since they are unusable; normalize status casing for consistent grouping; filter negative amounts as invalid; then deduplicate to the latest record per order_id with a window. I would emphasize doing the casts before the filters so numeric and timestamp predicates are correct, and writing the result as a Delta table so silver is itself transactional and queryable.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\nfrom pyspark.sql.window import Window\n\nbronze = spark.read.table(\"bronze_orders\")\n\ncleaned = (bronze\n    .withColumn(\"amount\", F.col(\"amount\").cast(\"double\"))\n    .withColumn(\"event_ts\", F.to_timestamp(\"event_ts\"))\n    .withColumn(\"status\", F.lower(F.trim(F.col(\"status\"))))\n    .filter(F.col(\"order_id\").isNotNull())\n    .filter(F.col(\"amount\") >= 0))\n\nw = Window.partitionBy(\"order_id\").orderBy(F.col(\"event_ts\").desc())\nsilver = (cleaned\n    .withColumn(\"rn\", F.row_number().over(w))\n    .filter(F.col(\"rn\") == 1)\n    .drop(\"rn\", \"_rescued_data\"))\n\n(silver.write.format(\"delta\").mode(\"overwrite\")\n    .option(\"overwriteSchema\", \"true\")\n    .saveAsTable(\"silver_orders\"))",
+      "language": "python"
+    },
+    "lineByLine": "spark.read.table reads the bronze Delta table. cast('double') turns the raw string amount into a number so comparisons and sums work; to_timestamp parses event_ts into a real timestamp for ordering. lower(trim(status)) normalizes casing and strips stray whitespace. filter(order_id.isNotNull()) drops rows without the key. filter(amount >= 0) removes invalid negatives (rows where the cast failed become null and are also dropped here). The window partitions by order_id and orders by event_ts desc; row_number == 1 keeps the latest version of each order. drop removes the helper column and the bronze-only _rescued_data. write ... saveAsTable persists silver as a Delta table; overwriteSchema allows the typed schema to replace the raw one.",
+    "timeComplexity": "A scan of bronze, narrow transformations (casts/filters are O(N) and pipelined without shuffle), then one shuffle plus in-partition sort for the dedup window, about O(N log N) per partition. The write rewrites the silver files.",
+    "spaceComplexity": "O(N) for the shuffled rows in the window stage; the narrow transforms add negligible memory. Output size is at most one row per distinct order_id.",
+    "alternativeApproaches": [
+      {
+        "title": "Incremental silver via MERGE from a stream",
+        "explanation": "Instead of full overwrite, read bronze as a stream and MERGE deduplicated micro-batches into silver in foreachBatch, so silver updates incrementally and idempotently rather than recomputing the whole table each run.",
+        "code": "def upsert(batch, _):\n    from delta.tables import DeltaTable\n    w = Window.partitionBy(\"order_id\").orderBy(F.col(\"event_ts\").desc())\n    latest = batch.withColumn(\"rn\", F.row_number().over(w)).filter(\"rn=1\").drop(\"rn\")\n    (DeltaTable.forName(spark,\"silver_orders\").alias(\"t\")\n      .merge(latest.alias(\"s\"),\"t.order_id=s.order_id\")\n      .whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())"
+      },
+      {
+        "title": "Pure Spark SQL transformation",
+        "explanation": "Express the same cleaning and dedup in a single CREATE OR REPLACE TABLE ... AS SELECT with a QUALIFY clause for the window filter, which many teams find more maintainable than chained DataFrame calls."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why do the casts before the filters matter?",
+        "answer": "Filtering amount >= 0 only makes sense on a numeric column; if amount were still a string, the comparison would be lexicographic or fail. Casting first also surfaces bad data: values that cannot parse become null, and the subsequent filters (amount >= 0, and any not-null checks) cleanly remove them. Ordering by event_ts in the window likewise requires it to be a real timestamp, not a string, otherwise 'latest' is wrong for non-ISO formats."
+      },
+      {
+        "question": "How would you add data-quality enforcement so bad rows are quarantined rather than silently dropped?",
+        "answer": "Tag rows with a validity flag instead of dropping them: add a column like is_valid using the same predicates, then split into silver_orders (valid) and a quarantine table (invalid) so nothing is lost and failures are auditable. In a Delta Live Tables pipeline you would use @dlt.expect_or_drop or expect_all with EXPECT constraints, which records pass/fail metrics per expectation and can drop, quarantine, or fail the pipeline based on policy."
+      }
+    ],
+    "tags": ["medallion", "bronze-silver", "data-cleaning", "deduplication", "delta", "pyspark", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-6",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Create a Delta Live Tables (DLT) pipeline in Python with three layers: a streaming bronze table that ingests raw orders with Auto Loader, a silver table that cleans the data and enforces quality expectations (amount must be positive, order_id must not be null), and a gold aggregate of total revenue per customer. Drop rows failing the positive-amount rule and fail the pipeline if order_id is ever null. Use the DLT decorators.",
+    "thoughtProcess": "DLT is Databricks' declarative pipeline framework: you define tables as functions decorated with @dlt.table and DLT manages dependencies, orchestration, incremental processing, and data-quality tracking. I would build the medallion layers as functions returning DataFrames. Bronze uses spark.readStream with cloudFiles. Silver references the bronze table via dlt.read_stream and attaches expectations: @dlt.expect_or_drop to drop rows with non-positive amount, and @dlt.expect_or_fail to halt the pipeline on null order_id (a hard contract). Gold reads silver and aggregates. I would note that DLT records expectation pass/fail metrics automatically and resolves the table dependency graph from the dlt.read calls.",
+    "solution": {
+      "code": "import dlt\nfrom pyspark.sql import functions as F\n\n@dlt.table(name=\"bronze_orders\", comment=\"Raw orders ingested via Auto Loader\")\ndef bronze_orders():\n    return (spark.readStream\n        .format(\"cloudFiles\")\n        .option(\"cloudFiles.format\", \"json\")\n        .option(\"cloudFiles.schemaLocation\", \"/mnt/dlt/schema/orders\")\n        .load(\"s3://datalake/raw/orders/\"))\n\n@dlt.table(name=\"silver_orders\", comment=\"Cleaned, validated orders\")\n@dlt.expect_or_drop(\"positive_amount\", \"amount > 0\")\n@dlt.expect_or_fail(\"valid_order_id\", \"order_id IS NOT NULL\")\ndef silver_orders():\n    return (dlt.read_stream(\"bronze_orders\")\n        .withColumn(\"amount\", F.col(\"amount\").cast(\"double\"))\n        .withColumn(\"event_ts\", F.to_timestamp(\"event_ts\"))\n        .select(\"order_id\", \"customer_id\", \"amount\", \"event_ts\"))\n\n@dlt.table(name=\"gold_revenue_per_customer\", comment=\"Total revenue per customer\")\ndef gold_revenue_per_customer():\n    return (dlt.read(\"silver_orders\")\n        .groupBy(\"customer_id\")\n        .agg(F.sum(\"amount\").alias(\"total_revenue\"),\n             F.count(\"*\").alias(\"order_count\")))",
+      "language": "python"
+    },
+    "lineByLine": "@dlt.table registers each function's returned DataFrame as a managed Delta table in the pipeline; DLT infers the dependency order from the dlt.read calls. bronze_orders uses readStream + cloudFiles for incremental Auto Loader ingestion. On silver, @dlt.expect_or_drop('positive_amount','amount > 0') drops any row failing the predicate and counts the drops as a quality metric. @dlt.expect_or_fail('valid_order_id','order_id IS NOT NULL') is a hard expectation: if any row violates it, the pipeline update fails, enforcing the non-null contract. dlt.read_stream('bronze_orders') consumes bronze incrementally; the casts and select clean and project the data. gold_revenue_per_customer uses dlt.read (batch read of the full silver table) and aggregates sum and count per customer. DLT handles checkpoints, table creation, and incremental refresh automatically.",
+    "timeComplexity": "Bronze and silver process only newly arrived data per update (streaming/incremental), so cost scales with new records. Gold's groupBy is a full aggregation over silver with one shuffle on customer_id, O(N) with a shuffle; if defined as a materialized view DLT recomputes or incrementally maintains it per its planner.",
+    "spaceComplexity": "Streaming state and Auto Loader file-tracking in the managed checkpoint storage, plus the Delta storage for each layer. Gold output is O(distinct customers).",
+    "alternativeApproaches": [
+      {
+        "title": "SQL DLT pipeline",
+        "explanation": "The same pipeline can be written in DLT SQL using CREATE STREAMING LIVE TABLE and CONSTRAINT ... EXPECT ... ON VIOLATION DROP ROW / FAIL UPDATE, which teams comfortable with SQL often prefer.",
+        "code": "CREATE STREAMING LIVE TABLE silver_orders (\n  CONSTRAINT positive_amount EXPECT (amount > 0) ON VIOLATION DROP ROW,\n  CONSTRAINT valid_order_id EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE\n) AS SELECT order_id, customer_id, CAST(amount AS DOUBLE) amount\n  FROM STREAM(live.bronze_orders);"
+      },
+      {
+        "title": "expect (warn-only) with quarantine",
+        "explanation": "Use plain @dlt.expect to record violations without dropping, then route failing rows to a quarantine table by inverting the predicate in a separate @dlt.table. This keeps all data while still surfacing quality metrics in the DLT UI."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What is the difference between expect, expect_or_drop, and expect_or_fail?",
+        "answer": "@dlt.expect records the violation count as a metric but keeps the bad rows (warn-only). @dlt.expect_or_drop removes rows that fail the predicate from the output while still counting them. @dlt.expect_or_fail aborts the entire pipeline update when any row violates the constraint, enforcing a strict contract where bad data must never propagate. You pick based on how critical the rule is: soft monitoring, automatic cleansing, or a hard stop."
+      },
+      {
+        "question": "How does DLT decide what to recompute and why use STREAMING vs materialized tables?",
+        "answer": "DLT builds a dependency DAG from the dlt.read/read_stream references. A streaming table (readStream) processes only new input incrementally and is append-oriented, ideal for bronze/silver ingestion. A materialized view / live table (batch read) reflects the full current result and DLT may fully recompute or incrementally maintain it based on the query and Enzyme optimization. You choose streaming when the source is append-only and you want low-latency incremental processing, and materialized when you need a complete, consistent aggregate like the gold revenue table."
+      }
+    ],
+    "tags": ["dlt", "delta-live-tables", "expectations", "data-quality", "medallion", "pyspark", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-7",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "You receive a change-data-capture stream `cdc_customers(customer_id, name, email, operation STRING, sequence_num LONG)` where operation is INSERT, UPDATE, or DELETE, and sequence_num orders changes per key. Use Delta Live Tables APPLY CHANGES INTO to materialize a current-state table `customers` that applies inserts/updates, processes deletes, and handles out-of-order events. Write it in DLT SQL.",
+    "thoughtProcess": "Hand-writing CDC merge logic that also handles deletes and out-of-order events is error-prone. DLT's APPLY CHANGES INTO (also called the CDC API) is purpose-built for this. I declare the target, the source stream, the KEYS that identify a row, a SEQUENCE BY column to order changes so late/out-of-order events are applied correctly, and APPLY AS DELETE WHEN to recognize delete operations. I also list columns to ignore from the projection (the operation flag). By default it produces SCD Type 1 (current state). I would mention that DLT uses sequence_num to drop stale updates that arrive after a newer change.",
+    "solution": {
+      "code": "CREATE STREAMING LIVE TABLE customers;\n\nAPPLY CHANGES INTO live.customers\nFROM stream(live.cdc_customers)\nKEYS (customer_id)\nAPPLY AS DELETE WHEN operation = ''DELETE''\nSEQUENCE BY sequence_num\nCOLUMNS * EXCEPT (operation, sequence_num)\nSTORED AS SCD TYPE 1;",
+      "language": "sql"
+    },
+    "lineByLine": "CREATE STREAMING LIVE TABLE customers declares the target current-state table whose contents DLT will maintain. APPLY CHANGES INTO live.customers names that target. FROM stream(live.cdc_customers) is the CDC source as a streaming input. KEYS (customer_id) identifies the primary key used to match existing rows. APPLY AS DELETE WHEN operation = 'DELETE' tells DLT that rows with that flag mean the key should be removed (tombstoned) from the current state. SEQUENCE BY sequence_num is the ordering column: DLT applies changes in this order and discards any change that is older than the row's already-applied sequence, correctly handling out-of-order arrival. COLUMNS * EXCEPT (operation, sequence_num) projects all data columns but excludes the CDC control columns from the output. STORED AS SCD TYPE 1 keeps only the current version per key (overwrite semantics), as opposed to SCD TYPE 2 which would retain history.",
+    "timeComplexity": "Incremental: each micro-batch processes only newly arrived CDC records, merging them into the target by key. Cost per batch is proportional to the batch size plus the matched target files rewritten, not the full table.",
+    "spaceComplexity": "DLT keeps streaming state to track the latest applied sequence per key (bounded by active keys) plus Delta storage for the target. State is checkpointed in managed storage.",
+    "alternativeApproaches": [
+      {
+        "title": "Python DLT dlt.apply_changes",
+        "explanation": "The same CDC logic in the Python DLT API, convenient when the rest of the pipeline is Python.",
+        "code": "import dlt\ndlt.create_streaming_table(\"customers\")\ndlt.apply_changes(\n  target=\"customers\",\n  source=\"cdc_customers\",\n  keys=[\"customer_id\"],\n  sequence_by=\"sequence_num\",\n  apply_as_deletes=\"operation = 'DELETE'\",\n  except_column_list=[\"operation\",\"sequence_num\"],\n  stored_as_scd_type=1)"
+      },
+      {
+        "title": "Manual foreachBatch MERGE",
+        "explanation": "Without DLT, implement CDC by streaming the source and, in foreachBatch, deduplicating to the latest sequence per key then running a Delta MERGE with WHEN MATCHED AND op='DELETE' THEN DELETE, WHEN MATCHED THEN UPDATE, WHEN NOT MATCHED AND op<>'DELETE' THEN INSERT. More code and you must manage ordering yourself."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How does APPLY CHANGES INTO handle out-of-order events?",
+        "answer": "The SEQUENCE BY column defines the authoritative ordering per key. DLT records the highest sequence already applied to each key; when a record arrives, it is applied only if its sequence is newer, otherwise it is treated as stale and ignored. So if an UPDATE with sequence 5 arrives before a later-but-earlier-numbered record (sequence 3) for the same key, the sequence-3 record is discarded and the table stays consistent regardless of arrival order."
+      },
+      {
+        "question": "How would you switch this to keep full history instead of current state?",
+        "answer": "Change STORED AS SCD TYPE 1 to STORED AS SCD TYPE 2. DLT then retains every version of each key, adding __START_AT and __END_AT columns derived from the SEQUENCE BY value to mark each version's validity window. Deletes close the current version rather than physically removing history. This gives a full audit trail without hand-writing the double-MERGE expiry logic."
+      }
+    ],
+    "tags": ["dlt", "apply-changes", "cdc", "scd", "delta", "sql", "advanced"]
+  },
+  {
+    "id": "databricks-iv-coding-8",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "A nightly job accidentally overwrote critical rows in the Delta table `accounts`. Using Delta time travel, (a) inspect the table history, (b) query the table as it existed before the bad job, (c) compare row counts between the current version and the good version, and (d) restore the table to the good version. Write it in Delta SQL.",
+    "thoughtProcess": "Delta's transaction log keeps a versioned history, so I can read prior snapshots by version number or timestamp. I would first run DESCRIBE HISTORY to find the version produced just before the bad operation and its timestamp/operation metadata. Then I read that older version with VERSION AS OF (or TIMESTAMP AS OF) to verify it has the expected data. I compare counts by selecting from both versions. Finally, RESTORE TABLE rolls the table back to the good version as a new commit (it does not delete history, so it is itself reversible). I would caution that VACUUM with a short retention could have removed the old files, which would break time travel beyond the retention window.",
+    "solution": {
+      "code": "-- (a) Inspect history to find the good version\nDESCRIBE HISTORY accounts;\n\n-- (b) Query the table as of the good version (say version 41)\nSELECT * FROM accounts VERSION AS OF 41;\n-- or by timestamp\nSELECT * FROM accounts TIMESTAMP AS OF ''2026-06-19T23:00:00'';\n\n-- (c) Compare row counts between current and good version\nSELECT\n  (SELECT count(*) FROM accounts)                AS current_count,\n  (SELECT count(*) FROM accounts VERSION AS OF 41) AS good_count;\n\n-- (d) Restore the table to the good version (new commit, reversible)\nRESTORE TABLE accounts TO VERSION AS OF 41;",
+      "language": "sql"
+    },
+    "lineByLine": "DESCRIBE HISTORY accounts lists every commit with its version, timestamp, operation (WRITE, MERGE, etc.), and operation parameters, so you can identify the last good version before the bad overwrite. SELECT ... VERSION AS OF 41 reads the immutable snapshot at version 41; TIMESTAMP AS OF does the same by wall-clock time, resolving to the latest commit at or before that time. The count comparison subqueries read both the live table and version 41 in one statement to quantify the damage. RESTORE TABLE ... TO VERSION AS OF 41 sets the table contents back to version 41 by writing a new commit that re-references the old files; history is preserved so you can RESTORE forward again if needed.",
+    "timeComplexity": "DESCRIBE HISTORY is metadata-only (reads the log), effectively O(commits). Time-travel SELECTs scan the data files referenced by that snapshot, same cost as a normal query of that size. RESTORE is a metadata commit referencing existing files, so it is fast and does not rewrite data.",
+    "spaceComplexity": "Negligible extra storage: time travel reuses already-stored Parquet files tracked by the log; RESTORE adds one log commit. Storage only grows if old files are retained (controlled by retention/VACUUM).",
+    "alternativeApproaches": [
+      {
+        "title": "PySpark time travel read",
+        "explanation": "Read a historical version programmatically for diffing or backfill in a job.",
+        "code": "good = spark.read.format(\"delta\").option(\"versionAsOf\", 41).table(\"accounts\")\ncurrent = spark.read.table(\"accounts\")\nprint(good.count(), current.count())\n# diff: rows present in good but missing now\ngood.exceptAll(current).show()"
+      },
+      {
+        "title": "Selective recovery with MERGE instead of full RESTORE",
+        "explanation": "If only some rows were corrupted and newer good changes also exist, do not full-restore. Instead MERGE the affected rows from the historical version (VERSION AS OF 41) back into the current table keyed on the primary key, repairing only the damaged rows while keeping legitimate later updates."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What can prevent time travel from reaching an old version?",
+        "answer": "VACUUM physically deletes data files no longer referenced by the current version once they are older than the retention threshold (default 7 days). If you VACUUM with a short retention, the Parquet files backing older versions are removed, and time-travel queries to those versions fail because the data is gone even though the log entry remains. Keep an adequate delta.deletedFileRetentionDuration / logRetentionDuration if you need a longer recovery window."
+      },
+      {
+        "question": "How is RESTORE different from simply re-inserting the old data?",
+        "answer": "RESTORE is a metadata operation: it commits a new version whose file list matches the target version, reusing the existing Parquet files without reading or rewriting data, so it is fast and atomic. Re-inserting old data would scan and rewrite all rows, cost full I/O, possibly create duplicates, and not cleanly reproduce the exact prior state. RESTORE also keeps the table's history intact, so the restore itself is just another versioned commit you can undo."
+      }
+    ],
+    "tags": ["delta", "time-travel", "restore", "versioning", "recovery", "sql", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-9",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Query performance on the Delta table `events` (~2 TB, queried mostly by event_date and filtered by device_id) has degraded due to many small files from streaming writes. Write the Delta SQL to (a) compact small files with OPTIMIZE, (b) co-locate data by the high-cardinality filter column using ZORDER, and (c) explain when each helps. Also show how to enable auto compaction for future writes.",
+    "thoughtProcess": "Two distinct problems. The small-file problem hurts because each file has read overhead and metadata; OPTIMIZE bin-packs many small files into fewer large ones (target ~1 GB), reducing task count and listing overhead. The second problem is data skipping: queries filter by device_id, a high-cardinality column, so I want related device_id values physically clustered so Delta's min/max file statistics can skip irrelevant files. ZORDER BY device_id multi-dimensionally clusters the data on that column. I would run OPTIMIZE with a WHERE on recent partitions to limit cost, and enable autoOptimize so streaming writes self-compact going forward, reducing manual maintenance.",
+    "solution": {
+      "code": "-- (a) Compact small files (optionally scope to recent partitions)\nOPTIMIZE events\nWHERE event_date >= ''2026-06-01'';\n\n-- (b) Compact AND cluster by the high-cardinality filter column\nOPTIMIZE events\nWHERE event_date >= ''2026-06-01''\nZORDER BY (device_id);\n\n-- (c) Enable auto compaction + optimized writes for future writes\nALTER TABLE events SET TBLPROPERTIES (\n  ''delta.autoOptimize.optimizeWrite'' = ''true'',\n  ''delta.autoOptimize.autoCompact''  = ''true''\n);",
+      "language": "sql"
+    },
+    "lineByLine": "OPTIMIZE events ... WHERE bin-packs the small files within the matched partitions into larger files, scoping by event_date so you only rewrite recent data instead of the whole 2 TB. Adding ZORDER BY (device_id) does the same compaction but additionally sorts and interleaves rows so that rows with similar device_id land in the same files; this tightens the per-file min/max statistics on device_id, letting the query engine skip files that cannot contain a queried device_id (data skipping). ALTER TABLE ... SET TBLPROPERTIES turns on optimizeWrite (Spark shuffles before writing to produce fewer, larger files) and autoCompact (small files are compacted automatically after writes), so future streaming writes do not regenerate the small-file problem.",
+    "timeComplexity": "OPTIMIZE reads and rewrites the matched files, so it is roughly O(bytes in scoped partitions). ZORDER adds a sort/interleave step over those rows, increasing CPU but bounded to the same data. It is a one-time/maintenance cost amortized over many faster subsequent reads.",
+    "spaceComplexity": "Transient space to rewrite files (old files remain until VACUUM). Net storage is roughly unchanged or slightly smaller after compaction; the log gains one commit recording removed and added files.",
+    "alternativeApproaches": [
+      {
+        "title": "Liquid Clustering",
+        "explanation": "On newer Delta, replace partitioning + ZORDER with Liquid Clustering (CLUSTER BY), which adaptively clusters data on chosen keys without rigid partition boundaries and avoids re-running ZORDER. It handles skew and changing query patterns better.",
+        "code": "ALTER TABLE events CLUSTER BY (device_id, event_date);\nOPTIMIZE events;"
+      },
+      {
+        "title": "Partition pruning via good partition design",
+        "explanation": "Partitioning by event_date already enables coarse pruning by date. For the device_id filter, ZORDER (or clustering) within partitions handles the fine-grained skipping. Avoid partitioning by high-cardinality device_id directly, which would create millions of tiny partitions and worsen the small-file problem."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How does ZORDER actually speed up the device_id filter?",
+        "answer": "Delta stores min/max statistics per data file for each column. When a query filters device_id = X, the engine consults these stats and skips any file whose [min,max] range for device_id excludes X (data skipping). Before ZORDER, device_id values are scattered across all files, so every file's range likely spans X and nothing is skipped. ZORDER physically clusters similar device_id values together, so each file covers a narrow device_id range and the engine can prune the vast majority of files, reading far less data."
+      },
+      {
+        "question": "Why prefer auto compaction over manual OPTIMIZE for a streaming table?",
+        "answer": "Streaming continuously produces many small files between manual OPTIMIZE runs, so read performance degrades during the gaps and a periodic full OPTIMIZE is expensive. autoCompact and optimizeWrite address it inline: optimizeWrite reduces the number of files written per micro-batch, and autoCompact triggers small compactions automatically when a partition accumulates too many small files. This keeps file sizes healthy continuously with less operational overhead, though you may still run periodic ZORDER for clustering."
+      }
+    ],
+    "tags": ["delta", "optimize", "zorder", "small-files", "performance", "data-skipping", "sql", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-10",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "A downstream silver job must consume only the rows that changed in the bronze Delta table `bronze_inventory` since it last ran. Enable Change Data Feed on the table, then read the changes (inserts, updates, deletes) between two versions. Show how to read CDF in both SQL (table_changes) and PySpark (readChangeFeed), and explain the metadata columns.",
+    "thoughtProcess": "Change Data Feed (CDF) lets a Delta table emit row-level changes so consumers can do incremental processing without recomputing everything. First it must be enabled (TBLPROPERTIES delta.enableChangeDataFeed = true) so Delta records change events going forward. Then the consumer reads changes between a start and end version (or timestamps) using table_changes() in SQL or .option('readChangeFeed','true') in PySpark. The output adds _change_type (insert / update_preimage / update_postimage / delete), _commit_version, and _commit_timestamp. For an incremental job I would track the last processed version, read from last+1 to the current version, and typically keep only update_postimage and insert rows when applying to a current-state target.",
+    "solution": {
+      "code": "-- Enable CDF on the table (records changes from now on)\nALTER TABLE bronze_inventory\nSET TBLPROPERTIES (delta.enableChangeDataFeed = true);\n\n-- SQL: read row-level changes between version 10 and 25\nSELECT _change_type, _commit_version, _commit_timestamp, *\nFROM table_changes(''bronze_inventory'', 10, 25)\nWHERE _change_type IN (''insert'', ''update_postimage'');",
+      "language": "sql"
+    },
+    "lineByLine": "ALTER TABLE ... SET TBLPROPERTIES (delta.enableChangeDataFeed = true) turns on CDF; Delta then records the row-level diffs for each subsequent commit (changes before enabling are not captured). table_changes('bronze_inventory', 10, 25) returns every row change between version 10 and version 25 inclusive. The added metadata columns describe each change: _change_type is one of insert, delete, update_preimage (the row's old values), or update_postimage (the new values); _commit_version is the table version that produced the change; _commit_timestamp is when that commit happened. Filtering to insert and update_postimage keeps only the new state of changed rows, which is what you apply to a current-state silver table; you would also handle delete rows to remove keys.",
+    "timeComplexity": "Reading CDF scans only the change files for the requested version range, so cost is proportional to the volume of changes between versions, not the whole table. This is the core efficiency win versus full recomputation.",
+    "spaceComplexity": "Delta stores extra change-data files (under _change_data) for each commit while CDF is enabled, adding storage proportional to the change volume. The reader materializes only the change rows it consumes.",
+    "alternativeApproaches": [
+      {
+        "title": "PySpark readChangeFeed (often inside foreachBatch)",
+        "explanation": "Read CDF programmatically, frequently streaming it to drive an incremental MERGE into a downstream table.",
+        "code": "changes = (spark.read.format(\"delta\")\n    .option(\"readChangeFeed\", \"true\")\n    .option(\"startingVersion\", 10)\n    .option(\"endingVersion\", 25)\n    .table(\"bronze_inventory\"))\nchanges.filter(\"_change_type in ('insert','update_postimage')\").show()"
+      },
+      {
+        "title": "Streaming CDF",
+        "explanation": "Use readStream with readChangeFeed and startingVersion to continuously consume changes as they commit, checkpointing progress so the consumer always picks up from the last processed version without manual bookkeeping."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What is the difference between update_preimage and update_postimage?",
+        "answer": "When a row is updated, CDF emits two records: update_preimage carries the row's values before the change, and update_postimage carries the values after. This lets consumers see exactly what changed (for auditing, computing deltas, or reversing). For applying current state downstream you usually keep only update_postimage (and insert) and ignore preimage; for change auditing you keep both."
+      },
+      {
+        "question": "How would you build a reliable incremental pipeline on top of CDF?",
+        "answer": "Persist the last successfully processed _commit_version (for example in a control table or use the streaming checkpoint). On each run read table_changes/readChangeFeed from last_version + 1 to the current table version, then apply the changes idempotently to the target with a MERGE keyed on the primary key (WHEN MATCHED AND _change_type='delete' THEN DELETE, WHEN MATCHED THEN UPDATE, WHEN NOT MATCHED THEN INSERT). Commit the new high-water version only after the MERGE succeeds so a failure simply reprocesses the same range, giving exactly-once-style semantics."
+      }
+    ],
+    "tags": ["delta", "change-data-feed", "cdf", "incremental", "table_changes", "sql", "advanced"]
+  },
+  {
+    "id": "databricks-iv-coding-11",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Given `sales(region STRING, product STRING, revenue DOUBLE, sale_date DATE)`, return the top 3 products by total revenue within each region. Write it in Spark SQL and handle ties so exactly the top 3 ranks are returned.",
+    "thoughtProcess": "This is a classic top-N-per-group problem. The reasoning: first aggregate revenue per (region, product), then rank products within each region by total revenue descending, then keep ranks <= 3. The choice of window function matters for ties: ROW_NUMBER gives a strict top-3 (arbitrary tie-break), RANK keeps ties but can return more than 3 rows, DENSE_RANK keeps the top 3 distinct revenue levels. The question says exactly the top 3 ranks, so I would use ROW_NUMBER for exactly 3 rows, or note RANK/DENSE_RANK if ties should all be included. I would use the QUALIFY clause (supported in Databricks SQL) to filter on the window result cleanly, and mention the shuffle from the partition-by.",
+    "solution": {
+      "code": "WITH product_totals AS (\n  SELECT region, product, SUM(revenue) AS total_revenue\n  FROM sales\n  GROUP BY region, product\n)\nSELECT region, product, total_revenue, rnk\nFROM (\n  SELECT region, product, total_revenue,\n         ROW_NUMBER() OVER (\n           PARTITION BY region\n           ORDER BY total_revenue DESC, product ASC\n         ) AS rnk\n  FROM product_totals\n)\nWHERE rnk <= 3\nORDER BY region, rnk;",
+      "language": "sql"
+    },
+    "lineByLine": "The product_totals CTE aggregates revenue to one row per (region, product) with SUM, which is the quantity we rank on. The inner query applies ROW_NUMBER over a window partitioned by region (so ranking restarts per region) and ordered by total_revenue descending, with product as a deterministic tiebreaker so the result is stable across runs. ROW_NUMBER assigns 1..N within each region. The outer WHERE rnk <= 3 keeps exactly the top three products per region (no more, even on ties). ORDER BY region, rnk presents results grouped and ranked.",
+    "timeComplexity": "One shuffle and aggregation for the GROUP BY (O(N) with a shuffle on region+product), then a second shuffle for the window partition by region plus an in-partition sort, about O(G log G) per region where G is products per region. Dominated by the two shuffles.",
+    "spaceComplexity": "O(G) per region partition held during the window sort; total intermediate is O(distinct region-product pairs). Output is at most 3 rows per region.",
+    "alternativeApproaches": [
+      {
+        "title": "QUALIFY clause (Databricks SQL)",
+        "explanation": "Databricks SQL supports QUALIFY, which filters on window results without a wrapping subquery, making top-N queries far more concise.",
+        "code": "SELECT region, product, SUM(revenue) AS total_revenue\nFROM sales\nGROUP BY region, product\nQUALIFY ROW_NUMBER() OVER (PARTITION BY region ORDER BY SUM(revenue) DESC) <= 3;"
+      },
+      {
+        "title": "RANK / DENSE_RANK for inclusive ties",
+        "explanation": "If business rules say ties at rank 3 should all be returned, swap ROW_NUMBER for RANK (returns all rows tied at the boundary, possibly more than 3) or DENSE_RANK (top 3 distinct revenue values). The function choice encodes the tie policy."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "When would you choose ROW_NUMBER vs RANK vs DENSE_RANK here?",
+        "answer": "ROW_NUMBER gives a strict, exact count: precisely 3 rows per region even if revenues tie, with the tie broken by your ORDER BY. RANK assigns the same rank to ties and skips subsequent numbers (1,2,2,4), so filtering rnk<=3 can return more than 3 rows if there is a tie at rank 1 or 2, and represents 'all products that are among the top 3 positions'. DENSE_RANK also ties but does not skip (1,2,2,3), so rnk<=3 returns the products in the top 3 distinct revenue levels. Pick based on whether ties should expand the result set."
+      },
+      {
+        "question": "How would you make this efficient if there are millions of products per region (skew)?",
+        "answer": "The window's partition-by-region can be skewed if one region dominates, creating a straggler task. Enable Adaptive Query Execution so Spark can split skewed partitions. Because we only need the top 3, a more efficient pattern is a partial top-N: compute per-partition local top-3 first (map-side), shuffle only those candidates, then take the global top-3 per region, drastically reducing shuffle volume compared to sorting every product. Pre-aggregation in the CTE already shrinks the data before the window."
+      }
+    ],
+    "tags": ["window", "top-n", "rank", "aggregation", "spark-sql", "sql", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-12",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Given `transactions(account_id STRING, txn_ts TIMESTAMP, amount DOUBLE)`, compute a running (cumulative) balance per account ordered by time, and also a 7-day trailing sum of amount. Write it in Spark SQL.",
+    "thoughtProcess": "Both metrics are window aggregations over an ordered frame per account. For the running balance I partition by account_id, order by txn_ts, and SUM over a frame from the start (UNBOUNDED PRECEDING) to the current row. For the 7-day trailing sum I need a RANGE frame measured in time, not a fixed number of rows, because transactions are irregularly spaced; I order by an epoch-seconds expression and use a RANGE BETWEEN interval of 7 days PRECEDING AND CURRENT ROW. I would note that RANGE on time requires a numeric ordering column (cast timestamp to long seconds) so the 7-day interval (604800 seconds) is interpretable. I would mention the shuffle by account and the in-partition ordering cost.",
+    "solution": {
+      "code": "SELECT\n  account_id,\n  txn_ts,\n  amount,\n  SUM(amount) OVER (\n    PARTITION BY account_id\n    ORDER BY txn_ts\n    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n  ) AS running_balance,\n  SUM(amount) OVER (\n    PARTITION BY account_id\n    ORDER BY CAST(txn_ts AS LONG)\n    RANGE BETWEEN 604800 PRECEDING AND CURRENT ROW\n  ) AS trailing_7d_sum\nFROM transactions\nORDER BY account_id, txn_ts;",
+      "language": "sql"
+    },
+    "lineByLine": "Both windows PARTITION BY account_id so each account is computed independently. The first SUM uses ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, accumulating every prior transaction up to the current one for a true running balance ordered by txn_ts. The second SUM orders by CAST(txn_ts AS LONG) (epoch seconds) and uses a RANGE frame of 604800 seconds (7 days) PRECEDING to CURRENT ROW, so it sums only transactions whose timestamp falls within the trailing 7-day window regardless of how many rows that is. RANGE (value-based) is essential here because trailing windows are defined by time, not row count. The final ORDER BY presents results chronologically per account.",
+    "timeComplexity": "One shuffle to partition by account_id plus a sort by time within each partition, about O(N log N) per partition. The cumulative and range sums are computed in a single ordered pass over each partition.",
+    "spaceComplexity": "O(P) for the largest account partition that must be ordered in memory (spills to disk if large). A very active account is a skew risk.",
+    "alternativeApproaches": [
+      {
+        "title": "PySpark Window equivalent",
+        "explanation": "The same logic with the PySpark Window API, useful inside a larger DataFrame pipeline.",
+        "code": "from pyspark.sql import functions as F, Window\nwrun = Window.partitionBy(\"account_id\").orderBy(\"txn_ts\").rowsBetween(Window.unboundedPreceding, 0)\nw7d  = Window.partitionBy(\"account_id\").orderBy(F.col(\"txn_ts\").cast(\"long\")).rangeBetween(-604800, 0)\ndf.select(\"*\",\n  F.sum(\"amount\").over(wrun).alias(\"running_balance\"),\n  F.sum(\"amount\").over(w7d).alias(\"trailing_7d_sum\"))"
+      },
+      {
+        "title": "Row-count frame approximation",
+        "explanation": "If transactions are dense and regular (e.g., exactly one per day), a ROWS BETWEEN 6 PRECEDING AND CURRENT ROW frame approximates a 7-day window and avoids the cast-to-long. It is wrong for irregular spacing, so only use it when row count maps cleanly to time."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why use RANGE instead of ROWS for the 7-day window?",
+        "answer": "ROWS counts a fixed number of physical rows regardless of their timestamps, so '6 preceding rows' only equals 7 days if there is exactly one transaction per day. Real transaction streams are irregular: an account might have ten transactions in one day and none for three days. RANGE BETWEEN ... PRECEDING defines the frame by the value of the ordering column, so RANGE 604800 PRECEDING includes exactly the rows whose timestamp is within 7 days, which is the correct time-based trailing window."
+      },
+      {
+        "question": "How do you ensure deterministic results when two transactions share the same timestamp?",
+        "answer": "With ties on txn_ts, the running balance is well-defined for SUM (order within the tie does not change the cumulative total), but if you compute order-sensitive metrics like a per-row rank you must add a tiebreaker (e.g., a monotonically increasing txn_id) to the ORDER BY so the sequence is deterministic. For RANGE frames, tied timestamps are all included together in the frame by definition, which is usually the desired behavior. Adding a stable secondary sort key removes ambiguity across runs."
+      }
+    ],
+    "tags": ["window", "running-total", "cumulative-sum", "range-frame", "spark-sql", "sql", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-13",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Given web clickstream `events(user_id STRING, event_ts TIMESTAMP, page STRING)`, sessionize: assign a session_id to each event such that a new session starts whenever the gap since the previous event for that user exceeds 30 minutes. Output each event with its session_id and the session sequence number per user. Write it in PySpark.",
+    "thoughtProcess": "Sessionization with an inactivity timeout is a classic gaps-and-islands problem. The approach: per user, order events by time and compute the gap to the previous event using lag. Flag a session boundary when the gap exceeds 30 minutes (or it is the user's first event). Then a running cumulative SUM of those boundary flags produces a monotonically increasing session number per user, which I combine with user_id to form a unique session_id. I would highlight the two window stages: one ordered window for lag, another cumulative window for the running sum, both partitioned by user. I would note the shuffle by user and that heavy users are a skew point.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\nfrom pyspark.sql.window import Window\n\nw_order = Window.partitionBy(\"user_id\").orderBy(\"event_ts\")\n\nflagged = (events\n    .withColumn(\"prev_ts\", F.lag(\"event_ts\").over(w_order))\n    .withColumn(\"gap_secs\",\n        F.col(\"event_ts\").cast(\"long\") - F.col(\"prev_ts\").cast(\"long\"))\n    .withColumn(\"is_new_session\",\n        F.when(F.col(\"prev_ts\").isNull() | (F.col(\"gap_secs\") > 1800), 1).otherwise(0)))\n\nw_cumulative = (Window.partitionBy(\"user_id\").orderBy(\"event_ts\")\n                .rowsBetween(Window.unboundedPreceding, 0))\n\nsessions = (flagged\n    .withColumn(\"session_seq\", F.sum(\"is_new_session\").over(w_cumulative))\n    .withColumn(\"session_id\",\n        F.concat_ws(\"-\", F.col(\"user_id\"), F.col(\"session_seq\")))\n    .select(\"user_id\", \"event_ts\", \"page\", \"session_id\", \"session_seq\"))\n\nsessions.orderBy(\"user_id\", \"event_ts\").show()",
+      "language": "python"
+    },
+    "lineByLine": "w_order is a per-user time-ordered window. lag('event_ts') fetches the previous event's timestamp for the same user; it is null for the user's first event. gap_secs is the difference in seconds between the current and previous event. is_new_session is 1 when there is no previous event (first event) or the gap exceeds 1800 seconds (30 minutes), else 0, marking session starts. w_cumulative is a per-user running window from the first row to the current. SUM(is_new_session) over that window counts how many session boundaries have occurred up to and including this event, yielding a session sequence number that increments by 1 at each new session. concat_ws builds a unique session_id from user_id and session_seq. The final select projects the labeled events.",
+    "timeComplexity": "Two windows partitioned by user_id share one shuffle on user_id; within each partition an in-time-order pass computes lag and the cumulative sum, about O(N log N) per partition for the sort, otherwise linear passes.",
+    "spaceComplexity": "O(P) for the largest user's partition held in the ordered window. A power user with millions of events is the skew/memory risk.",
+    "alternativeApproaches": [
+      {
+        "title": "Structured Streaming session windows",
+        "explanation": "For real-time sessionization, Spark Structured Streaming supports session_window(event_ts, '30 minutes') with a watermark, which natively groups events into gap-based sessions and manages state eviction, avoiding hand-rolled lag/cumsum.",
+        "code": "from pyspark.sql import functions as F\n(events.withWatermark(\"event_ts\", \"1 hour\")\n  .groupBy(\"user_id\", F.session_window(\"event_ts\", \"30 minutes\"))\n  .agg(F.count(\"*\").alias(\"events\")))"
+      },
+      {
+        "title": "Spark SQL with LAG and running SUM",
+        "explanation": "The identical gaps-and-islands logic expressed in SQL using LAG(...) OVER (...) for the gap and SUM(flag) OVER (... ROWS UNBOUNDED PRECEDING) for the session counter, often preferred by analysts."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why does a cumulative SUM of boundary flags produce correct session ids?",
+        "answer": "Each session start is marked with a 1 and all other events with 0. A running SUM ordered by time accumulates these flags, so every event inside the same session shares the same accumulated value (the count of starts up to that point), and the value increments by exactly 1 the moment a new session begins. This is the gaps-and-islands technique: the cumulative sum of island-start indicators uniquely and contiguously numbers the islands (sessions)."
+      },
+      {
+        "question": "How would you also compute session-level metrics like duration and page count?",
+        "answer": "After labeling events with session_id, group by (user_id, session_id) and aggregate: MIN(event_ts) and MAX(event_ts) give session start/end, their difference gives duration, COUNT(*) gives events per session, and COUNT(DISTINCT page) gives unique pages. You can also use FIRST/LAST ordered by event_ts for entry and exit pages. This second aggregation is one more shuffle on the session key but yields a clean per-session fact table."
+      }
+    ],
+    "tags": ["sessionization", "gaps-and-islands", "window", "lag", "clickstream", "pyspark", "advanced"]
+  },
+  {
+    "id": "databricks-iv-coding-14",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Given `sales(region STRING, quarter STRING, revenue DOUBLE)` with quarter in {Q1,Q2,Q3,Q4}, produce one row per region with four columns Q1..Q4 holding total revenue for each quarter. Then show how to reverse it (unpivot back to long form). Write it in Spark SQL.",
+    "thoughtProcess": "This is a pivot: turn distinct values of the quarter column into columns. Spark SQL has a native PIVOT clause where I specify the aggregation (SUM(revenue)) and the pivot column with the set of values to spread into columns. Listing the quarter values explicitly (IN ('Q1','Q2','Q3','Q4')) makes the schema deterministic. For the reverse direction, UNPIVOT (or stack) turns the four columns back into quarter/revenue rows. I would mention that pivot triggers an aggregation/shuffle and that explicitly listing values avoids an extra scan Spark would otherwise need to discover them.",
+    "solution": {
+      "code": "-- Pivot quarters into columns\nSELECT * FROM (\n  SELECT region, quarter, revenue FROM sales\n)\nPIVOT (\n  SUM(revenue)\n  FOR quarter IN (''Q1'' AS Q1, ''Q2'' AS Q2, ''Q3'' AS Q3, ''Q4'' AS Q4)\n);\n\n-- Reverse: unpivot the wide table back to long form\nSELECT region, quarter, revenue\nFROM wide_sales\nUNPIVOT (\n  revenue FOR quarter IN (Q1, Q2, Q3, Q4)\n);",
+      "language": "sql"
+    },
+    "lineByLine": "The inner SELECT projects the three relevant columns. PIVOT (SUM(revenue) FOR quarter IN (...)) groups by the remaining column (region) and spreads each listed quarter value into its own column, filling it with the SUM of revenue for that region and quarter; the AS aliases name the output columns Q1..Q4. Explicitly listing the IN values fixes the output schema and avoids a discovery scan. In the reverse, UNPIVOT (revenue FOR quarter IN (Q1,Q2,Q3,Q4)) collapses the four quarter columns back into two columns: quarter (holding the source column name) and revenue (holding its value), producing one row per region-quarter again.",
+    "timeComplexity": "PIVOT is a grouped aggregation: one shuffle on the implicit group key (region) plus the conditional aggregation per pivot value, O(N) with a shuffle. UNPIVOT is a narrow transformation (no shuffle), roughly O(N * number_of_columns).",
+    "spaceComplexity": "O(distinct regions) for the pivoted output. UNPIVOT expands rows by the number of unpivoted columns but holds little extra state.",
+    "alternativeApproaches": [
+      {
+        "title": "Conditional aggregation",
+        "explanation": "Pivot manually with SUM(CASE WHEN quarter='Q1' THEN revenue END) AS Q1, etc. This is portable across engines and gives full control over the output columns without the PIVOT syntax.",
+        "code": "SELECT region,\n  SUM(CASE WHEN quarter=''Q1'' THEN revenue END) AS Q1,\n  SUM(CASE WHEN quarter=''Q2'' THEN revenue END) AS Q2,\n  SUM(CASE WHEN quarter=''Q3'' THEN revenue END) AS Q3,\n  SUM(CASE WHEN quarter=''Q4'' THEN revenue END) AS Q4\nFROM sales GROUP BY region;"
+      },
+      {
+        "title": "PySpark groupBy().pivot()",
+        "explanation": "In PySpark: sales.groupBy('region').pivot('quarter', ['Q1','Q2','Q3','Q4']).agg(F.sum('revenue')). Passing the value list avoids an extra distinct-values scan and keeps the schema stable. Use stack() to unpivot."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why explicitly list the pivot values instead of letting Spark infer them?",
+        "answer": "If you omit the IN list, Spark must first run a separate query to find the distinct values of the pivot column before it can build the output schema, adding an extra job and a scan. It also makes the output schema dynamic, which can break downstream code expecting fixed columns. Listing the values explicitly avoids the discovery scan, makes the result schema deterministic and stable, and lets you control column ordering and aliases."
+      },
+      {
+        "question": "What happens to a region-quarter combination that has no rows?",
+        "answer": "The corresponding pivoted cell is NULL because the aggregation has no input rows to sum. If you want zeros instead of nulls, wrap the result with COALESCE(Qn, 0) or use a SUM over CASE that defaults appropriately. Being explicit about null handling matters because downstream arithmetic on nulls propagates nulls rather than treating missing quarters as zero revenue."
+      }
+    ],
+    "tags": ["pivot", "unpivot", "reshape", "aggregation", "spark-sql", "sql", "beginner"]
+  },
+  {
+    "id": "databricks-iv-coding-15",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "An Auto Loader stream ingests raw JSON messages into a column `body` (string) where each message is a nested JSON object: {\"order_id\":..., \"customer\":{\"id\":...,\"name\":...}, \"items\":[{\"sku\":...,\"qty\":...}, ...]}. Parse and flatten this into a tabular silver table with one row per order item (order_id, customer_id, customer_name, sku, qty). Write it in PySpark.",
+    "thoughtProcess": "Flattening nested/array JSON is a common silver-layer task. Steps: define an explicit schema (StructType) for reliability rather than relying on inference each micro-batch; parse the string column with from_json into a struct; then navigate the struct with dot notation for scalar fields and explode the items array to get one row per item. I would stress defining the schema explicitly so the streaming job has a stable, fast parse and does not silently change schema. explode turns the array into multiple rows, after which I select the leaf fields. I would mention explode_outer if I want to keep orders that have an empty items array.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\nfrom pyspark.sql.types import (StructType, StructField, StringType,\n                               IntegerType, ArrayType)\n\nschema = StructType([\n    StructField(\"order_id\", StringType()),\n    StructField(\"customer\", StructType([\n        StructField(\"id\", StringType()),\n        StructField(\"name\", StringType()),\n    ])),\n    StructField(\"items\", ArrayType(StructType([\n        StructField(\"sku\", StringType()),\n        StructField(\"qty\", IntegerType()),\n    ]))),\n])\n\nparsed = raw.withColumn(\"j\", F.from_json(F.col(\"body\"), schema))\n\nflattened = (parsed\n    .withColumn(\"item\", F.explode(F.col(\"j.items\")))\n    .select(\n        F.col(\"j.order_id\").alias(\"order_id\"),\n        F.col(\"j.customer.id\").alias(\"customer_id\"),\n        F.col(\"j.customer.name\").alias(\"customer_name\"),\n        F.col(\"item.sku\").alias(\"sku\"),\n        F.col(\"item.qty\").alias(\"qty\")))\n\nflattened.show(truncate=False)",
+      "language": "python"
+    },
+    "lineByLine": "The StructType schema describes the JSON precisely, including the nested customer struct and the items array of structs; supplying it makes parsing deterministic and avoids per-batch inference. from_json(col('body'), schema) parses the raw JSON string into a typed struct column j. j.items accesses the array; F.explode turns each array element into its own row, so an order with N items yields N rows. The select uses dot notation to pull scalar fields: j.order_id, j.customer.id and j.customer.name from the parsed struct, and item.sku, item.qty from the exploded element, aliasing each to a flat column name. The result is one tidy row per order item.",
+    "timeComplexity": "from_json parses each record (CPU proportional to message size, no shuffle). explode is a narrow transformation that multiplies rows by the array length. Overall O(total_items) with no shuffle required for the flatten itself.",
+    "spaceComplexity": "Output grows to one row per item, so roughly O(total_items) materialized. Parsing holds one struct per input row transiently.",
+    "alternativeApproaches": [
+      {
+        "title": "schema_of_json for ad-hoc inference",
+        "explanation": "For exploration, infer the schema from a sample with schema_of_json and pass it to from_json, then refine into an explicit schema for production. Convenient but inference per run is slower and risks drift, so pin the schema for streaming.",
+        "code": "from pyspark.sql import functions as F\nsample = raw.select(\"body\").limit(1).collect()[0][0]\nschema = F.schema_of_json(F.lit(sample))\nparsed = raw.withColumn(\"j\", F.from_json(\"body\", schema))"
+      },
+      {
+        "title": "explode_outer to retain empty arrays",
+        "explanation": "If some orders have an empty or null items array but you still want the order represented (with null item fields), use F.explode_outer instead of F.explode so those orders are not silently dropped."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why provide an explicit schema instead of inferring it in a streaming job?",
+        "answer": "Inference requires Spark to scan data to determine types, which adds latency every batch and can produce different schemas as data shifts, causing the streaming query to fail or change output columns unpredictably. An explicit StructType makes parsing fast and deterministic, documents the contract, lets you control types (e.g., qty as IntegerType), and means unexpected fields are handled consistently (ignored or rescued) rather than silently altering the schema mid-stream."
+      },
+      {
+        "question": "What is the difference between explode and explode_outer, and how do you flatten deeply nested arrays of arrays?",
+        "answer": "explode drops rows whose array is null or empty, while explode_outer emits a row with null for those, preserving the parent record. For arrays nested several levels deep, apply explode repeatedly, one level per call, selecting into the next level each time; alternatively use inline/inline_outer to expand an array of structs directly into columns. For map types, use explode on the map to get key/value rows. Chaining these flattens arbitrarily nested structures into a tabular form."
+      }
+    ],
+    "tags": ["json", "from_json", "explode", "flatten", "nested-data", "streaming", "pyspark", "advanced"]
+  },
+  {
+    "id": "databricks-iv-coding-16",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "To comply with a GDPR erasure request, permanently delete all data for a set of user_ids from the Delta table `user_events`. The ids to delete are in a temp view `erasure_requests(user_id)`. Write the Delta SQL to delete them, then ensure the deleted data cannot be recovered via time travel.",
+    "thoughtProcess": "Two parts: the logical delete and the physical purge. Delta DELETE removes rows (a MERGE-style delete keyed on the id set) but, by default, the old data files still exist in storage and remain accessible via time travel for the retention window, which violates 'permanently delete'. So after the DELETE I must VACUUM to physically remove the unreferenced files. To truly purge for GDPR I need to lower the retention so VACUUM can delete the recent tombstoned files; that requires setting delta.deletedFileRetentionDuration short and may require disabling the safety check. I would use a MERGE ... WHEN MATCHED THEN DELETE (or DELETE WHERE user_id IN subquery), then OPTIMIZE/VACUUM. I would flag the safety implications of a 0-hour retention.",
+    "solution": {
+      "code": "-- 1. Delete the requested users (MERGE-based delete on the id set)\nMERGE INTO user_events AS t\nUSING erasure_requests AS r\nON t.user_id = r.user_id\nWHEN MATCHED THEN DELETE;\n\n-- 2. Shorten retention so the removed files become eligible for purge\nALTER TABLE user_events\nSET TBLPROPERTIES (delta.deletedFileRetentionDuration = ''interval 0 hours'');\n\n-- 3. Physically purge unreferenced data files (disables the 7-day guard)\nSET spark.databricks.delta.retentionDurationCheck.enabled = false;\nVACUUM user_events RETAIN 0 HOURS;",
+      "language": "sql"
+    },
+    "lineByLine": "The MERGE matches rows in user_events whose user_id is in erasure_requests and deletes them; using MERGE WHEN MATCHED THEN DELETE handles the set of ids in one atomic commit. After a DELETE, Delta only logically removes rows: it writes new files without those rows and tombstones the old files, which remain on storage. ALTER TABLE ... deletedFileRetentionDuration = interval 0 hours lowers how long tombstoned files are kept so they can be vacuumed immediately. Setting retentionDurationCheck.enabled = false disables Delta's safety guard that normally blocks VACUUM with a retention under 7 days. VACUUM ... RETAIN 0 HOURS then physically deletes the unreferenced data files, after which the erased rows can no longer be recovered through time travel because the underlying files are gone.",
+    "timeComplexity": "The MERGE/DELETE rewrites only data files containing matched user_ids (copy-on-write), so cost is proportional to the affected files, not the whole table. VACUUM lists and deletes unreferenced files, O(files) on storage operations.",
+    "spaceComplexity": "Transient rewrite space during DELETE; afterwards storage shrinks as VACUUM removes old files. The log gains commits for the delete and vacuum actions.",
+    "alternativeApproaches": [
+      {
+        "title": "DELETE WHERE with a subquery",
+        "explanation": "If you do not need MERGE semantics, a direct predicate delete is simpler.",
+        "code": "DELETE FROM user_events\nWHERE user_id IN (SELECT user_id FROM erasure_requests);"
+      },
+      {
+        "title": "Pseudonymization instead of physical delete",
+        "explanation": "Where full deletion is operationally hard (e.g., the id is a join key across many tables), an alternative is crypto-shredding or pseudonymization: replace PII with a token and destroy the key, rendering the data unidentifiable. This can satisfy erasure intent while preserving referential structure, subject to legal review."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is a DELETE alone not sufficient for GDPR erasure on Delta?",
+        "answer": "Delta DELETE is a logical operation: it commits a new version that no longer references the deleted rows, but the original Parquet files containing that data still sit in storage and remain reachable through time travel (VERSION AS OF / TIMESTAMP AS OF) until they age past the retention period and are vacuumed. So the personal data is still recoverable. To truly erase it you must run VACUUM after shortening retention so the physical files are deleted, removing any path back to the data."
+      },
+      {
+        "question": "What are the risks of VACUUM RETAIN 0 HOURS and disabling the retention check?",
+        "answer": "The 7-day default retention protects in-flight readers and concurrent operations that may still reference files about to be removed; vacuuming with 0 hours can delete files a running query or streaming reader still needs, causing failures or corruption of those operations. Disabling retentionDurationCheck removes the guardrail entirely. For GDPR you accept this risk deliberately, but you should run it during a maintenance window when no concurrent jobs reference the table, restore the retention setting afterward, and confirm no streaming consumers depend on the affected versions."
+      }
+    ],
+    "tags": ["delta", "delete", "gdpr", "vacuum", "retention", "compliance", "sql", "intermediate"]
+  },
+  {
+    "id": "databricks-iv-coding-17",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "You have years of historical data written as Parquet at `/mnt/lake/sales_parquet/` and want to adopt Delta Lake without rewriting all the files. Convert the existing Parquet directory to Delta in place, then backfill a new audit column `ingested_at` for all existing rows. Write it in Delta SQL.",
+    "thoughtProcess": "Databricks provides CONVERT TO DELTA to upgrade an existing Parquet directory to Delta in place: it generates the transaction log over the existing Parquet files without rewriting the data, which is fast and storage-cheap. If the Parquet data is partitioned, I must declare the partition columns and their types so the log captures them. After conversion the table is Delta and supports ACID operations. To backfill the audit column I first add the column (ALTER TABLE ADD COLUMN) which is a metadata change, then UPDATE to populate it for existing rows. I would note that ADD COLUMN leaves existing rows with NULL until the UPDATE runs, and that the UPDATE rewrites files (copy-on-write).",
+    "solution": {
+      "code": "-- 1. Convert Parquet to Delta in place (declare partition cols if partitioned)\nCONVERT TO DELTA parquet.`/mnt/lake/sales_parquet/`\nPARTITIONED BY (sale_year INT);\n\n-- Register a table name over the location (optional but convenient)\nCREATE TABLE sales USING DELTA LOCATION ''/mnt/lake/sales_parquet/'';\n\n-- 2. Add the audit column (metadata-only)\nALTER TABLE sales ADD COLUMN ingested_at TIMESTAMP;\n\n-- 3. Backfill existing rows\nUPDATE sales\nSET ingested_at = current_timestamp()\nWHERE ingested_at IS NULL;",
+      "language": "sql"
+    },
+    "lineByLine": "CONVERT TO DELTA parquet.`path` scans the Parquet directory and writes a Delta transaction log that references the existing files, turning it into a Delta table without rewriting data. PARTITIONED BY declares the partition column(s) and type(s) so the log records the partition layout (omit if unpartitioned). CREATE TABLE ... USING DELTA LOCATION registers a catalog name pointing at the converted location so you can query it by name. ALTER TABLE ADD COLUMN ingested_at TIMESTAMP is a metadata-only change; existing rows show NULL for the new column until populated. UPDATE ... SET ingested_at = current_timestamp() WHERE ingested_at IS NULL backfills the new column for all existing rows; the IS NULL guard makes it idempotent and the UPDATE rewrites the affected data files.",
+    "timeComplexity": "CONVERT TO DELTA is largely metadata work (it reads file footers to build the log) and does not rewrite data, so it is fast relative to data volume. The backfill UPDATE rewrites every file once (copy-on-write), so it is O(total bytes) for that one-time operation.",
+    "spaceComplexity": "Conversion adds only the small _delta_log directory. The UPDATE temporarily doubles space for rewritten files until old files are vacuumed.",
+    "alternativeApproaches": [
+      {
+        "title": "Rewrite via CREATE TABLE AS SELECT",
+        "explanation": "Alternatively read the Parquet and write a fresh Delta table with the new column computed during the write. This rewrites all data (slower, more storage) but lets you reshape/cleanse during conversion and avoids a separate backfill UPDATE.",
+        "code": "CREATE TABLE sales USING DELTA AS\nSELECT *, current_timestamp() AS ingested_at\nFROM parquet.`/mnt/lake/sales_parquet/`;"
+      },
+      {
+        "title": "PySpark convertToDelta",
+        "explanation": "The Python equivalent uses DeltaTable.convertToDelta(spark, \"parquet.`/mnt/lake/sales_parquet/`\", \"sale_year int\"), handy inside an automated migration job, followed by an addColumn/update step."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is CONVERT TO DELTA faster than rewriting the data with CTAS?",
+        "answer": "CONVERT TO DELTA does not move or rewrite the Parquet files; it reads their metadata (footers) to learn schema and row counts and writes a transaction log that references the existing files in place. CTAS reads every row and writes entirely new files, incurring full read+write I/O. For large historical datasets, in-place conversion is dramatically cheaper in time and storage, which is why it is the default migration path; you only choose CTAS when you also need to transform the data during conversion."
+      },
+      {
+        "question": "What must you specify if the Parquet data is partitioned, and what happens if you get it wrong?",
+        "answer": "You must declare the partition columns and their types in the PARTITIONED BY clause exactly as they appear in the directory structure (e.g., sale_year=2023 folders). If you omit them, Delta treats the partition folders' path-encoded columns incorrectly and the table will not recognize the partitioning, breaking partition pruning and possibly misreading the schema. If you declare wrong types, queries can fail or skip data. So you inspect the existing directory layout first and match the partition spec precisely."
+      }
+    ],
+    "tags": ["delta", "convert-to-delta", "parquet", "migration", "backfill", "sql", "beginner"]
+  },
+  {
+    "id": "databricks-iv-coding-18",
+    "tech": "databricks",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "A Delta table `clickstream` is written every minute by a streaming job, creating many tiny files and growing unbounded. Design a scheduled maintenance job that (a) writes data partitioned by event_date, (b) periodically compacts each day's small files, and (c) reclaims storage from old file versions. Write it in PySpark, and explain the partitioning choice.",
+    "thoughtProcess": "This combines partitioning, compaction, and cleanup. Partitioning by event_date is the right grain for time-series clickstream: queries filter by date, so date partitions enable partition pruning, and compaction can be scoped per day. I would avoid over-partitioning (e.g., by hour or by a high-cardinality key) which recreates the small-file problem. For the write, partitionBy('event_date') with optimizeWrite enabled. For maintenance, a scheduled job runs OPTIMIZE on recent partitions to bin-pack tiny files (and optionally ZORDER on a filter column), then VACUUM with a sane retention to delete unreferenced old files and reclaim storage. I would run these via spark.sql from a scheduled Databricks Workflow.",
+    "solution": {
+      "code": "from pyspark.sql import functions as F\n\n# (a) Streaming write partitioned by event_date with optimized writes\n(stream_df\n    .withColumn(\"event_date\", F.to_date(\"event_ts\"))\n    .writeStream\n    .format(\"delta\")\n    .partitionBy(\"event_date\")\n    .option(\"checkpointLocation\", \"/mnt/chk/clickstream\")\n    .option(\"delta.autoOptimize.optimizeWrite\", \"true\")\n    .toTable(\"clickstream\"))\n\n# (b) + (c) Scheduled maintenance job (run daily via a Workflow)\n# Compact the last 2 days of partitions and cluster by user_id\nspark.sql(\"\"\"\n  OPTIMIZE clickstream\n  WHERE event_date >= current_date() - INTERVAL 2 DAYS\n  ZORDER BY (user_id)\n\"\"\")\n\n# Reclaim storage: remove unreferenced files older than the retention window\nspark.sql(\"VACUUM clickstream RETAIN 168 HOURS\")",
+      "language": "python"
+    },
+    "lineByLine": "to_date('event_ts') derives the partition column event_date. writeStream ... partitionBy('event_date') physically lays data out in per-day directories, enabling partition pruning for date-filtered queries and per-day maintenance. optimizeWrite reduces the number of files each micro-batch produces. checkpointLocation gives exactly-once restartable streaming. The maintenance OPTIMIZE is scoped with WHERE event_date >= current_date() - 2 days so it only bin-packs recently written (still-fragmented) partitions instead of rewriting history, and ZORDER BY (user_id) clusters that data for fast user-filtered reads. VACUUM RETAIN 168 HOURS (7 days) deletes data files no longer referenced by the current table version and older than the retention window, reclaiming storage from compacted-away small files while keeping a 7-day time-travel/safety window.",
+    "timeComplexity": "Streaming write cost scales with per-batch volume. OPTIMIZE rewrites only the matched recent partitions, O(bytes in those partitions); the WHERE scope keeps it bounded. VACUUM is O(files) of listing and deleting unreferenced files.",
+    "spaceComplexity": "Compaction transiently doubles space for rewritten partitions until VACUUM runs. Steady-state storage is bounded because VACUUM continually reclaims old versions; without it the table would grow unbounded.",
+    "alternativeApproaches": [
+      {
+        "title": "Auto compaction instead of scheduled OPTIMIZE",
+        "explanation": "Enable delta.autoOptimize.autoCompact so Delta compacts small files automatically right after writes, reducing or eliminating the need for a scheduled OPTIMIZE. You still schedule VACUUM for storage reclamation.",
+        "code": "spark.sql(\"ALTER TABLE clickstream SET TBLPROPERTIES \" +\n          \"('delta.autoOptimize.autoCompact'='true')\")"
+      },
+      {
+        "title": "Liquid Clustering (no explicit partitions)",
+        "explanation": "On newer Delta, use CLUSTER BY (event_date, user_id) instead of static partitioning. Liquid Clustering adapts file layout to data and query patterns, avoids tiny partition folders, and removes the need to choose partition granularity up front while still giving good pruning."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why partition by event_date rather than by event_hour or user_id?",
+        "answer": "Partitioning granularity must match query patterns and produce reasonably sized partitions (ideally at least ~1 GB each). event_date matches typical time-range queries and keeps the partition count manageable. event_hour would create 24x more, smaller partitions, worsening the small-file problem and metadata overhead. user_id is high cardinality (potentially millions of values), which would explode the number of tiny partitions and devastate performance. For fine-grained filtering on user_id, use ZORDER or Liquid Clustering within the date partitions rather than partitioning on it."
+      },
+      {
+        "question": "What happens if you never run VACUUM, and how do you pick the retention period?",
+        "answer": "Without VACUUM, every OPTIMIZE, UPDATE, DELETE, and MERGE leaves the old, now-unreferenced files on storage forever, so storage grows unbounded and listing slows even though the logical table is small. Pick the retention to cover your longest needs: the maximum time travel window you want plus a buffer for any long-running concurrent readers/streams that might still reference old files. The default 7 days is a safe common choice; shorten it only when storage cost matters and you have confirmed no consumers need older versions, since vacuuming files still in use can break those operations."
+      }
+    ],
+    "tags": ["delta", "partitioning", "compaction", "optimize", "vacuum", "maintenance", "streaming", "pyspark", "intermediate"]
+  }
+]
