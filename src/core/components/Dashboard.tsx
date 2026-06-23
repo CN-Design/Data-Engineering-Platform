@@ -113,21 +113,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain }) => {
           </div>
         </div>
 
-        {/* Frontend Card - Disabled */}
+        {/* Frontend Card - Active */}
         <div
-          className="domain-card disabled-card glass-panel"
+          onClick={() => onSelectDomain('frontend')}
+          className="domain-card active-card glass-panel"
           style={{
             padding: '32px',
             borderRadius: '20px',
             border: '1px solid var(--border-glass)',
             background: 'var(--bg-glass)',
-            cursor: 'not-allowed',
-            opacity: 0.7,
+            cursor: 'pointer',
+            transition: 'all 0.3s ease',
             position: 'relative',
+            overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column'
           }}
         >
+          <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '4px', background: 'linear-gradient(90deg, #10b981, #06b6d4)' }} />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
             <div style={{
               width: '56px', height: '56px', borderRadius: '14px',
@@ -135,22 +138,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain }) => {
             }}>
               <Layout size={28} color="#10b981" />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-inner)', padding: '4px 10px', borderRadius: '20px' }}>
-              <Lock size={12} color="var(--text-muted)" />
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Coming Soon</span>
-            </div>
+            <ChevronRight size={24} color="var(--text-muted)" className="card-arrow" />
           </div>
 
           <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>Frontend Engineering</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.6, marginBottom: '24px', flex: 1 }}>
-            Build responsive, accessible, and performant user interfaces with modern web technologies.
+            Build responsive, accessible, and performant user interfaces with modern web technologies. Visual, interactive, project-driven, and interview-focused.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {['React', 'Vue', 'TypeScript', 'CSS', 'System Design'].map(tech => (
+            {['React', 'JavaScript', 'TypeScript', 'CSS', 'Next.js'].map(tech => (
               <span key={tech} style={{
                 padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600,
-                background: 'var(--bg-inner)', color: 'var(--text-muted)', border: '1px solid var(--border-glass)'
+                background: 'var(--bg-inner)', color: 'var(--text-primary)', border: '1px solid var(--border-glass)'
               }}>{tech}</span>
             ))}
           </div>

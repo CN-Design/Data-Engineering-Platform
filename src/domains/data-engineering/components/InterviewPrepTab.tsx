@@ -23,13 +23,23 @@ interface InterviewPrepTabProps {
   tech: Category;
 }
 
-const TECH_LABELS: Record<Category, string> = {
+const TECH_LABELS: Partial<Record<Category, string>> = {
   'data-engineering': 'Data Engineering',
   sql: 'SQL',
   python: 'Python',
   pyspark: 'PySpark',
   databricks: 'Databricks',
+  react: 'React',
+  javascript: 'JavaScript',
+  typescript: 'TypeScript',
+  html: 'HTML',
+  css: 'CSS',
+  nextjs: 'Next.js',
 };
+
+// Falls back to a prettified id for any tech without an explicit label.
+const techLabel = (tech: Category): string =>
+  TECH_LABELS[tech] || tech.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 const DIFFICULTY_COLORS: Record<Difficulty, string> = {
   beginner: '#10b981',
@@ -109,10 +119,10 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
       {/* Header */}
       <div>
         <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>
-          {TECH_LABELS[tech]} Interview Preparation
+          {techLabel(tech)} Interview Preparation
         </h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '6px 0 0 0' }}>
-          A complete interview system for {TECH_LABELS[tech]} — basics to architecture, scenarios, production support, optimization and coding. Pick a category, then expand any question for a full, interview-ready answer.
+          A complete interview system for {techLabel(tech)} — basics to architecture, scenarios, production support, optimization and coding. Pick a category, then expand any question for a full, interview-ready answer.
         </p>
       </div>
 

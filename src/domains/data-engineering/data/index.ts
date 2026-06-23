@@ -1,26 +1,21 @@
 import { sqlTopics } from './sql/topics';
-import { sqlQuestions } from './sql/questions';
-
 import { pysparkTopics } from './pyspark/topics';
-import { pysparkQuestions } from './pyspark/questions';
-
 import { databricksTopics } from './databricks/topics';
-import { databricksQuestions } from './databricks/questions';
-
 import { deTopics } from './data-engineering/topics';
-import { deQuestions } from './data-engineering/questions';
-
 import { pythonTopics } from './python/topics';
-
 import { codingChallenges } from './coding_challenges';
 
+// NOTE: Interview Q&A now lives as JSON under public/content/interview/<tech>/
+// and is loaded at runtime by InterviewPrepTab, so the old per-topic
+// question banks (data/<tech>/questions.ts) are no longer wired in here.
+
 export {
-  sqlTopics, sqlQuestions,
-  pysparkTopics, pysparkQuestions,
-  databricksTopics, databricksQuestions,
-  deTopics, deQuestions,
+  sqlTopics,
+  pysparkTopics,
+  databricksTopics,
+  deTopics,
   pythonTopics,
-  codingChallenges
+  codingChallenges,
 };
 
 export const allTopics = [
@@ -28,14 +23,7 @@ export const allTopics = [
   ...sqlTopics,
   ...pythonTopics,
   ...pysparkTopics,
-  ...databricksTopics
-];
-
-export const allQuestions = [
-  ...deQuestions,
-  ...sqlQuestions,
-  ...pysparkQuestions,
-  ...databricksQuestions
+  ...databricksTopics,
 ];
 
 export const allChallenges = codingChallenges;

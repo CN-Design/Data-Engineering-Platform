@@ -7,14 +7,19 @@ import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
 import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
 import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
-import type { Topic, Category } from './core/types/types';
+import type { Topic, Category, Domain } from './core/types/types';
 import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft } from 'lucide-react';
 import { PathSelection } from './domains/data-engineering/components/PathSelection';
+import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab';
+import { FrontendPlaygroundTab } from './domains/frontend/components/FrontendPlaygroundTab';
+import { FrontendPracticeTab } from './domains/frontend/components/FrontendPracticeTab';
+import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loader';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
-  const [currentDomain, setCurrentDomain] = useState<'dashboard' | 'data-engineering'>('dashboard');
+  const [currentDomain, setCurrentDomain] = useState<'dashboard' | Domain>('dashboard');
   const [selectedTech, setSelectedTech] = useState<Category | null>(null);
+  const [frontendTopics, setFrontendTopics] = useState<Topic[]>([]);
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -75,21 +80,29 @@ export default function App() {
     }} />;
   }
 
-  if (currentDomain === 'data-engineering' && !selectedTech) {
-    return <PathSelection 
-      onSelectTech={(tech) => {
+  const isFrontend = currentDomain === 'frontend';
+
+  if ((currentDomain === 'data-engineering' || currentDomain === 'frontend') && !selectedTech) {
+    return <PathSelection
+      domain={currentDomain}
+      onSelectTech={async (tech) => {
         setSelectedTech(tech);
-        const techTopics = allTopics.filter(t => t.category === tech);
-        if (techTopics.length > 0) {
-          setActiveTopic(techTopics[0]);
+        if (currentDomain === 'frontend') {
+          const manifest = await loadFrontendManifest(tech);
+          const topics = manifest ? manifestToTopics(manifest) : [];
+          setFrontendTopics(topics);
+          setActiveTopic(topics[0] || null);
+        } else {
+          const techTopics = allTopics.filter(t => t.category === tech);
+          if (techTopics.length > 0) setActiveTopic(techTopics[0]);
         }
-      }} 
-      onBack={() => setCurrentDomain('dashboard')} 
+      }}
+      onBack={() => setCurrentDomain('dashboard')}
     />;
   }
 
-  // Filter topics for the sidebar based on selected tech
-  const sidebarTopics = allTopics.filter(t => t.category === selectedTech);
+  // Filter topics for the sidebar based on selected tech / domain.
+  const sidebarTopics = isFrontend ? frontendTopics : allTopics.filter(t => t.category === selectedTech);
   
   const currentTopicIndex = sidebarTopics.findIndex(t => t.id === activeTopic?.id);
   const previousTopic = currentTopicIndex > 0 ? sidebarTopics[currentTopicIndex - 1] : null;
@@ -417,6 +430,7 @@ export default function App() {
           {/* ========================================================= */}
           {/* DESKTOP TOPIC TITLE & DIFFICULTY (Below header)           */}
           {/* ========================================================= */}
+          {!(isFrontend && activeTab === 'learn') && (
           <div className="desktop-only" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '24px' }}>
             <h1 style={{
               margin: 0,
@@ -449,14 +463,30 @@ export default function App() {
                  'AI Assistant'}
             </span>
           </div>
+          )}
           {activeTab === 'learn' && (
-            <LearnTab
-              topic={activeTopic}
-              isCompleted={!!completedTopics[activeTopic?.id || '']}
-              onToggleComplete={toggleTopicCompleted}
-              onPrevious={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
-              onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
-            />
+            isFrontend && selectedTech ? (
+              <FrontendLearnTab
+                tech={selectedTech}
+                topicId={activeTopic?.id || null}
+                topics={frontendTopics.map(t => ({ id: t.id, title: t.title }))}
+                onNavigate={(id) => { const t = frontendTopics.find(x => x.id === id); if (t) setActiveTopic(t); }}
+                isCompleted={!!completedTopics[activeTopic?.id || '']}
+                onToggleComplete={toggleTopicCompleted}
+                onPrev={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
+                onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+                prevTitle={previousTopic?.title}
+                nextTitle={nextTopic?.title}
+              />
+            ) : (
+              <LearnTab
+                topic={activeTopic}
+                isCompleted={!!completedTopics[activeTopic?.id || '']}
+                onToggleComplete={toggleTopicCompleted}
+                onPrevious={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
+                onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+              />
+            )
           )}
 
           {activeTab === 'interview' && selectedTech && (
@@ -464,15 +494,19 @@ export default function App() {
           )}
 
           {activeTab === 'practice' && (
-            <PracticeTab
-              challenges={allChallenges}
-              onCompleteChallenge={markChallengeCompleted}
-              theme={theme}
-            />
+            isFrontend && selectedTech ? (
+              <FrontendPracticeTab tech={selectedTech} theme={theme} />
+            ) : (
+              <PracticeTab
+                challenges={allChallenges}
+                onCompleteChallenge={markChallengeCompleted}
+                theme={theme}
+              />
+            )
           )}
 
           {activeTab === 'playground' && (
-            <PlaygroundTab theme={theme} />
+            isFrontend ? <FrontendPlaygroundTab theme={theme} /> : <PlaygroundTab theme={theme} />
           )}
 
           {activeTab === 'gemini' && (

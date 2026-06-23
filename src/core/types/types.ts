@@ -1,4 +1,37 @@
-export type Category = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks';
+// Backend / data-engineering technologies.
+export type BackendCategory = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks';
+
+// Frontend technologies (the frontend domain). Kept broad so future content
+// slots in without further type changes.
+export type FrontendCategory =
+  | 'html'
+  | 'css'
+  | 'tailwind'
+  | 'javascript'
+  | 'typescript'
+  | 'react'
+  | 'nextjs'
+  | 'state-management'
+  | 'api-integration'
+  | 'authentication'
+  | 'forms'
+  | 'testing'
+  | 'performance'
+  | 'frontend-security'
+  | 'accessibility'
+  | 'frontend-architecture'
+  | 'design-systems'
+  | 'frontend-system-design'
+  | 'build-tools'
+  | 'deployment'
+  | 'internet-fundamentals';
+
+// Category is the union of every technology id across all domains.
+export type Category = BackendCategory | FrontendCategory;
+
+// Top-level learning domains.
+export type Domain = 'data-engineering' | 'frontend';
+
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 export type ChallengeDifficulty = 'easy' | 'medium' | 'hard';
 
@@ -45,6 +78,9 @@ export interface Topic {
   category: Category;
   difficulty: Difficulty;
   concept: ConceptDetail;
+  // Optional curriculum group (e.g. "Hooks", "Fundamentals") used by the
+  // sidebar for frontend topics; backend topics omit it and group by difficulty.
+  group?: string;
 }
 
 export interface PremiumTopicData {
@@ -139,9 +175,13 @@ export interface CodingChallenge {
   category: Category;
   title: string;
   question: string;
-  type: 'sql' | 'pyspark' | 'python' | 'scenario';
+  type: 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'scenario' | 'html' | 'css' | 'javascript' | 'typescript' | 'react' | 'nextjs';
   initialCode: string;
   solutionCode: string;
+  // Frontend challenges: optional multi-file starter and assertion-based grading.
+  files?: Record<string, string>;
+  validationId?: string;
+  previewMode?: 'web' | 'react';
   testCases?: { input: any; expected: any }[];
   schema?: string;
   setupSql?: string;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { Topic } from '../types/types';
+import type { Topic, Category } from '../types/types';
 import { BookOpen, CheckCircle, Search, Star, ChevronDown, ChevronRight, X } from 'lucide-react';
 
 interface SidebarProps {
@@ -30,7 +30,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   });
 
-  const categories = ['data-engineering', 'sql', 'python', 'pyspark', 'databricks'];
+  // Preferred ordering for the known backend tracks; any other categories
+  // present in `topics` (e.g. frontend technologies) are appended after.
+  const preferredOrder: Category[] = ['data-engineering', 'sql', 'python', 'pyspark', 'databricks'];
+  const presentCategories = Array.from(new Set(topics.map(t => t.category)));
+  const categories: Category[] = [
+    ...preferredOrder.filter(c => presentCategories.includes(c)),
+    ...presentCategories.filter(c => !preferredOrder.includes(c)),
+  ];
   const levels = ['beginner', 'intermediate', 'advanced'];
 
   const toggleCategory = (cat: string) => {
@@ -76,6 +83,51 @@ export const Sidebar: React.FC<SidebarProps> = ({
   );
 
   const bookmarkedList = topics.filter(t => bookmarks[t.id]);
+
+  const renderTopicItem = (topic: Topic) => {
+    const isActive = activeTopic?.id === topic.id;
+    const isCompleted = completedTopics[topic.id];
+    const isBookmarked = !!bookmarks[topic.id];
+    return (
+      <div
+        key={topic.id}
+        className={`topic-item ${isActive ? 'active' : ''}`}
+        onClick={() => handleTopicClick(topic)}
+        style={{ padding: '8px 10px' }}
+      >
+        <div className="topic-info">
+          <span className="topic-name" style={{ fontSize: '13px' }}>{topic.title}</span>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <Star
+            size={13}
+            fill={isBookmarked ? '#eab308' : 'none'}
+            color={isBookmarked ? '#eab308' : 'var(--text-muted)'}
+            style={{ opacity: isBookmarked ? 1 : 0.4, cursor: 'pointer' }}
+            onClick={(e) => toggleBookmark(topic.id, e)}
+          />
+          {isCompleted ? (
+            <CheckCircle size={14} color="#10b981" />
+          ) : (
+            <BookOpen size={14} className="text-muted" style={{ opacity: 0.4 }} />
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const subHeaderStyle: React.CSSProperties = { fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', padding: '0 8px', letterSpacing: '0.5px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+
+  const renderSubHeader = (label: string, items: Topic[]) => {
+    const done = items.filter(t => completedTopics[t.id]).length;
+    const allDone = items.length > 0 && done === items.length;
+    return (
+      <div style={subHeaderStyle}>
+        <span>{label}</span>
+        <span style={{ color: allDone ? '#10b981' : 'var(--text-muted)', fontWeight: 700 }}>{done}/{items.length}</span>
+      </div>
+    );
+  };
 
   return (
     <div className={`sidebar ${isOpen ? 'open' : ''}`} style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -211,53 +263,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               </div>
 
-              {/* Collapsible topic items */}
+              {/* Collapsible topic items — grouped by curriculum group when present, else by difficulty */}
               {!isCollapsed && (
                 <div style={{ paddingLeft: '8px' }}>
-                  {levels.map(level => {
-                    const levelTopics = catTopics.filter(t => t.difficulty === level);
-                    if (levelTopics.length === 0) return null;
-
-                    return (
-                      <div key={level} style={{ marginBottom: '12px' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', paddingLeft: '8px' }}>
-                          {level}
-                        </div>
-                        {levelTopics.map(topic => {
-                          const isActive = activeTopic?.id === topic.id;
-                          const isCompleted = completedTopics[topic.id];
-                          const isBookmarked = !!bookmarks[topic.id];
-
-                          return (
-                            <div
-                              key={topic.id}
-                              className={`topic-item ${isActive ? 'active' : ''}`}
-                              onClick={() => handleTopicClick(topic)}
-                              style={{ padding: '8px 10px' }}
-                            >
-                              <div className="topic-info">
-                                <span className="topic-name" style={{ fontSize: '13px' }}>{topic.title}</span>
-                              </div>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <Star
-                                  size={13}
-                                  fill={isBookmarked ? '#eab308' : 'none'}
-                                  color={isBookmarked ? '#eab308' : 'var(--text-muted)'}
-                                  style={{ opacity: isBookmarked ? 1 : 0.4, cursor: 'pointer' }}
-                                  onClick={(e) => toggleBookmark(topic.id, e)}
-                                />
-                                {isCompleted ? (
-                                  <CheckCircle size={14} color="#10b981" />
-                                ) : (
-                                  <BookOpen size={14} className="text-muted" style={{ opacity: 0.4 }} />
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
+                  {catTopics.some(t => t.group)
+                    ? Array.from(new Set(catTopics.map(t => t.group || 'Topics'))).map(grp => {
+                        const grpTopics = catTopics.filter(t => (t.group || 'Topics') === grp);
+                        if (grpTopics.length === 0) return null;
+                        return (
+                          <div key={grp} style={{ marginBottom: '12px' }}>
+                            {renderSubHeader(grp, grpTopics)}
+                            {grpTopics.map(renderTopicItem)}
+                          </div>
+                        );
+                      })
+                    : levels.map(level => {
+                        const levelTopics = catTopics.filter(t => t.difficulty === level);
+                        if (levelTopics.length === 0) return null;
+                        return (
+                          <div key={level} style={{ marginBottom: '12px' }}>
+                            {renderSubHeader(level, levelTopics)}
+                            {levelTopics.map(renderTopicItem)}
+                          </div>
+                        );
+                      })}
                 </div>
               )}
             </div>
