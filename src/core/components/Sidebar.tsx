@@ -156,7 +156,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onChange={(e) => setSearch(e.target.value)}
             style={{
               width: '100%',
-              background: 'rgba(255, 255, 255, 0.03)',
+              background: 'var(--bg-inner)',
               border: '1px solid var(--border-glass)',
               borderRadius: '10px',
               padding: '10px 12px 10px 38px',

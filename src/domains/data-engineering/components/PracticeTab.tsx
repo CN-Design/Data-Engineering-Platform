@@ -143,6 +143,20 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
     setTimeout(() => {
       let isCorrect = false;
 
+      if (selectedChallenge.type === 'golang') {
+        // Go cannot execute in the browser sandbox. Guide the user to the
+        // reference solution and local verification instead of running.
+        setError(null);
+        setColumns(['note']);
+        setOutput([
+          { note: 'Go runs locally, not in the browser.' },
+          { note: 'Click "Reveal Solution" to study the commented, idiomatic answer.' },
+          { note: 'Compare against the Example Output, and verify locally with: go test ./...' },
+        ]);
+        setStatus('idle');
+        return;
+      }
+
       if (selectedChallenge.type === 'sql') {
         if (!sqlDb) {
           setError("SQLite DB initializing...");
@@ -548,7 +562,7 @@ except Exception as e:
                 <Editor
                   height="100%"
                   theme={theme === 'dark' ? 'vs-dark' : 'vs'}
-                  language={selectedChallenge.category === 'sql' ? 'sql' : 'python'}
+                  language={selectedChallenge.category === 'sql' ? 'sql' : selectedChallenge.type === 'golang' ? 'go' : 'python'}
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   options={{

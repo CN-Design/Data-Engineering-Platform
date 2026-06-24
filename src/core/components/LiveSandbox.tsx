@@ -240,7 +240,7 @@ export const LiveSandbox: React.FC<LiveSandboxProps> = ({
       {showConsole && logs.length > 0 && (
         <div style={{ borderTop: '1px solid var(--border-glass)', maxHeight: '160px', overflowY: 'auto', padding: '8px 12px', fontFamily: 'ui-monospace, monospace', fontSize: '12.5px', background: 'var(--bg-code, #0d1117)' }}>
           {logs.map((l, i) => (
-            <div key={i} style={{ color: l.level === 'error' ? '#ef4444' : l.level === 'warn' ? '#f59e0b' : 'var(--code-text, #e6edf3)', whiteSpace: 'pre-wrap' }}>
+            <div key={i} style={{ color: l.level === 'error' ? '#ef4444' : l.level === 'warn' ? '#f59e0b' : 'var(--text-code, #e2e8f0)', whiteSpace: 'pre-wrap' }}>
               {l.text}
             </div>
           ))}

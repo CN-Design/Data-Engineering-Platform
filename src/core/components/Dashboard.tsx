@@ -1,5 +1,5 @@
 import React from 'react';
-import { Database, Layout, Server, ChevronRight, Lock } from 'lucide-react';
+import { Database, Layout, Server, ChevronRight } from 'lucide-react';
 
 interface DashboardProps {
   onSelectDomain: (domain: string) => void;
@@ -156,44 +156,44 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain }) => {
           </div>
         </div>
 
-        {/* Backend Card - Disabled */}
+        {/* Backend Card - Active */}
         <div
-          className="domain-card disabled-card glass-panel"
+          onClick={() => onSelectDomain('backend-engineering')}
+          className="domain-card active-card glass-panel"
           style={{
             padding: '32px',
             borderRadius: '20px',
             border: '1px solid var(--border-glass)',
             background: 'var(--bg-glass)',
-            cursor: 'not-allowed',
-            opacity: 0.7,
+            cursor: 'pointer',
+            transition: 'all 0.3s ease',
             position: 'relative',
+            overflow: 'hidden',
             display: 'flex',
             flexDirection: 'column'
           }}
         >
+          <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '4px', background: 'linear-gradient(90deg, #00ADD8, #007d9c)' }} />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
             <div style={{
               width: '56px', height: '56px', borderRadius: '14px',
-              background: 'rgba(245, 158, 11, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center'
+              background: 'rgba(0, 173, 216, 0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center'
             }}>
-              <Server size={28} color="#f59e0b" />
+              <Server size={28} color="#00ADD8" />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-inner)', padding: '4px 10px', borderRadius: '20px' }}>
-              <Lock size={12} color="var(--text-muted)" />
-              <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Coming Soon</span>
-            </div>
+            <ChevronRight size={24} color="var(--text-muted)" className="card-arrow" />
           </div>
 
           <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>Backend Engineering</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.6, marginBottom: '24px', flex: 1 }}>
-            Design scalable APIs, robust microservices, and efficient database architectures.
+            Master backend languages from beginner to expert — interactive lessons, hands-on code labs, self-checks, and full technical + coding interview prep.
           </p>
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-            {['Node.js', 'Go', 'System Design', 'PostgreSQL', 'Redis'].map(tech => (
+            {['Go', 'Python (soon)', 'Java (soon)'].map(tech => (
               <span key={tech} style={{
                 padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600,
-                background: 'var(--bg-inner)', color: 'var(--text-muted)', border: '1px solid var(--border-glass)'
+                background: 'var(--bg-inner)', color: 'var(--text-primary)', border: '1px solid var(--border-glass)'
               }}>{tech}</span>
             ))}
           </div>

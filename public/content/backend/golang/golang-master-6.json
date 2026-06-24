@@ -1,0 +1,264 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-master-6",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Rate Limiting",
+  "difficulty": "advanced",
+  "summary": "**Rate limiting** caps how often an operation may run, protecting services from overload, abuse, and runaway cost. In Go the canonical tool is the **token bucket** in `golang.org/x/time/rate`, exposing `Allow`, `Wait`, and `Reserve`. Production systems layer **per-client** limiting (a map guarded by a `sync.Mutex`) and **distributed** limiting (Redis with atomic Lua scripts) on top of it.",
+  "prerequisites": ["golang-intermediate-9"],
+  "relatedConcepts": ["golang-master-5", "golang-master-7"],
+  "nestedConcepts": ["token bucket", "leaky bucket", "sliding window", "x/time/rate", "per-client limiter", "distributed limiting", "429 + Retry-After"],
+  "subtopics": [
+    { "title": "Token bucket vs leaky bucket", "explanation": "A token bucket holds up to `burst` tokens, refilled at a steady `rate`; each request consumes one token, so it permits short bursts up to the bucket size while bounding the long-run average. A leaky bucket instead drains a queue at a fixed rate, smoothing output completely but allowing no burst. Token bucket is the default in Go because it matches real traffic, which is bursty.", "example": "lim := rate.NewLimiter(rate.Limit(10), 20) // 10 req/s steady, bursts up to 20" },
+    { "title": "Fixed vs sliding window", "explanation": "A fixed window counts requests per calendar interval (e.g. per minute) and resets at the boundary — simple but allows a 2x burst across the boundary. A sliding window (log or weighted-count) smooths that edge by considering the previous window proportionally. Windows are common in distributed limiters because a single counter is easy to store in Redis.", "example": "// fixed: INCR key; EXPIRE key 60; reject if count > limit" },
+    { "title": "golang.org/x/time/rate", "explanation": "The standard token-bucket limiter. `rate.NewLimiter(r, b)` sets refill rate r (tokens/sec) and burst b. `Allow()` is non-blocking (true if a token is free), `Wait(ctx)` blocks until one is available or ctx is cancelled, and `Reserve()` returns a `Reservation` whose `Delay()` tells you how long to wait — letting you decide whether to proceed.", "example": "if lim.Allow() { serve() } else { reject(429) }" },
+    { "title": "Per-client limiting", "explanation": "One global limiter throttles everyone together, which is rarely what you want. Keep a `map[string]*rate.Limiter` keyed by API key or IP, guarded by a `sync.Mutex`, creating a limiter lazily on first use. A background goroutine periodically evicts idle entries so the map does not grow unbounded.", "example": "lim := getLimiter(clientIP); if !lim.Allow() { reject() }" },
+    { "title": "Distributed rate limiting", "explanation": "When many instances must share one budget, a local limiter is not enough. Centralize state in Redis: a fixed-window counter via `INCR`+`EXPIRE`, or a sliding-window log via a sorted set. Wrap the read-modify-write in a Lua script so it is atomic and survives a single round trip. The tradeoff is added latency and a dependency on Redis availability.", "example": "// Lua: local n = redis.call('INCR', KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],window) end" },
+    { "title": "429 responses and backpressure", "explanation": "When rejecting, return HTTP 429 Too Many Requests and a `Retry-After` header telling the client when to retry — computed from the limiter's reservation delay. Well-behaved clients honor it with exponential backoff and jitter, turning server-side limiting into cooperative client-side throttling that prevents thundering-herd retries.", "example": "w.Header().Set(\"Retry-After\", \"3\"); w.WriteHeader(http.StatusTooManyRequests)" }
+  ],
+  "foundations": {
+    "overview": "Every service has a finite capacity: a database that handles N queries per second, a third-party API with a quota, a CPU that saturates under load. Rate limiting is the discipline of refusing or delaying work once a defined rate is exceeded, so that the system degrades gracefully instead of collapsing. In Go the dominant algorithm is the token bucket, shipped in `golang.org/x/time/rate`, and most real systems combine it with per-client tracking and, at scale, a shared store like Redis.",
+    "formalDefinition": "A rate limiter is a mechanism that bounds the number of permitted operations within a time interval, typically modelled as a token bucket of capacity `burst` refilled at `rate` tokens per second, where each operation must acquire a token to proceed.",
+    "whyItMatters": "Without rate limiting, a single misbehaving client, a retry storm, or a traffic spike can exhaust shared resources and take down the service for everyone. Limiting converts unbounded demand into a controlled, predictable load — it is a core reliability primitive and a frequent system-design interview topic.",
+    "mentalModel": "Picture a bucket that holds up to `burst` tokens. A faucet drips new tokens in at a steady `rate`. Each request must grab one token to proceed; if the bucket is empty it must wait or be rejected. A quiet period lets the bucket refill, so a later burst is allowed — exactly matching how real traffic arrives in bursts between idle stretches.",
+    "runtimePerspective": "`x/time/rate.Limiter` stores no timers or goroutines — it computes available tokens lazily from elapsed wall-clock time at each call, which makes `Allow()` an O(1) arithmetic operation under a mutex. `Wait()` parks the goroutine using a timer until its reserved token matures, and the Go scheduler cheaply runs other work meanwhile, so thousands of waiters cost little.",
+    "realWorldUsage": "Public APIs (GitHub, Stripe) cap requests per key; ingress proxies (nginx, Envoy) limit per IP; clients throttle their own outbound calls to respect upstream quotas; background workers pace themselves against a database.",
+    "businessImpact": "Rate limiting protects revenue by keeping the service available during spikes, caps cloud spend by preventing runaway resource use, and enables tiered pricing (free vs paid plans get different quotas) directly from the limiter configuration.",
+    "engineeringImpact": "It moves overload handling from ad-hoc firefighting to a declarative policy. Engineers reason about a single `rate` and `burst` per tier instead of scattered timeouts, and a clean 429 contract lets client teams implement backoff predictably.",
+    "performanceImpact": "A local token bucket adds nanoseconds (one mutex + arithmetic). A distributed Redis limiter adds a network round trip (~0.2-1 ms) per request, so high-throughput paths often use a local limiter as a fast first gate and Redis only for the shared budget.",
+    "commonUseCases": [
+      "Per-API-key quotas on a public HTTP API",
+      "Per-IP throttling at an ingress/middleware layer",
+      "Client-side pacing of outbound calls to a rate-limited upstream",
+      "Protecting a database or downstream from retry storms"
+    ],
+    "commonMisconceptions": [
+      { "myth": "A token bucket rejects all bursts and enforces a perfectly even rate.", "reality": "It permits bursts up to `burst` tokens; it only bounds the long-run average. A leaky bucket is the one that fully smooths output." },
+      { "myth": "A single in-process limiter is enough for a horizontally scaled service.", "reality": "Each instance has its own bucket, so N instances allow roughly N times the intended global rate. Shared state (e.g. Redis) is required for a true global limit." },
+      { "myth": "`Allow()` and `Wait()` are interchangeable.", "reality": "`Allow()` returns immediately and is for shedding load (reject now); `Wait()` blocks the goroutine until a token is free and is for pacing your own outbound work." }
+    ]
+  },
+  "visualExplorer": [
+    { "visualId": "concept-steps", "title": "A token-bucket refill/consume cycle", "caption": "How a token bucket admits a burst, drains, refills over time, and then rejects when empty.", "config": { "intro": "Trace a bucket with rate=2 tokens/sec and burst=3 as requests arrive:", "steps": [
+      { "name": "Start full", "detail": "The bucket initializes with `burst` (3) tokens available — it is allowed to admit a full burst immediately after a quiet period." },
+      { "name": "Burst consumes tokens", "detail": "Three requests arrive back-to-back. Each takes one token: 3 -> 2 -> 1 -> 0. All three are admitted because the bucket had capacity." },
+      { "name": "Empty bucket rejects", "detail": "A 4th request arrives instantly. The bucket is at 0 tokens, so `Allow()` returns false — reject with 429, or `Wait()` to block." },
+      { "name": "Tokens refill with elapsed time", "detail": "No new request for 1 second. At rate=2/sec the bucket lazily accrues 2 tokens (capped at burst=3) the next time it is checked." },
+      { "name": "Refill is capped at burst", "detail": "After 10 idle seconds the bucket does not hold 20 tokens — it saturates at burst=3, so an idle client can never accumulate an unbounded credit." },
+      { "name": "Steady state", "detail": "Under sustained load the bucket hovers near empty and admits requests at the long-run average `rate`, shedding the rest." }
+    ] } },
+    { "visualId": "go-channel", "title": "A channel-based token bucket", "caption": "A buffered channel of capacity `burst` plus a ticker that refills it is a simple, dependency-free limiter: receive a token to proceed, drop refills when full." }
+  ],
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "x/time/rate: Allow vs Wait",
+      "explanation": "A limiter of 2 tokens/sec with burst 2 starts full, so the first two Allow() calls succeed and the third fails instantly. Wait(ctx) then blocks until a token refills (~0.5s at 2/sec) before proceeding.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"time\"\n\n\t\"golang.org/x/time/rate\"\n)\n\nfunc main() {\n\t// 2 tokens/sec, bucket holds up to 2 (starts full).\n\tlim := rate.NewLimiter(rate.Limit(2), 2)\n\n\tfmt.Println(lim.Allow()) // token 1 -> true\n\tfmt.Println(lim.Allow()) // token 2 -> true\n\tfmt.Println(lim.Allow()) // empty   -> false\n\n\t// Wait blocks until a token refills (~0.5s), then returns nil.\n\tstart := time.Now()\n\t_ = lim.Wait(context.Background())\n\tfmt.Printf(\"waited ~%.0fms\\n\", time.Since(start).Seconds()*1000)\n}",
+        "expectedOutput": "true\ntrue\nfalse\nwaited ~500ms"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "Edit it: reject with 429 and a Retry-After header",
+      "explanation": "Use Reserve() to ask the limiter for a token without blocking. If the reservation can be honored now (Delay()==0) serve; otherwise cancel it, set Retry-After to the rounded-up delay, and return 429. Fill in the rejection branch.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"math\"\n\t\"net/http\"\n\t\"time\"\n\n\t\"golang.org/x/time/rate\"\n)\n\nvar lim = rate.NewLimiter(rate.Limit(1), 1) // 1 req/s, burst 1\n\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tres := lim.Reserve()\n\tif !res.OK() || res.Delay() > 0 {\n\t\t// TODO: cancel the reservation, set Retry-After, write 429\n\t\treturn\n\t}\n\tfmt.Fprintln(w, \"ok\")\n}\n\nfunc main() { _ = handler }",
+        "solution": "package main\n\nimport (\n\t\"fmt\"\n\t\"math\"\n\t\"net/http\"\n\t\"time\"\n\n\t\"golang.org/x/time/rate\"\n)\n\nvar lim = rate.NewLimiter(rate.Limit(1), 1) // 1 req/s, burst 1\n\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tres := lim.Reserve()\n\tif !res.OK() || res.Delay() > 0 {\n\t\tdelay := res.Delay()\n\t\tres.Cancel() // give the token back; we are rejecting, not waiting\n\t\tsecs := int(math.Ceil(delay.Seconds()))\n\t\tif secs < 1 {\n\t\t\tsecs = 1\n\t\t}\n\t\tw.Header().Set(\"Retry-After\", fmt.Sprintf(\"%d\", secs))\n\t\thttp.Error(w, \"rate limit exceeded\", http.StatusTooManyRequests)\n\t\treturn\n\t}\n\tfmt.Fprintln(w, \"ok\")\n}\n\nfunc main() { _ = time.Second; _ = handler }",
+        "expectedOutput": "// first request: 200 ok\n// immediate second request: 429 Too Many Requests, Retry-After: 1"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "predict-output",
+      "prompt": "What does this print?",
+      "code": "lim := rate.NewLimiter(rate.Limit(5), 3)\nfmt.Println(lim.AllowN(time.Now(), 3))\nfmt.Println(lim.AllowN(time.Now(), 1))",
+      "options": ["true\ntrue", "true\nfalse", "false\nfalse", "false\ntrue"],
+      "answerIndex": 1,
+      "explanation": "The bucket starts full with burst=3 tokens. AllowN(now, 3) consumes all 3 and returns true. Immediately after, the bucket is empty (no measurable time has elapsed to refill), so AllowN(now, 1) returns false."
+    },
+    {
+      "kind": "mcq",
+      "prompt": "You run 4 identical instances of a service behind a load balancer, each with an in-process limiter of 100 req/s. What is the effective global limit?",
+      "options": ["100 req/s — they coordinate automatically", "~400 req/s — each instance limits independently", "25 req/s — the limit is split across instances", "Unbounded — in-process limiters do not work behind a load balancer"],
+      "answerIndex": 1,
+      "explanation": "An in-process token bucket only sees traffic hitting that instance. With 4 independent buckets the cluster admits roughly 4 * 100 = 400 req/s. To enforce a true global limit you need shared state such as Redis."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This per-client limiter map is accessed from many goroutines. What's the bug?",
+      "code": "var clients = map[string]*rate.Limiter{}\n\nfunc getLimiter(key string) *rate.Limiter {\n\tlim, ok := clients[key]\n\tif !ok {\n\t\tlim = rate.NewLimiter(1, 5)\n\t\tclients[key] = lim\n\t}\n\treturn lim\n}",
+      "options": ["rate.NewLimiter takes the wrong argument types", "The map is read and written concurrently without a lock — a data race", "Limiters cannot be stored in a map", "The function should return an error"],
+      "answerIndex": 1,
+      "explanation": "Concurrent reads and writes to a built-in map are a data race and can crash the program with 'concurrent map writes'. Guard the map with a sync.Mutex (or use sync.Map), locking around both the lookup and the insert."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the Redis fixed-window limiter so the key expires after the window even on the first request.",
+      "codeBefore": "n, _ := rdb.Incr(ctx, key).Result()\nif n == 1 {",
+      "codeAfter": "}\nif n > limit { reject() }",
+      "options": ["rdb.Expire(ctx, key, window)", "rdb.Del(ctx, key)", "rdb.Get(ctx, key)", "rdb.Incr(ctx, key)"],
+      "answerIndex": 0,
+      "explanation": "On the first INCR the counter becomes 1; that is when you set the TTL with EXPIRE so the window resets after `window`. Setting it only when n==1 avoids resetting the TTL on every request (which would make the window slide forever). For full atomicity, wrap both calls in a Lua script."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-token-bucket",
+      "title": "Build a testable token-bucket limiter",
+      "instructions": "Implement a token-bucket `Limiter` where the current time is injected via a `now func() time.Time` field, so tests can advance time deterministically without sleeping. `Allow()` should refill tokens based on elapsed time (capped at `burst`), consume one token if available and return true, or return false. Construct it with `NewLimiter(rate, burst, now)`.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"time\"\n\n// Limiter is a token bucket. `now` is injected so tests control time.\ntype Limiter struct {\n\trate   float64       // tokens added per second\n\tburst  float64       // maximum tokens the bucket can hold\n\ttokens float64       // current tokens\n\tlast   time.Time     // last time we refilled\n\tnow    func() time.Time\n}\n\nfunc NewLimiter(rate, burst float64, now func() time.Time) *Limiter {\n\t// TODO: initialize a full bucket\n\treturn nil\n}\n\n// Allow reports whether one token is available, consuming it if so.\nfunc (l *Limiter) Allow() bool {\n\t// TODO: refill based on elapsed time, then try to consume a token\n\treturn false\n}",
+        "solution": {
+          "language": "go",
+          "code": "package solution\n\nimport \"time\"\n\n// Limiter is a token bucket. `now` is injected so tests control time.\ntype Limiter struct {\n\trate   float64       // tokens added per second\n\tburst  float64       // maximum tokens the bucket can hold\n\ttokens float64       // current tokens\n\tlast   time.Time     // last time we refilled\n\tnow    func() time.Time\n}\n\nfunc NewLimiter(rate, burst float64, now func() time.Time) *Limiter {\n\treturn &Limiter{\n\t\trate:   rate,\n\t\tburst:  burst,\n\t\ttokens: burst,      // start full: a fresh client may burst\n\t\tlast:   now(),\n\t\tnow:    now,\n\t}\n}\n\n// Allow reports whether one token is available, consuming it if so.\nfunc (l *Limiter) Allow() bool {\n\tt := l.now()\n\t// Refill lazily: add tokens proportional to elapsed time, capped at burst.\n\telapsed := t.Sub(l.last).Seconds()\n\tif elapsed > 0 {\n\t\tl.tokens += elapsed * l.rate\n\t\tif l.tokens > l.burst {\n\t\t\tl.tokens = l.burst\n\t\t}\n\t\tl.last = t\n\t}\n\tif l.tokens >= 1 {\n\t\tl.tokens-- // consume one token\n\t\treturn true\n\t}\n\treturn false\n}"
+        }
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"time\"\n\n// Limiter is a token bucket. `now` is injected so tests control time.\ntype Limiter struct {\n\trate   float64       // tokens added per second\n\tburst  float64       // maximum tokens the bucket can hold\n\ttokens float64       // current tokens\n\tlast   time.Time     // last time we refilled\n\tnow    func() time.Time\n}\n\nfunc NewLimiter(rate, burst float64, now func() time.Time) *Limiter {\n\treturn &Limiter{\n\t\trate:   rate,\n\t\tburst:  burst,\n\t\ttokens: burst,      // start full: a fresh client may burst\n\t\tlast:   now(),\n\t\tnow:    now,\n\t}\n}\n\n// Allow reports whether one token is available, consuming it if so.\nfunc (l *Limiter) Allow() bool {\n\tt := l.now()\n\t// Refill lazily: add tokens proportional to elapsed time, capped at burst.\n\telapsed := t.Sub(l.last).Seconds()\n\tif elapsed > 0 {\n\t\tl.tokens += elapsed * l.rate\n\t\tif l.tokens > l.burst {\n\t\t\tl.tokens = l.burst\n\t\t}\n\t\tl.last = t\n\t}\n\tif l.tokens >= 1 {\n\t\tl.tokens-- // consume one token\n\t\treturn true\n\t}\n\treturn false\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestLimiter(t *testing.T) {\n\t// Controllable clock: tests advance `clock` instead of sleeping.\n\tclock := time.Unix(0, 0)\n\tnow := func() time.Time { return clock }\n\n\t// rate = 2 tokens/sec, burst = 3 (starts full).\n\tl := NewLimiter(2, 3, now)\n\n\t// Three immediate Allows drain the full bucket.\n\tfor i := 0; i < 3; i++ {\n\t\tif !l.Allow() {\n\t\t\tt.Fatalf(\"burst token %d: want true, got false\", i+1)\n\t\t}\n\t}\n\t// Bucket is empty now: the next Allow must fail.\n\tif l.Allow() {\n\t\tt.Fatal(\"empty bucket: want false, got true\")\n\t}\n\n\t// Advance 1 second: at 2 tokens/sec, 2 tokens refill.\n\tclock = clock.Add(time.Second)\n\tif !l.Allow() {\n\t\tt.Fatal(\"after 1s, token 1: want true\")\n\t}\n\tif !l.Allow() {\n\t\tt.Fatal(\"after 1s, token 2: want true\")\n\t}\n\tif l.Allow() {\n\t\tt.Fatal(\"after 1s, token 3: want false (only 2 refilled)\")\n\t}\n\n\t// Advance 10s: refill must cap at burst (3), not 20.\n\tclock = clock.Add(10 * time.Second)\n\tfor i := 0; i < 3; i++ {\n\t\tif !l.Allow() {\n\t\t\tt.Fatalf(\"after 10s idle, token %d: want true\", i+1)\n\t\t}\n\t}\n\tif l.Allow() {\n\t\tt.Fatal(\"after 10s idle: want false (capped at burst=3)\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.00s)",
+      "hints": [
+        "Inject the clock as a field `now func() time.Time` and store `last = now()` in the constructor; tests then advance a captured variable instead of sleeping.",
+        "On each Allow(), compute elapsed = now().Sub(last).Seconds(), add elapsed*rate tokens, and clamp to burst before consuming.",
+        "Only consume (tokens--) and return true when tokens >= 1; otherwise return false without changing the count."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-perclient-leak",
+      "difficulty": "advanced",
+      "title": "Per-client limiter map grows forever (and races)",
+      "symptom": "A service that creates a *rate.Limiter per client IP slowly leaks memory under traffic, and under load testing it occasionally crashes with 'fatal error: concurrent map writes'.",
+      "brokenCode": {
+        "language": "go",
+        "code": "var clients = map[string]*rate.Limiter{}\n\nfunc getLimiter(ip string) *rate.Limiter {\n\tl, ok := clients[ip]\n\tif !ok {\n\t\tl = rate.NewLimiter(1, 5)\n\t\tclients[ip] = l // written from many goroutines, no lock\n\t}\n\treturn l\n}\n\nfunc middleware(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tif !getLimiter(r.RemoteAddr).Allow() {\n\t\t\thttp.Error(w, \"too many\", http.StatusTooManyRequests)\n\t\t\treturn\n\t\t}\n\t\tnext.ServeHTTP(w, r)\n\t})\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "Two distinct defects. First, the map is read and written from concurrent request goroutines with no synchronization — Go's runtime detects concurrent map writes and aborts the process. Second, entries are never removed: every unique IP adds a permanent map entry, so the map (and its limiters) grows without bound, leaking memory.",
+      "commonMistakes": [
+        "Accessing a built-in map from multiple goroutines without a sync.Mutex (or sync.Map).",
+        "Never evicting idle entries, treating the per-client map as if clients were a small fixed set.",
+        "Keying on r.RemoteAddr including the ephemeral port, which inflates the map with one entry per connection."
+      ],
+      "fixChallenge": "Guard the map with a sync.Mutex, track a lastSeen time per client, and run a cleanup goroutine that periodically evicts entries idle longer than a TTL.",
+      "solution": {
+        "language": "go",
+        "code": "type entry struct {\n\tlimiter  *rate.Limiter\n\tlastSeen time.Time\n}\n\ntype Limiters struct {\n\tmu      sync.Mutex\n\tclients map[string]*entry\n}\n\nfunc NewLimiters() *Limiters {\n\tl := &Limiters{clients: make(map[string]*entry)}\n\tgo l.cleanup() // background eviction of idle clients\n\treturn l\n}\n\nfunc (l *Limiters) get(ip string) *rate.Limiter {\n\tl.mu.Lock()\n\tdefer l.mu.Unlock()\n\te, ok := l.clients[ip]\n\tif !ok {\n\t\te = &entry{limiter: rate.NewLimiter(1, 5)}\n\t\tl.clients[ip] = e\n\t}\n\te.lastSeen = time.Now()\n\treturn e.limiter\n}\n\nfunc (l *Limiters) cleanup() {\n\tfor range time.Tick(time.Minute) {\n\t\tl.mu.Lock()\n\t\tfor ip, e := range l.clients {\n\t\t\tif time.Since(e.lastSeen) > 3*time.Minute {\n\t\t\t\tdelete(l.clients, ip) // evict idle client\n\t\t\t}\n\t\t}\n\t\tl.mu.Unlock()\n\t}\n}",
+        "expectedOutput": "// No data race under -race; map size stays bounded as idle clients are evicted."
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-iv-ratelimit-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "advanced",
+        "question": "Compare token bucket, leaky bucket, and sliding window. When would you choose each?",
+        "directAnswer": "Token bucket allows bursts up to a capacity while bounding the average rate — the default for APIs because real traffic is bursty (it's what x/time/rate implements). Leaky bucket drains a queue at a fixed rate, fully smoothing output with no burst — good for protecting a downstream that needs steady input. Sliding window counts requests over a moving interval to bound a rate precisely without the boundary-burst problem of a fixed window — common in distributed limiters backed by Redis.",
+        "detailedExplanation": {
+          "whatItIs": "Three algorithms for bounding request rate, differing in how they treat bursts and how they store state.",
+          "whyItExists": "Different workloads need different fairness/smoothness tradeoffs, and different deployments (single process vs distributed) favor different state models.",
+          "howItWorks": "Token bucket: refill tokens at `rate`, cap at `burst`, consume per request. Leaky bucket: enqueue requests, dequeue at fixed rate. Sliding window: keep timestamps (log) or a weighted blend of the current and previous fixed windows."
+        },
+        "whyImportant": "Choosing the wrong algorithm causes either rejected legitimate bursts or unsmoothed overload — and it's a classic system-design interview question.",
+        "realWorldExample": "Stripe uses token-bucket-style limiting per key to absorb client bursts; a fixed-window counter in Redis would let a client send 2x the limit across the minute boundary, which a sliding window prevents.",
+        "followUps": [
+          { "question": "Why does a fixed window allow a 2x burst?", "answer": "A client can send the full quota at the very end of one window and the full quota at the very start of the next, concentrating 2x the limit in a short span around the boundary." },
+          { "question": "Is token bucket the same as leaky bucket reversed?", "answer": "They're duals: token bucket meters input by handing out tokens (allowing bursts), leaky bucket meters output by draining a queue (no bursts). Token bucket is more permissive for the same average rate." }
+        ]
+      },
+      {
+        "id": "go-iv-ratelimit-2",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "advanced",
+        "question": "In golang.org/x/time/rate, what's the difference between Allow, Wait, and Reserve?",
+        "directAnswer": "Allow() is non-blocking: it returns true and consumes a token if one is available now, else false — use it to shed load (reject immediately). Wait(ctx) blocks the goroutine until a token is available or ctx is cancelled — use it to pace your own outbound work. Reserve() (and ReserveN) is non-blocking but always 'succeeds': it returns a Reservation with a Delay() telling you how long until the token matures, so you can choose to sleep, schedule, or Cancel() it and reject with a Retry-After.",
+        "detailedExplanation": {
+          "whatItIs": "Three methods on rate.Limiter for acquiring tokens with different blocking/decision semantics.",
+          "whyItExists": "Servers shedding load want a yes/no (Allow); clients pacing work want to block (Wait); code that needs to decide based on the wait time wants the delay (Reserve).",
+          "howItWorks": "All three compute available tokens from elapsed time. Reserve reserves a token at a future moment and returns its Delay; Wait is essentially Reserve plus a timer sleep bounded by the context deadline."
+        },
+        "whyImportant": "Misusing Wait where you meant Allow turns a load-shedding gate into an unbounded queue of blocked goroutines — a real outage cause.",
+        "realWorldExample": "An HTTP middleware uses Allow() to reject excess traffic with 429; a background exporter uses Wait() to stay under a downstream API's quota.",
+        "followUps": [
+          { "question": "What happens if you Reserve but don't use the token?", "answer": "Call Reservation.Cancel() to return the token to the bucket; otherwise it stays consumed and reduces capacity for others." },
+          { "question": "Can Wait return an error?", "answer": "Yes — if the context is cancelled/expires before a token is available, or if the requested N exceeds the burst size so it could never be satisfied." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-iv-ratelimit-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "You deploy your API to 10 pods behind a load balancer. Each pod uses an in-process x/time/rate limiter set to your documented 1000 req/s per customer. Customers report they can actually push far more than 1000 req/s. How do you fix it while keeping latency low?",
+        "directAnswer": "Each pod limits only the traffic it sees, so 10 independent buckets admit up to ~10,000 req/s per customer. Move the authoritative limit to shared state: a Redis-backed limiter using an atomic Lua script (fixed/sliding window or a token bucket stored as a hash) keyed by customer. To keep latency low, keep a local limiter as a generous first-stage gate and consult Redis for the precise global decision, or shard customers to pods so each customer's traffic lands on one pod.",
+        "detailedExplanation": {
+          "whatItIs": "A correctness bug from per-instance state in a horizontally scaled service.",
+          "whyItExists": "An in-process token bucket has no visibility into traffic on other instances.",
+          "howItWorks": "Centralizing the counter in Redis with an atomic script makes the read-modify-write safe across pods; a local fast-path limits round trips."
+        },
+        "whyImportant": "It's one of the most common real-world rate-limiting mistakes and a frequent system-design follow-up.",
+        "realWorldExample": "A team moved from per-pod limits to a Redis sliding-window-log Lua script keyed by API key, cutting customer over-quota incidents to zero at the cost of ~0.4 ms per request.",
+        "followUps": [
+          { "question": "Why use a Lua script instead of INCR then EXPIRE from Go?", "answer": "Running both commands in a single Lua script makes the increment-and-set-TTL atomic in one round trip, eliminating the race where a key is incremented but never gets a TTL." },
+          { "question": "What's the failure mode if Redis is down?", "answer": "Decide fail-open (allow traffic, prioritizing availability) or fail-closed (reject, prioritizing protection). Many systems fail open with a local limiter as a safety net." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-iv-ratelimit-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a sliding-window-log rate limiter: `func (l *SlidingLog) Allow(now time.Time) bool` that allows at most `limit` events within any `window` duration.",
+        "thoughtProcess": "Keep timestamps of recent allowed events. On each call, drop timestamps older than now-window (they've slid out of the window), then if the remaining count is below the limit, record now and allow; otherwise reject. Using a slice as a FIFO works because timestamps are appended in increasing order, so the expired ones are always at the front.",
+        "solution": {
+          "code": "type SlidingLog struct {\n\tlimit  int\n\twindow time.Duration\n\tevents []time.Time // timestamps of allowed events, oldest first\n}\n\nfunc NewSlidingLog(limit int, window time.Duration) *SlidingLog {\n\treturn &SlidingLog{limit: limit, window: window}\n}\n\nfunc (l *SlidingLog) Allow(now time.Time) bool {\n\tcutoff := now.Add(-l.window)\n\t// Drop events that have slid out of the window (front of the slice).\n\ti := 0\n\tfor i < len(l.events) && !l.events[i].After(cutoff) {\n\t\ti++\n\t}\n\tl.events = l.events[i:]\n\tif len(l.events) >= l.limit {\n\t\treturn false // window is full\n\t}\n\tl.events = append(l.events, now)\n\treturn true\n}",
+          "language": "go"
+        },
+        "lineByLine": "cutoff is the oldest timestamp still inside the window. The loop advances i past every event at or before the cutoff, then we reslice to discard them. If the surviving count already meets the limit we reject; otherwise we append the current timestamp and allow. Because events are appended in increasing time order, expired entries are always a contiguous prefix, so the trim is correct and cheap.",
+        "timeComplexity": "Amortized O(1) per call: each timestamp is appended once and removed once across all calls.",
+        "spaceComplexity": "O(limit) — at most `limit` timestamps are retained within any window.",
+        "followUps": [
+          { "question": "How would you make this safe for concurrent use?", "answer": "Embed a sync.Mutex and lock at the start of Allow; or shard by key so each key has its own lock, reducing contention." },
+          { "question": "How does this translate to Redis for a distributed limiter?", "answer": "Use a sorted set keyed by client: ZREMRANGEBYSCORE to drop old timestamps, ZCARD to count, ZADD to record, all inside one Lua script for atomicity." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Layer your limiters: a cheap per-instance local limiter sheds the obvious flood instantly, while a shared Redis-backed limiter enforces the authoritative global budget. Put the limiter in middleware so policy is centralized, and key it on a stable identity (API key or authenticated user) rather than RemoteAddr, which includes ephemeral ports and is spoofable behind proxies — trust X-Forwarded-For only from known proxies.",
+    "performance": "A local x/time/rate Allow() is a sub-microsecond mutex+arithmetic operation; a Redis round trip is 0.2-1 ms, so don't put Redis on every request if a local gate suffices. For per-client maps, pre-size and shard the map (e.g. by hash into N submaps each with its own mutex) to cut lock contention under high cardinality.",
+    "concurrency": "Per-client limiter maps must be guarded by a mutex or sharded; rate.Limiter itself is goroutine-safe. Avoid using Wait() in request handlers — it queues blocked goroutines unboundedly and can exhaust memory; prefer Allow()/Reserve() to shed load with 429.",
+    "reliability": "Decide your Redis failure policy explicitly: fail-open (allow, favor availability) with a conservative local limiter as backstop, or fail-closed (reject, favor protection). Always set a TTL on Redis keys so abandoned counters expire. Add jitter to client backoff so retries after 429 don't synchronize into a thundering herd.",
+    "observability": "Emit metrics for allowed vs rejected counts per limiter and per client tier, the current 429 rate, and (for distributed limiters) Redis latency and error rate. Alert when the 429 rate spikes — it signals either an attack, a misconfigured client, or an under-provisioned limit.",
+    "security": "Rate limiting is a primary defense against brute-force and credential-stuffing — apply stricter limits to auth endpoints. Beware attackers cycling source IPs to evade per-IP limits; combine with per-account limits and CAPTCHAs. Never leak exact remaining-quota internals that help an attacker tune their rate.",
+    "caseStudies": [
+      { "company": "Stripe", "problem": "Protect a multi-tenant payments API from any single client's bursts overwhelming shared infrastructure.", "solution": "Token-bucket-style per-key limiters with multiple limiter types (concurrency + request-rate), returning clear 429s with retry guidance.", "tradeoffs": "More moving parts and tuning per endpoint, but strong isolation between tenants.", "lessons": "Per-client (not just global) limiting is essential for fairness in multi-tenant systems; clear 429 semantics let clients self-throttle." },
+      { "company": "GitHub API", "problem": "Enforce documented hourly quotas across a large distributed fleet.", "solution": "Centralized counters with X-RateLimit-* headers and Retry-After, so clients know their remaining budget and when to retry.", "tradeoffs": "Centralized state adds latency and a dependency, but gives accurate global enforcement.", "lessons": "Exposing limit headers turns rate limiting into a cooperative contract; well-behaved clients back off instead of hammering." }
+    ]
+  },
+  "keyTakeaways": [
+    "Token bucket (the model behind golang.org/x/time/rate) permits bursts up to `burst` while bounding the average `rate`; leaky bucket fully smooths output; windows trade simplicity for boundary bursts.",
+    "Use Allow() to shed load (reject with 429 + Retry-After), Wait() to pace your own outbound work, and Reserve() when you need the delay to decide.",
+    "Per-client limiting needs a map guarded by a sync.Mutex plus a cleanup goroutine to evict idle entries, or it leaks memory and races.",
+    "A single in-process limiter can't enforce a global limit across N instances — centralize state in Redis with an atomic Lua script, choosing fail-open vs fail-closed deliberately."
+  ]
+}

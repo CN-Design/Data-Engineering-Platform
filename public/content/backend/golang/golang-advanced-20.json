@@ -1,0 +1,282 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-advanced-20",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "database/sql & Connection Pooling",
+  "difficulty": "advanced",
+  "summary": "`database/sql` is Go's standard interface to SQL databases. Its single most important — and most misunderstood — feature is that a `*sql.DB` is **not a connection**: it is a concurrency-safe **pool of connections** that the runtime opens, reuses, and retires for you. Tuning that pool (`SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`) is the difference between a service that scales and one that exhausts the database under load.",
+  "prerequisites": ["golang-intermediate-5", "golang-master-4"],
+  "relatedConcepts": ["golang-master-2", "golang-master-4"],
+  "nestedConcepts": ["*sql.DB is a pool", "MaxOpenConns / MaxIdleConns", "ConnMaxLifetime / ConnMaxIdleTime", "rows.Close & leaks", "context-scoped queries", "prepared statements", "transactions"],
+  "subtopics": [
+    { "title": "*sql.DB is a pool, not a connection", "explanation": "sql.Open does not connect — it returns a handle to a lazily-initialized pool. Each Query/Exec borrows a free connection (or opens a new one up to the limit), runs the statement, and returns the connection to the pool. Because it's safe for concurrent use, you create ONE *sql.DB at startup and share it across all goroutines.", "example": "db, _ := sql.Open(\"pgx\", dsn); defer db.Close() // one pool for the whole process" },
+    { "title": "Sizing the pool: MaxOpenConns & MaxIdleConns", "explanation": "SetMaxOpenConns caps total connections in use + idle; beyond it, callers block waiting for a free one. SetMaxIdleConns caps how many stay open while idle (keep it equal to MaxOpenConns to avoid churn). The right max is bounded by the database's own connection limit divided across all app instances.", "example": "db.SetMaxOpenConns(25); db.SetMaxIdleConns(25)" },
+    { "title": "Connection lifetime & recycling", "explanation": "SetConnMaxLifetime forces connections to be recycled after a duration, which lets load balancers rebalance and avoids servers that drop long-lived connections. SetConnMaxIdleTime closes connections that have been idle too long, releasing database resources during quiet periods.", "example": "db.SetConnMaxLifetime(30 * time.Minute); db.SetConnMaxIdleTime(5 * time.Minute)" },
+    { "title": "Always close Rows (the #1 leak)", "explanation": "Query returns *sql.Rows that holds a connection until you fully drain it or call rows.Close(). Forgetting to close on an early return pins that connection forever; under load the pool drains and every query blocks. Defer rows.Close() and always check rows.Err() after the loop.", "example": "rows, err := db.QueryContext(ctx, q); defer rows.Close()" },
+    { "title": "Context-scoped queries & cancellation", "explanation": "Always use the *Context methods (QueryContext, ExecContext, BeginTx). The context's deadline becomes the query timeout, and cancellation propagates to the driver so a client that gives up doesn't leave a query running and a connection pinned.", "example": "ctx, cancel := context.WithTimeout(ctx, 2*time.Second); defer cancel()" },
+    { "title": "Transactions hold a dedicated connection", "explanation": "BeginTx checks out one connection for the entire transaction; every Exec on that *sql.Tx uses it. You MUST end with Commit or Rollback — a leaked transaction permanently removes a connection from the pool. The idiomatic pattern is defer tx.Rollback() (a no-op after a successful Commit).", "example": "tx, _ := db.BeginTx(ctx, nil); defer tx.Rollback(); /* ... */ tx.Commit()" }
+  ],
+  "foundations": {
+    "overview": "When teams first reach for database/sql they treat *sql.DB like a connection and open one per request — and then watch the database fall over under load. The mental shift that makes everything click is this: *sql.DB is a self-managing pool. You configure how big it can get and how long connections live; the runtime hands them out, reuses them, and retires them. Master the pool knobs and the resource-leak patterns, and you have the foundation of every reliable Go data layer.",
+    "formalDefinition": "database/sql is a driver-agnostic standard-library package providing a connection pool (*sql.DB) over a registered driver, with safe-for-concurrent-use query, exec, transaction, and prepared-statement primitives, all parameterized by context.Context for deadlines and cancellation.",
+    "whyItMatters": "The database is almost always the scaling bottleneck of a backend service. How you size and use the pool directly determines tail latency, error rates under load, and whether you exhaust the database's hard connection limit. It is one of the most common production-incident topics and a frequent senior interview probe.",
+    "mentalModel": "Picture a bank with a fixed number of teller windows (MaxOpenConns). Customers (goroutines) queue for a free window; when none is free they wait (or time out via context). Tellers go home after a shift (ConnMaxLifetime) and new ones replace them. A customer who walks up, gets served, but never leaves the window (an unclosed Rows) blocks that window for everyone else.",
+    "runtimePerspective": "*sql.DB keeps a slice of free connections and a count of in-use ones, guarded by a mutex. A request first tries to reuse a free idle connection; if none and the open count is below MaxOpenConns, it dials a new one; otherwise it blocks on a per-request channel until a connection is freed or the context is cancelled. Health checks and lifetime/idle timers prune stale connections in the background.",
+    "realWorldUsage": "Every CRUD service, every API backed by Postgres/MySQL, batch jobs, and read-heavy services all sit on a *sql.DB pool — usually one per process, sized against the database's max_connections.",
+    "businessImpact": "A correctly sized pool lets one database serve many app instances without hitting its connection ceiling, deferring expensive vertical scaling and preventing outages that directly cost revenue.",
+    "engineeringImpact": "Understanding the pool turns mysterious 'connection refused' and 'too many clients' incidents into a one-line config change, and the Rows/Tx leak patterns into reflexes (defer Close, defer Rollback).",
+    "performanceImpact": "Reusing pooled connections avoids the TCP + TLS + auth handshake on every query (often tens of milliseconds). Right-sizing keeps connections warm without overwhelming the database scheduler; over-sizing causes context-switch and lock contention inside the DB itself.",
+    "commonUseCases": [
+      "One shared *sql.DB created at startup for the whole process",
+      "Pool sized against the database connection ceiling across all instances",
+      "Context-scoped queries with per-request timeouts",
+      "Transactions for multi-statement atomic writes"
+    ],
+    "commonMisconceptions": [
+      { "myth": "sql.Open connects to the database.", "reality": "It only validates arguments and prepares the pool. The first real connection is made lazily on first use; call db.PingContext to verify connectivity at startup." },
+      { "myth": "You should open a *sql.DB per request.", "reality": "*sql.DB IS the pool and is safe for concurrent use. Create one and share it; opening per request defeats pooling and exhausts the database." },
+      { "myth": "More connections always means more throughput.", "reality": "Past the database's parallelism, extra connections add lock and scheduling contention inside the DB and slow everything down. The optimal pool is often surprisingly small." },
+      { "myth": "Rows are cleaned up by the garbage collector.", "reality": "An open *sql.Rows pins a connection until drained or explicitly Closed; GC does not free it promptly. Always defer rows.Close()." }
+    ]
+  },
+  "visualExplorer": [
+    { "visualId": "concept-steps", "title": "Lifecycle of a query through the pool", "caption": "What happens from db.QueryContext to returning the connection.", "config": { "intro": "How a single query borrows and returns a pooled connection:", "steps": [
+      { "name": "Request a connection", "detail": "QueryContext asks the pool for a connection. If a free idle one exists, it's reused immediately." },
+      { "name": "Open or wait", "detail": "If none is free and open count < MaxOpenConns, the pool dials a new connection. Otherwise the caller blocks until one frees up or ctx is cancelled." },
+      { "name": "Run the statement", "detail": "The connection sends the SQL and parameters; results stream back into a *sql.Rows that holds the connection." },
+      { "name": "Drain & close", "detail": "You range over rows and call rows.Close() (deferred). Only then is the connection returned to the pool's idle list." },
+      { "name": "Recycle", "detail": "Background timers retire connections older than ConnMaxLifetime or idle past ConnMaxIdleTime, keeping the pool healthy." }
+    ] } },
+    { "visualId": "go-channel", "title": "Goroutines contend for pooled connections", "caption": "Many request goroutines share one pool; when all connections are busy, callers block (bounded by context) until one is returned — exactly like sending on a full channel." }
+  ],
+  "interactiveExamples": [
+    {
+      "level": "advanced",
+      "title": "Configure the pool correctly at startup",
+      "explanation": "One *sql.DB for the whole process. Open does not connect, so we PingContext to fail fast at startup. The four setters size and recycle the pool. Keep MaxIdleConns == MaxOpenConns so connections aren't churned open/closed under steady load.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n\t\"log\"\n\t\"time\"\n\n\t_ \"github.com/jackc/pgx/v5/stdlib\" // registers the \"pgx\" driver\n)\n\nfunc openDB(dsn string) (*sql.DB, error) {\n\tdb, err := sql.Open(\"pgx\", dsn) // builds the pool; does NOT connect\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdb.SetMaxOpenConns(25)              // hard cap: in-use + idle\n\tdb.SetMaxIdleConns(25)              // match max to avoid churn\n\tdb.SetConnMaxLifetime(30 * time.Minute) // recycle so LBs can rebalance\n\tdb.SetConnMaxIdleTime(5 * time.Minute)  // release during quiet periods\n\n\tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n\tdefer cancel()\n\tif err := db.PingContext(ctx); err != nil { // fail fast if DB is down\n\t\tdb.Close()\n\t\treturn nil, err\n\t}\n\treturn db, nil\n}\n\nfunc main() {\n\tdb, err := openDB(\"postgres://user:pass@localhost:5432/app\")\n\tif err != nil {\n\t\tlog.Fatalf(\"db init: %v\", err)\n\t}\n\tdefer db.Close()\n\tlog.Println(\"pool ready\")\n}",
+        "expectedOutput": "pool ready"
+      }
+    },
+    {
+      "level": "production",
+      "title": "Edit it: fix the connection leak",
+      "explanation": "This query leaks a connection on the error path and never checks rows.Err(). Edit it so the connection is always returned to the pool and iteration errors are surfaced. The fix is to defer rows.Close() right after the error check and inspect rows.Err() after the loop.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n)\n\n// BUG: leaks a connection and ignores iteration errors.\nfunc userNames(ctx context.Context, db *sql.DB) ([]string, error) {\n\trows, err := db.QueryContext(ctx, \"SELECT name FROM users\")\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar names []string\n\tfor rows.Next() {\n\t\tvar n string\n\t\tif err := rows.Scan(&n); err != nil {\n\t\t\treturn nil, err // <- early return: rows never closed!\n\t\t}\n\t\tnames = append(names, n)\n\t}\n\treturn names, nil // <- never checks rows.Err()\n}",
+        "solution": "package main\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n)\n\nfunc userNames(ctx context.Context, db *sql.DB) ([]string, error) {\n\trows, err := db.QueryContext(ctx, \"SELECT name FROM users\")\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer rows.Close() // ALWAYS returns the connection, even on early return\n\n\tvar names []string\n\tfor rows.Next() {\n\t\tvar n string\n\t\tif err := rows.Scan(&n); err != nil {\n\t\t\treturn nil, err // safe now: deferred Close runs\n\t\t}\n\t\tnames = append(names, n)\n\t}\n\tif err := rows.Err(); err != nil { // surface errors that ended iteration\n\t\treturn nil, err\n\t}\n\treturn names, nil\n}",
+        "expectedOutput": "(compiles; connection is always returned to the pool)"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "What does sql.Open actually do?",
+      "code": "db, err := sql.Open(\"pgx\", dsn)",
+      "options": ["Opens a TCP connection to the database immediately", "Validates arguments and prepares a connection pool, but does not connect", "Runs a health-check query against the database", "Opens one connection per CPU core"],
+      "answerIndex": 1,
+      "explanation": "sql.Open is lazy: it parses the DSN and sets up the pool but makes no network connection. The first real connection happens on first use. Call db.PingContext to verify connectivity at startup."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "Under load this handler's queries start blocking and eventually time out. Why?",
+      "code": "func handler(db *sql.DB) {\n\trows, _ := db.Query(\"SELECT id FROM jobs WHERE done = false\")\n\tfor rows.Next() {\n\t\tvar id int\n\t\trows.Scan(&id)\n\t\tif id == target { return } // early return, no Close\n\t}\n\trows.Close()\n}",
+      "options": ["Query is not safe for concurrent use", "The early return skips rows.Close(), so the connection is never returned to the pool", "Scan must be called before Next", "db.Query needs a context"],
+      "answerIndex": 1,
+      "explanation": "The early return on a match leaves *sql.Rows open, pinning its connection. Repeated under load, the pool drains to zero free connections and every new query blocks until its context deadline. Fix: defer rows.Close() immediately after the error check."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Cap the pool so it never opens more than 25 connections to the database.",
+      "codeBefore": "db, _ := sql.Open(\"pgx\", dsn)",
+      "codeAfter": "db.SetMaxIdleConns(25)",
+      "options": ["db.SetMaxOpenConns(25)", "db.SetConnMaxLifetime(25)", "db.Limit(25)", "db.SetMaxIdleConns(25)"],
+      "answerIndex": 0,
+      "explanation": "SetMaxOpenConns(25) caps total (in-use + idle) connections; further callers block until one frees. SetConnMaxLifetime takes a duration, not a count, and there is no db.Limit method. Matching MaxIdleConns to MaxOpenConns avoids churn."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "A transaction is started but the function returns early on error without Commit or Rollback. What is the lasting effect on the pool?",
+      "code": "tx, _ := db.BeginTx(ctx, nil)\n_, err := tx.ExecContext(ctx, stmt)\nif err != nil {\n\treturn err // no Rollback!\n}\ntx.Commit()",
+      "options": ["Nothing — the GC rolls back the transaction", "One connection is permanently removed from the pool (leaked) until the DB times it out", "The whole pool is closed", "The next query automatically reuses it"],
+      "answerIndex": 1,
+      "explanation": "A *sql.Tx holds a dedicated connection for its whole life. Returning without Commit/Rollback leaks that connection — it's pinned to a transaction that never ends. The idiom is `defer tx.Rollback()`, which is a harmless no-op after a successful Commit."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-tx-transfer",
+      "title": "Atomic money transfer with a transaction",
+      "instructions": "Implement `Transfer(ctx, db, from, to, amount)` that debits one account and credits another atomically using a transaction. It must roll back on any error (including insufficient funds, signalled by zero rows affected) and commit only when both updates succeed. Use the defer-Rollback idiom.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n)\n\n// Transfer moves `amount` from account `from` to account `to` atomically.\nfunc Transfer(ctx context.Context, db *sql.DB, from, to, amount int) error {\n\t// TODO: BeginTx, debit (only if balance >= amount), credit, Commit.\n\t// Roll back on any error. Return an error if the debit affects 0 rows.\n\treturn nil\n}"
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n\t\"errors\"\n)\n\nvar ErrInsufficientFunds = errors.New(\"insufficient funds\")\n\nfunc Transfer(ctx context.Context, db *sql.DB, from, to, amount int) error {\n\ttx, err := db.BeginTx(ctx, nil) // checks out one connection for the tx\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback() // no-op after a successful Commit; safety net otherwise\n\n\t// Debit only if the balance can cover it; rows-affected tells us if it did.\n\tres, err := tx.ExecContext(ctx,\n\t\t\"UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND balance >= $1\",\n\t\tamount, from)\n\tif err != nil {\n\t\treturn err\n\t}\n\tn, err := res.RowsAffected()\n\tif err != nil {\n\t\treturn err\n\t}\n\tif n == 0 { // no row matched the balance>=amount guard\n\t\treturn ErrInsufficientFunds\n\t}\n\n\tif _, err := tx.ExecContext(ctx,\n\t\t\"UPDATE accounts SET balance = balance + $1 WHERE id = $2\",\n\t\tamount, to); err != nil {\n\t\treturn err\n\t}\n\n\treturn tx.Commit() // both updates succeed atomically\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n\t\"errors\"\n\t\"testing\"\n\n\t\"github.com/DATA-DOG/go-sqlmock\"\n)\n\nfunc TestTransfer_Success(t *testing.T) {\n\tdb, mock, _ := sqlmock.New()\n\tdefer db.Close()\n\tmock.ExpectBegin()\n\tmock.ExpectExec(\"UPDATE accounts SET balance = balance - \").\n\t\tWithArgs(100, 1).WillReturnResult(sqlmock.NewResult(0, 1))\n\tmock.ExpectExec(\"UPDATE accounts SET balance = balance \\\\+ \").\n\t\tWithArgs(100, 2).WillReturnResult(sqlmock.NewResult(0, 1))\n\tmock.ExpectCommit()\n\tif err := Transfer(context.Background(), db, 1, 2, 100); err != nil {\n\t\tt.Fatalf(\"unexpected error: %v\", err)\n\t}\n\tif err := mock.ExpectationsWereMet(); err != nil {\n\t\tt.Errorf(\"expectations: %v\", err)\n\t}\n}\n\nfunc TestTransfer_Insufficient(t *testing.T) {\n\tdb, mock, _ := sqlmock.New()\n\tdefer db.Close()\n\tmock.ExpectBegin()\n\tmock.ExpectExec(\"UPDATE accounts SET balance = balance - \").\n\t\tWithArgs(100, 1).WillReturnResult(sqlmock.NewResult(0, 0)) // 0 rows\n\tmock.ExpectRollback()\n\tif err := Transfer(context.Background(), db, 1, 2, 100); !errors.Is(err, ErrInsufficientFunds) {\n\t\tt.Fatalf(\"want ErrInsufficientFunds, got %v\", err)\n\t}\n\tvar _ = sql.ErrNoRows\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Start with db.BeginTx(ctx, nil) and immediately `defer tx.Rollback()`.",
+        "Use a single UPDATE with `AND balance >= $1` and inspect RowsAffected() to detect insufficient funds without a separate SELECT.",
+        "Only call tx.Commit() at the very end; the deferred Rollback becomes a no-op once Commit succeeds."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-db-per-request",
+      "difficulty": "advanced",
+      "title": "'too many connections' from the database",
+      "symptom": "Under moderate load the service starts returning 'FATAL: sorry, too many clients already' and connection counts on the database spike far above the configured pool size.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func handler(w http.ResponseWriter, r *http.Request) {\n\tdb, _ := sql.Open(\"pgx\", dsn) // NEW pool on every request!\n\tdefer db.Close()\n\trows, _ := db.QueryContext(r.Context(), \"SELECT 1\")\n\tdefer rows.Close()\n\t// ... use rows ...\n}"
+      },
+      "errorAnalysis": "sql.Open is called per request, creating a brand-new pool each time. Each pool can open up to its own MaxOpenConns connections, and db.Close() does not immediately tear down in-flight connections — so concurrent requests multiply into far more open connections than any single pool's limit, blowing past the database's max_connections.",
+      "commonMistakes": [
+        "Calling sql.Open inside a handler instead of once at startup.",
+        "Assuming *sql.DB is a single connection rather than a shared pool.",
+        "Relying on db.Close() to instantly reclaim connections."
+      ],
+      "fixChallenge": "Create exactly one *sql.DB at startup, size its pool, and inject it into handlers so all requests share it.",
+      "solution": {
+        "language": "go",
+        "code": "// At startup, ONCE:\nvar db *sql.DB\n\nfunc initDB() {\n\tvar err error\n\tdb, err = sql.Open(\"pgx\", dsn)\n\tif err != nil { log.Fatal(err) }\n\tdb.SetMaxOpenConns(25)\n\tdb.SetMaxIdleConns(25)\n\tdb.SetConnMaxLifetime(30 * time.Minute)\n}\n\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\trows, err := db.QueryContext(r.Context(), \"SELECT 1\") // shared pool\n\tif err != nil { http.Error(w, err.Error(), 500); return }\n\tdefer rows.Close()\n\t// ... use rows ...\n}",
+        "expectedOutput": "(connection count stays within MaxOpenConns under load)"
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-iv-dbsql-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "advanced",
+        "question": "Explain what *sql.DB represents and how the connection pool behaves.",
+        "directAnswer": "*sql.DB is a concurrency-safe handle to a pool of database connections, not a single connection. Each query borrows a free connection from the pool (or opens a new one up to SetMaxOpenConns), runs, and returns it. If all connections are busy, callers block until one frees or the context is cancelled. You create one *sql.DB at startup and share it across all goroutines.",
+        "detailedExplanation": {
+          "whatItIs": "A pooled, driver-agnostic database handle managed by the standard library.",
+          "whyItExists": "To amortize the expensive TCP+TLS+auth handshake across many queries and to bound concurrent load on the database.",
+          "howItWorks": "It tracks free and in-use connections under a mutex, reusing idle ones, dialing new ones up to the max, and pruning by lifetime/idle timers."
+        },
+        "whyImportant": "Misunderstanding this (one DB per request) is a top cause of database-exhaustion incidents in Go services.",
+        "realWorldExample": "A web service opens one *sql.DB with MaxOpenConns=25 at boot; thousands of requests share those 25 connections concurrently.",
+        "followUps": [
+          { "question": "Does sql.Open connect?", "answer": "No — it's lazy. Use db.PingContext to verify connectivity at startup." },
+          { "question": "How many *sql.DB instances should a service have?", "answer": "Usually one per database it talks to, created at startup and shared." }
+        ]
+      },
+      {
+        "id": "go-iv-dbsql-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "What do SetMaxOpenConns, SetMaxIdleConns, SetConnMaxLifetime, and SetConnMaxIdleTime each control, and how would you choose values?",
+        "directAnswer": "MaxOpenConns caps total connections (in-use + idle); above it callers block. MaxIdleConns caps how many stay open while idle — set it equal to MaxOpenConns to avoid open/close churn. ConnMaxLifetime forces recycling after a duration so load balancers can rebalance and stale server-side connections are dropped. ConnMaxIdleTime closes connections that have been idle too long to release DB resources. Size MaxOpenConns so all app instances combined stay under the database's max_connections, then tune down to where the database isn't contention-bound.",
+        "detailedExplanation": {
+          "whatItIs": "The four pool-tuning knobs on *sql.DB.",
+          "whyItExists": "To balance connection reuse (latency) against the database's finite connection and CPU budget.",
+          "howItWorks": "Max caps gate creation/blocking; the lifetime/idle timers run in the background to retire connections."
+        },
+        "whyImportant": "These knobs are the primary defense against both connection exhaustion and excessive in-DB contention.",
+        "realWorldExample": "With a Postgres max_connections of 100 and 4 app instances, ~20 MaxOpenConns per instance leaves headroom for migrations and admin tools.",
+        "followUps": [
+          { "question": "Why match MaxIdleConns to MaxOpenConns?", "answer": "Otherwise connections beyond the idle cap are closed right after use and reopened on the next spike, adding handshake latency under steady load." },
+          { "question": "Why set ConnMaxLifetime at all?", "answer": "So load balancers can rebalance traffic, and so connections that the DB or proxy may silently drop get recycled before they fail a query." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-iv-dbsql-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "A service's p99 latency spikes and queries time out, but the database CPU is low. runtime metrics show goroutines piling up in db.QueryContext. What's happening and how do you fix it?",
+        "directAnswer": "The pool is exhausted: goroutines are blocked waiting for a free connection, not waiting on the database. This is usually a connection leak — unclosed *sql.Rows or un-finished transactions pinning connections — or a MaxOpenConns set too low for the concurrency. Fix the leak first (defer rows.Close(), defer tx.Rollback()), confirm via db.Stats().WaitCount/WaitDuration rising, then right-size the pool.",
+        "detailedExplanation": {
+          "whatItIs": "Saturation of the connection pool independent of database load.",
+          "whyItExists": "Borrowed connections aren't being returned, or demand exceeds the cap, so callers queue.",
+          "howItWorks": "db.Stats() exposes InUse, Idle, WaitCount, and WaitDuration; rising WaitCount with low DB CPU points squarely at the pool."
+        },
+        "whyImportant": "It's a classic 'the database is fine but the app is slow' incident that confuses teams who don't know the pool exists.",
+        "realWorldExample": "A reporting endpoint returns early on a matching row without closing Rows; under traffic the 25-connection pool drains and every other endpoint stalls.",
+        "followUps": [
+          { "question": "Which metric confirms pool saturation?", "answer": "db.Stats().WaitCount and WaitDuration climbing while InUse sits at MaxOpenConns." },
+          { "question": "How do you find the leaking query?", "answer": "Audit code paths for missing rows.Close()/tx.Rollback(), and use the database's pg_stat_activity to see long-held idle-in-transaction connections." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-iv-dbsql-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Write a function that fetches up to N user names by IDs using a single context-scoped query, correctly closing resources. Signature: `func FetchNames(ctx context.Context, db *sql.DB, ids []int) ([]string, error)`.",
+        "thoughtProcess": "Use QueryContext so the caller's deadline bounds the query. Defer rows.Close() right after the error check so every return path frees the connection. Scan into a local, append, then check rows.Err() after the loop to catch iteration errors the loop itself swallows.",
+        "solution": {
+          "code": "func FetchNames(ctx context.Context, db *sql.DB, ids []int) ([]string, error) {\n\tif len(ids) == 0 {\n\t\treturn nil, nil // nothing to query\n\t}\n\trows, err := db.QueryContext(ctx,\n\t\t\"SELECT name FROM users WHERE id = ANY($1)\", pq.Array(ids))\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer rows.Close() // always returns the connection to the pool\n\n\tnames := make([]string, 0, len(ids))\n\tfor rows.Next() {\n\t\tvar n string\n\t\tif err := rows.Scan(&n); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tnames = append(names, n)\n\t}\n\tif err := rows.Err(); err != nil { // surface mid-iteration errors\n\t\treturn nil, err\n\t}\n\treturn names, nil\n}",
+          "language": "go"
+        },
+        "lineByLine": "We short-circuit the empty case. QueryContext binds the query to the caller's context for timeout/cancellation. The deferred Close guarantees the connection is returned on every path, including the Scan error return. We pre-size the result slice, range, and finally check rows.Err() because Next() returning false can mean either 'done' or 'error'.",
+        "timeComplexity": "O(n) in rows returned.",
+        "spaceComplexity": "O(n) for the result slice.",
+        "followUps": [
+          { "question": "Why check rows.Err() after the loop?", "answer": "rows.Next() returns false on both end-of-data and error; only rows.Err() distinguishes a real iteration failure." },
+          { "question": "How does context cancellation help here?", "answer": "If the client disconnects or the deadline passes, the driver cancels the in-flight query and the connection is returned instead of being pinned." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-iv-dbsql-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design the database access layer for a Go API that runs as 10 stateless instances behind a load balancer, all talking to one primary Postgres (max_connections = 200) plus read replicas. How do you manage connections, timeouts, and read/write splitting?",
+        "directAnswer": "Give each instance two pools: one *sql.DB for the primary (writes + read-after-write) and one for the replica fleet (reads). Budget the 200 primary connections across 10 instances minus headroom: roughly 15 MaxOpenConns per instance, MaxIdleConns equal, ConnMaxLifetime ~30m so the LB can rebalance. Every query uses *Context methods with per-request deadlines so a slow query can't pin a connection. Route reads to the replica pool and writes (and reads inside a transaction) to the primary pool. Add a circuit breaker and bounded retries with jittered backoff around transient failures, and export db.Stats() (InUse, WaitCount) for alerting.",
+        "detailedExplanation": {
+          "whatItIs": "A pooled, replica-aware data layer sized against a shared database ceiling.",
+          "whyItExists": "A single database has a hard connection budget that must be divided safely across all horizontally-scaled instances while keeping latency low.",
+          "howItWorks": "Two *sql.DB pools per instance with conservative MaxOpenConns; context deadlines bound query time; a router picks primary vs replica; metrics and breakers guard against saturation and failover storms."
+        },
+        "whyImportant": "Getting the pool math wrong is the most common way a horizontally-scaled Go service takes down its own database during a traffic spike or failover.",
+        "realWorldExample": "Stripe- and GitHub-style services run many Go/replica instances against a bounded primary, with per-instance pool caps and a proxy (e.g. PgBouncer) for additional connection multiplexing.",
+        "followUps": [
+          { "question": "Where does PgBouncer fit?", "answer": "A transaction-pooling proxy lets you keep small per-instance app pools while multiplexing them onto far fewer real Postgres connections, raising effective concurrency safely." },
+          { "question": "How do you handle replica lag for read-after-write?", "answer": "Route a user's reads to the primary for a short window after their write, or use a token/LSN check, so they don't read stale replica data." },
+          { "question": "What happens during a primary failover?", "answer": "ConnMaxLifetime plus driver-level retries let pools drain stale connections and reconnect to the new primary; a circuit breaker prevents a thundering retry herd." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Own one *sql.DB per database at process startup, injected (not global where avoidable) so it's testable. Separate pools for primary vs replicas; consider a connection-pooling proxy (PgBouncer) in front of Postgres to multiplex many app pools onto few server connections.",
+    "performance": "Reuse beats reconnect: a warm pool avoids per-query handshakes. Right-size MaxOpenConns to just past the database's useful parallelism — bigger is often slower due to in-DB lock contention. Use prepared statements for hot, repeated queries and batch where possible.",
+    "concurrency": "*sql.DB is safe for concurrent use; share it freely across goroutines. A *sql.Tx and *sql.Conn are NOT concurrency-safe and must be used by one goroutine at a time. Bound query concurrency with the pool itself rather than spawning unbounded goroutines that all block on it.",
+    "reliability": "Always defer rows.Close() and defer tx.Rollback(). Set ConnMaxLifetime so failovers and LB rebalancing recycle connections. Wrap transient errors in bounded, jittered retries and a circuit breaker to survive brief database blips without a retry storm.",
+    "observability": "Export db.Stats(): OpenConnections, InUse, Idle, WaitCount, WaitDuration, MaxIdleClosed, MaxLifetimeClosed. Rising WaitCount/WaitDuration with low DB CPU signals a leak or undersized pool. Add query latency histograms and slow-query logging.",
+    "security": "Always use parameterized queries ($1, ?) — never string-concatenate user input — to prevent SQL injection. Store credentials in a secret manager, use TLS to the database, and grant the app role least privilege. Scrub DSNs from logs.",
+    "caseStudies": [
+      { "company": "High-traffic SaaS on Postgres", "problem": "Periodic 'too many clients' outages during traffic spikes.", "solution": "Capped per-instance MaxOpenConns and added PgBouncer transaction pooling in front of Postgres.", "tradeoffs": "Transaction-pooling forbids session-level features (e.g. some prepared-statement modes) and adds an operational component.", "lessons": "The database connection budget must be planned across ALL app instances, not per instance." },
+      { "company": "Reporting service", "problem": "p99 latency spikes with low DB CPU.", "solution": "Found an unclosed *sql.Rows on an early-return path; added defer rows.Close() and a db.Stats() WaitCount alert.", "tradeoffs": "None — pure correctness fix.", "lessons": "A single leaked connection path can saturate the entire pool under load; instrument WaitCount." }
+    ]
+  },
+  "keyTakeaways": [
+    "*sql.DB is a concurrency-safe connection POOL, not a connection — create one at startup and share it across all goroutines.",
+    "Size the pool with SetMaxOpenConns (cap), SetMaxIdleConns (match the max), and recycle with SetConnMaxLifetime / SetConnMaxIdleTime, bounded by the database's own connection limit across all instances.",
+    "Always defer rows.Close() and defer tx.Rollback(); unclosed Rows or un-ended transactions leak connections and saturate the pool.",
+    "Use the *Context methods so per-request deadlines bound query time, and watch db.Stats() WaitCount/WaitDuration to detect leaks or an undersized pool."
+  ]
+}

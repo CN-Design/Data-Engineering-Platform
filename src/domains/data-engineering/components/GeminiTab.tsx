@@ -163,7 +163,7 @@ export const GeminiTab: React.FC<GeminiTabProps> = ({ topic }) => {
             key={idx}
             style={{
               alignSelf: m.sender === 'user' ? 'flex-end' : 'flex-start',
-              background: m.sender === 'user' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 255, 255, 0.03)',
+              background: m.sender === 'user' ? 'var(--accent-active)' : 'var(--bg-inner)',
               border: `1px solid ${m.sender === 'user' ? 'rgba(59, 130, 246, 0.3)' : 'var(--border-glass)'}`,
               borderRadius: '8px',
               padding: '12px 16px',

@@ -2,6 +2,7 @@ import React from 'react';
 import { Database, Code, Zap, Layers, Network, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
 import type { Category, Domain } from '../../../core/types/types';
 import { FRONTEND_TECHS } from '../../frontend/loader';
+import { BACKEND_TECHS } from '../../backend-engineering/loader';
 import { allTopics } from '../data';
 
 interface PathSelectionProps {
@@ -39,9 +40,14 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
     id: t.id, title: t.title, description: t.description, icon: Code, color: t.color, bg: hexToBg(t.color), available: t.available, topicCount: t.topicCount || 0,
   }));
 
+  const backendOptions: TechOption[] = BACKEND_TECHS.map(t => ({
+    id: t.id, title: t.title, description: t.description, icon: Code, color: t.color, bg: hexToBg(t.color), available: t.available, topicCount: t.topicCount || 0,
+  }));
+
   const isFrontend = domain === 'frontend';
-  const techOptions: TechOption[] = isFrontend ? frontendOptions : dataOptions;
-  const heading = isFrontend ? 'Frontend Engineering' : 'Data Engineering Stack';
+  const isBackend = domain === 'backend-engineering';
+  const techOptions: TechOption[] = isFrontend ? frontendOptions : isBackend ? backendOptions : dataOptions;
+  const heading = isFrontend ? 'Frontend Engineering' : isBackend ? 'Backend Engineering' : 'Data Engineering Stack';
 
   const completed = getCompleted();
   const completedFor = (id: Category) => Object.keys(completed).filter(tid => completed[tid] && tid.startsWith(id + '-')).length;

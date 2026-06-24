@@ -1,5 +1,5 @@
 // Backend / data-engineering technologies.
-export type BackendCategory = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks';
+export type BackendCategory = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks' | 'golang' | 'java';
 
 // Frontend technologies (the frontend domain). Kept broad so future content
 // slots in without further type changes.
@@ -30,7 +30,7 @@ export type FrontendCategory =
 export type Category = BackendCategory | FrontendCategory;
 
 // Top-level learning domains.
-export type Domain = 'data-engineering' | 'frontend';
+export type Domain = 'data-engineering' | 'frontend' | 'backend-engineering';
 
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 export type ChallengeDifficulty = 'easy' | 'medium' | 'hard';
@@ -175,7 +175,7 @@ export interface CodingChallenge {
   category: Category;
   title: string;
   question: string;
-  type: 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'scenario' | 'html' | 'css' | 'javascript' | 'typescript' | 'react' | 'nextjs';
+  type: 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'golang' | 'scenario' | 'html' | 'css' | 'javascript' | 'typescript' | 'react' | 'nextjs';
   initialCode: string;
   solutionCode: string;
   // Frontend challenges: optional multi-file starter and assertion-based grading.

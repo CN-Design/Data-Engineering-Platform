@@ -29,6 +29,7 @@ const TECH_LABELS: Partial<Record<Category, string>> = {
   python: 'Python',
   pyspark: 'PySpark',
   databricks: 'Databricks',
+  golang: 'Go',
   react: 'React',
   javascript: 'JavaScript',
   typescript: 'TypeScript',
@@ -274,7 +275,7 @@ const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, langua
       lineHeight: 1.5,
     }}
   >
-    <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', color: 'var(--code-text, #e6edf3)' }}>
+    <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', color: 'var(--text-code, #e2e8f0)' }}>
       {code}
     </code>
     {language ? (

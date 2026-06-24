@@ -434,7 +434,7 @@ const ProjectBuilder: React.FC<{ data: ProjectBuilderSection }> = ({ data }) => 
 const hintBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)', background: 'var(--bg-inner)', color: BLUE, fontWeight: 600, fontSize: '12.5px', cursor: 'pointer' };
 const qCard: React.CSSProperties = { padding: '14px', borderRadius: '10px', border: '1px solid var(--border-glass)', background: 'var(--bg-secondary)' };
 const qHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' };
-const pre: React.CSSProperties = { margin: '8px 0 0 0', padding: '12px', borderRadius: '8px', background: 'var(--bg-code, #0d1117)', overflowX: 'auto', fontSize: '12.5px', lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: 'var(--code-text, #e6edf3)' };
+const pre: React.CSSProperties = { margin: '8px 0 0 0', padding: '12px', borderRadius: '8px', background: 'var(--bg-code, #0d1117)', overflowX: 'auto', fontSize: '12.5px', lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: 'var(--text-code, #e2e8f0)' };
 
 const DIFFICULTY_PILL: Record<string, { bg: string; color: string }> = {
   beginner: { bg: 'rgba(16,185,129,0.15)', color: '#10b981' },

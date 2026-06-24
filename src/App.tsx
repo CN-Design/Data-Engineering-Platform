@@ -14,12 +14,16 @@ import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab
 import { FrontendPlaygroundTab } from './domains/frontend/components/FrontendPlaygroundTab';
 import { FrontendPracticeTab } from './domains/frontend/components/FrontendPracticeTab';
 import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loader';
+import { BackendLearnTab } from './domains/backend-engineering/components/BackendLearnTab';
+import { BackendPracticeTab } from './domains/backend-engineering/components/BackendPracticeTab';
+import { loadBackendManifest, manifestToTopics as backendManifestToTopics } from './domains/backend-engineering/loader';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
   const [currentDomain, setCurrentDomain] = useState<'dashboard' | Domain>('dashboard');
   const [selectedTech, setSelectedTech] = useState<Category | null>(null);
   const [frontendTopics, setFrontendTopics] = useState<Topic[]>([]);
+  const [backendTopics, setBackendTopics] = useState<Topic[]>([]);
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -81,8 +85,9 @@ export default function App() {
   }
 
   const isFrontend = currentDomain === 'frontend';
+  const isBackend = currentDomain === 'backend-engineering';
 
-  if ((currentDomain === 'data-engineering' || currentDomain === 'frontend') && !selectedTech) {
+  if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering') && !selectedTech) {
     return <PathSelection
       domain={currentDomain}
       onSelectTech={async (tech) => {
@@ -91,6 +96,11 @@ export default function App() {
           const manifest = await loadFrontendManifest(tech);
           const topics = manifest ? manifestToTopics(manifest) : [];
           setFrontendTopics(topics);
+          setActiveTopic(topics[0] || null);
+        } else if (currentDomain === 'backend-engineering') {
+          const manifest = await loadBackendManifest(tech);
+          const topics = manifest ? backendManifestToTopics(manifest) : [];
+          setBackendTopics(topics);
           setActiveTopic(topics[0] || null);
         } else {
           const techTopics = allTopics.filter(t => t.category === tech);
@@ -102,7 +112,7 @@ export default function App() {
   }
 
   // Filter topics for the sidebar based on selected tech / domain.
-  const sidebarTopics = isFrontend ? frontendTopics : allTopics.filter(t => t.category === selectedTech);
+  const sidebarTopics = isFrontend ? frontendTopics : isBackend ? backendTopics : allTopics.filter(t => t.category === selectedTech);
   
   const currentTopicIndex = sidebarTopics.findIndex(t => t.id === activeTopic?.id);
   const previousTopic = currentTopicIndex > 0 ? sidebarTopics[currentTopicIndex - 1] : null;
@@ -478,6 +488,20 @@ export default function App() {
                 prevTitle={previousTopic?.title}
                 nextTitle={nextTopic?.title}
               />
+            ) : isBackend && selectedTech ? (
+              <BackendLearnTab
+                tech={selectedTech}
+                topicId={activeTopic?.id || null}
+                topics={backendTopics.map(t => ({ id: t.id, title: t.title }))}
+                onNavigate={(id) => { const t = backendTopics.find(x => x.id === id); if (t) setActiveTopic(t); }}
+                isCompleted={!!completedTopics[activeTopic?.id || '']}
+                onToggleComplete={toggleTopicCompleted}
+                onPrev={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
+                onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+                prevTitle={previousTopic?.title}
+                nextTitle={nextTopic?.title}
+                theme={theme}
+              />
             ) : (
               <LearnTab
                 topic={activeTopic}
@@ -496,6 +520,8 @@ export default function App() {
           {activeTab === 'practice' && (
             isFrontend && selectedTech ? (
               <FrontendPracticeTab tech={selectedTech} theme={theme} />
+            ) : isBackend && selectedTech ? (
+              <BackendPracticeTab tech={selectedTech} theme={theme} />
             ) : (
               <PracticeTab
                 challenges={allChallenges}
@@ -506,7 +532,9 @@ export default function App() {
           )}
 
           {activeTab === 'playground' && (
-            isFrontend ? <FrontendPlaygroundTab theme={theme} /> : <PlaygroundTab theme={theme} />
+            isBackend
+              ? <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>Go runs locally — use the editable Code Lab inside each lesson, or the Practice tab, and verify with <code>go test ./...</code>.</div>
+              : isFrontend ? <FrontendPlaygroundTab theme={theme} /> : <PlaygroundTab theme={theme} />
           )}
 
           {activeTab === 'gemini' && (

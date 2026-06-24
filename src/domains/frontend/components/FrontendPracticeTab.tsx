@@ -156,7 +156,7 @@ export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, 
             </ul>
           )}
           {showSolution && (
-            <pre style={{ marginTop: '10px', padding: '12px', borderRadius: '8px', background: 'var(--bg-code, #0d1117)', overflowX: 'auto', fontSize: '12.5px', color: 'var(--code-text, #e6edf3)', fontFamily: 'ui-monospace, monospace' }}><code>{selected.solutionCode}</code></pre>
+            <pre style={{ marginTop: '10px', padding: '12px', borderRadius: '8px', background: 'var(--bg-code, #0d1117)', overflowX: 'auto', fontSize: '12.5px', color: 'var(--text-code, #e2e8f0)', fontFamily: 'ui-monospace, monospace' }}><code>{selected.solutionCode}</code></pre>
           )}
         </div>
       </div>
