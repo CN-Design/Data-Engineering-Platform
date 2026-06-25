@@ -1,7 +1,163 @@
 import React from 'react';
 import type { PremiumTopicData } from '../../../core/types/types';
-import { Book, Server, GitBranch, Activity, CheckCircle2 } from 'lucide-react';
+import { Book, Server, GitBranch, Activity, CheckCircle2, GitFork, Layers, Database, Search, Inbox, Send, Cpu, CircleDot } from 'lucide-react';
 import { formatText } from '../../../core/utils/textFormatting';
+
+const ARCH_ACCENT = '#f59e0b';
+
+// Split a string on any of `seps`, but only at bracket depth 0 so arrows /
+// pipes nested inside [...] {...} (...) are preserved.
+function splitTop(s: string, seps: string[]): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let buf = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    if (depth === 0) {
+      let matched = '';
+      for (const sep of seps) {
+        if (s.startsWith(sep, i)) { matched = sep; break; }
+      }
+      if (matched) { out.push(buf); buf = ''; i += matched.length - 1; continue; }
+    }
+    buf += ch;
+  }
+  out.push(buf);
+  return out.map(x => x.trim()).filter(Boolean);
+}
+
+function stripWrap(s: string): string {
+  let t = s.trim();
+  while ((t.startsWith('[') && t.endsWith(']')) || (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('(') && t.endsWith(')'))) {
+    t = t.slice(1, -1).trim();
+  }
+  return t;
+}
+
+interface FlowStage { label: string; branches?: string[]; kind?: 'parallel' | 'alt' }
+
+function parseArchitectureFlow(flow: string): FlowStage[] | null {
+  // Only render as a pipeline if it actually contains stage arrows.
+  if (!/->|=>|→/.test(flow)) return null;
+  const stages = splitTop(flow, ['->', '=>', '→']);
+  if (stages.length < 2) return null;
+  return stages.map(raw => {
+    const clean = stripWrap(raw);
+    // Parallel paths joined by AND; alternative paths joined by |.
+    const andParts = splitTop(clean, [' AND ']);
+    if (andParts.length > 1) return { label: clean, branches: andParts.map(stripWrap), kind: 'parallel' as const };
+    const orParts = splitTop(clean, ['|']);
+    if (orParts.length > 1) return { label: clean, branches: orParts.map(stripWrap), kind: 'alt' as const };
+    return { label: clean };
+  });
+}
+
+// Pick a node icon (as a rendered element) from keywords in the stage label.
+function nodeIconEl(label: string) {
+  const t = label.toLowerCase();
+  const sz = 18;
+  if (/source|origin|incoming|event|raw|ingest|input|producer|stream in|arriv/.test(t)) return <Inbox size={sz} />;
+  if (/store|storage|warehouse|lakehouse|lake|disk|file|table|catalog|partition|index|cache|database|sink/.test(t)) return <Database size={sz} />;
+  if (/transform|process|compute|map|aggregat|clean|router|route|recompute|job|etl|pipeline|merge|batch|enrich|join/.test(t)) return <Cpu size={sz} />;
+  if (/quer|read|predicate|prun|scan|filter|skip|search|lookup|select/.test(t)) return <Search size={sz} />;
+  if (/output|result|serv|view|downstream|dashboard|response|report|deliver|consumer|api/.test(t)) return <Send size={sz} />;
+  return <CircleDot size={sz} />;
+}
+
+// One connector segment: a vertical line with an arrowhead, drawn between nodes.
+const Connector: React.FC = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '34px', flexShrink: 0 }} aria-hidden>
+    <div style={{ width: '2px', flex: 1, background: `linear-gradient(180deg, rgba(245,158,11,0.35), ${ARCH_ACCENT})` }} />
+    <div style={{ width: 0, height: 0, borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderTop: `7px solid ${ARCH_ACCENT}` }} />
+  </div>
+);
+
+const StageBox: React.FC<{ label: string; index: number }> = ({ label, index }) => {
+  return (
+    <div
+      style={{
+        position: 'relative', display: 'flex', alignItems: 'center', gap: '12px',
+        width: 'min(540px, 100%)', boxSizing: 'border-box',
+        background: 'var(--bg-secondary)', border: '1px solid var(--border-glass)',
+        borderRadius: '12px', padding: '14px 18px 14px 16px',
+        boxShadow: '0 2px 12px rgba(0,0,0,0.06)',
+      }}
+    >
+      <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: '4px', borderRadius: '12px 0 0 12px', background: `linear-gradient(180deg, ${ARCH_ACCENT}, rgba(245,158,11,0.4))` }} />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '10px', background: 'rgba(245,158,11,0.12)', color: ARCH_ACCENT, flexShrink: 0 }}>
+        {nodeIconEl(label)}
+      </div>
+      <span style={{ position: 'absolute', top: '8px', right: '12px', fontSize: '10.5px', fontWeight: 800, color: 'var(--text-muted)', opacity: 0.6 }}>{String(index + 1).padStart(2, '0')}</span>
+      <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.45 }}>{label}</span>
+    </div>
+  );
+};
+
+// A fork group: parallel ("AND") or alternative ("|") sub-paths shown as lanes.
+const ForkGroup: React.FC<{ stage: FlowStage; index: number }> = ({ stage, index }) => (
+  <div
+    style={{
+      position: 'relative', width: 'min(620px, 100%)', boxSizing: 'border-box',
+      background: 'var(--bg-secondary)', border: `1px dashed ${ARCH_ACCENT}`,
+      borderRadius: '14px', padding: '14px 16px 16px',
+    }}
+  >
+    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '12px' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px', borderRadius: '8px', background: 'rgba(245,158,11,0.12)', color: ARCH_ACCENT, flexShrink: 0 }}>
+        {stage.kind === 'parallel' ? <Layers size={15} /> : <GitFork size={15} />}
+      </span>
+      <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.6px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+        {stage.kind === 'parallel' ? 'Parallel paths' : 'Branches'}
+      </span>
+      <span style={{ marginLeft: 'auto', fontSize: '10.5px', fontWeight: 800, color: 'var(--text-muted)', opacity: 0.6 }}>{String(index + 1).padStart(2, '0')}</span>
+    </div>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+      {stage.branches!.map((b, i) => (
+        <div key={i} style={{ flex: '1 1 200px', minWidth: '180px', display: 'flex', gap: '9px', alignItems: 'flex-start', background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', borderRadius: '10px', padding: '11px 12px' }}>
+          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: ARCH_ACCENT, marginTop: '5px', flexShrink: 0 }} />
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{b}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+const ArchitectureFlow: React.FC<{ flow: string }> = ({ flow }) => {
+  const stages = parseArchitectureFlow(flow);
+  if (!stages) {
+    // Prose flow — render as a clean narrative panel (not raw monospace).
+    return (
+      <div style={{ display: 'flex', gap: '12px', background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', borderLeft: `3px solid ${ARCH_ACCENT}`, borderRadius: '10px', padding: '16px 18px', marginBottom: '28px' }}>
+        <GitBranch size={18} style={{ color: ARCH_ACCENT, flexShrink: 0, marginTop: '2px' }} />
+        <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '14.5px' }}>{formatText(flow)}</p>
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        position: 'relative',
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        background: 'var(--bg-primary)', border: '1px solid var(--border-glass)',
+        borderRadius: '14px', padding: '24px 20px', marginBottom: '28px',
+        backgroundImage: 'radial-gradient(circle, var(--border-glass) 1px, transparent 1px)',
+        backgroundSize: '22px 22px',
+      }}
+    >
+      {stages.map((stage, i) => {
+        const isFork = !!stage.branches && stage.branches.length > 1;
+        return (
+          <React.Fragment key={i}>
+            {isFork ? <ForkGroup stage={stage} index={i} /> : <StageBox label={stage.label} index={i} />}
+            {i < stages.length - 1 && <Connector />}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+};
 
 interface PremiumTopicRendererProps {
   data: PremiumTopicData;
@@ -156,13 +312,7 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
           Architecture & Data Flow
         </h2>
         
-        {coreConcept.architectureFlow && (
-          <div style={{ background: 'var(--bg-primary)', padding: '24px', borderRadius: '8px', overflowX: 'auto', marginBottom: '28px', border: '1px solid var(--border-glass)' }}>
-            <pre style={{ color: '#10b981', fontFamily: '"Fira Code", monospace', fontSize: '13px', margin: 0 }}>
-              {coreConcept.architectureFlow}
-            </pre>
-          </div>
-        )}
+        {coreConcept.architectureFlow && <ArchitectureFlow flow={coreConcept.architectureFlow} />}
         
         <div>
           <h3 style={{ color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Step-by-Step Execution</h3>
