@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import Editor from '@monaco-editor/react';
 import { Play, Database } from 'lucide-react';
+import { SPARKLITE_PY, SPARKLITE_SUPPORTED } from './sparkLite';
 
 declare global {
   interface Window {
     initSqlJs: any;
+    loadPyodide: any;
   }
 }
 
@@ -20,6 +22,7 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({ theme }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [db, setDb] = useState<any>(null);
+  const [pyodide, setPyodide] = useState<any>(null);
 
   const sqlSchemaHelp = {
     Employees: ["employee_id INT", "name VARCHAR", "department VARCHAR", "salary INT"],
@@ -80,69 +83,80 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({ theme }) => {
     initDb();
   }, []);
 
+  // Lazily load Pyodide for the real (subset) PySpark engine.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        if (!window.loadPyodide) return;
+        const py = await window.loadPyodide();
+        if (!cancelled) setPyodide(py);
+      } catch (err) {
+        console.error('Playground Pyodide init failed:', err);
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, []);
+
+  const runSql = () => {
+    try {
+      if (!db) { setError('SQLite database is initializing. Please try again.'); return; }
+      const res = db.exec(code);
+      if (res.length === 0) {
+        setOutput([]); setColumns([]); setError('Query executed successfully, but returned no rows.');
+      } else {
+        const cols = res[0].columns;
+        const rows = res[0].values.map((valList: any[]) => {
+          const rowObj: any = {};
+          cols.forEach((c: string, idx: number) => { rowObj[c] = valList[idx]; });
+          return rowObj;
+        });
+        setColumns(cols); setOutput(rows);
+      }
+    } catch (err: any) {
+      setError(err.message || 'SQL Syntax Error');
+    }
+  };
+
+  const runPyspark = () => {
+    if (!pyodide) { setError('The Python engine is still loading — try again in a moment.'); return; }
+    try {
+      pyodide.runPython(SPARKLITE_PY);
+      pyodide.runPython("__captured__['rows'] = None; __captured__['cols'] = None");
+      pyodide.runPython(code);
+      // Fallback: if the user assigned df_result but didn't call .show(), display it.
+      pyodide.runPython(
+        "try:\n" +
+        "    if __captured__['rows'] is None and isinstance(df_result, DataFrame):\n" +
+        "        __captured__['rows'] = df_result._rows; __captured__['cols'] = df_result._cols\n" +
+        "except NameError:\n    pass\n"
+      );
+      const rows = JSON.parse(pyodide.runPython("json.dumps(__captured__['rows'])"));
+      const cols = JSON.parse(pyodide.runPython("json.dumps(__captured__['cols'])"));
+      if (!rows) {
+        setError('No output to display. Call .show() on a DataFrame, or assign your result to df_result.');
+        setOutput(null);
+      } else {
+        setColumns(cols || (rows[0] ? Object.keys(rows[0]) : []));
+        setOutput(rows);
+      }
+    } catch (err: any) {
+      const msg = String(err?.message || err).trim();
+      const lines = msg.split('\n').filter(Boolean);
+      setError(lines[lines.length - 1] || 'PySpark execution error');
+      setOutput(null);
+    }
+  };
+
   const handleRun = () => {
     setLoading(true);
     setError(null);
     setOutput(null);
-
     setTimeout(() => {
-      if (sandboxType === 'sql') {
-        try {
-          if (!db) {
-            setError("SQLite database is initializing. Please try again.");
-            setLoading(false);
-            return;
-          }
-          const res = db.exec(code);
-          if (res.length === 0) {
-            setOutput([]);
-            setColumns([]);
-            setError("Query executed successfully, but returned no rows.");
-          } else {
-            const cols = res[0].columns;
-            const rows = res[0].values.map((valList: any[]) => {
-              const rowObj: any = {};
-              cols.forEach((col: string, idx: number) => {
-                rowObj[col] = valList[idx];
-              });
-              return rowObj;
-            });
-            setColumns(cols);
-            setOutput(rows);
-          }
-        } catch (err: any) {
-          setError(err.message || "SQL Syntax Error");
-        }
-      } else {
-        // PySpark transformations simulation
-        try {
-          let rows = [
-            { id: 1, name: 'Joe', department: 'IT', salary: 85000 },
-            { id: 2, name: 'Henry', department: 'Sales', salary: 80000 },
-            { id: 3, name: 'Sam', department: 'Sales', salary: 60000 },
-            { id: 4, name: 'Max', department: 'IT', salary: 90000 }
-          ];
-
-          if (code.includes('.filter') && code.includes('80000')) {
-            rows = rows.filter(r => r.salary > 80000);
-          }
-          if (code.includes('.select') && code.includes('name')) {
-            rows = rows.map(r => ({ name: r.name, department: r.department } as any));
-          }
-
-          if (rows.length > 0) {
-            setColumns(Object.keys(rows[0]));
-            setOutput(rows);
-          } else {
-            setOutput([]);
-            setColumns([]);
-          }
-        } catch (err: any) {
-          setError("Spark simulation error: " + err.message);
-        }
-      }
+      if (sandboxType === 'sql') runSql();
+      else runPyspark();
       setLoading(false);
-    }, 400);
+    }, 50);
   };
 
   return (
@@ -168,6 +182,29 @@ export const PlaygroundTab: React.FC<PlaygroundTabProps> = ({ theme }) => {
               PySpark
             </button>
           </div>
+
+          {sandboxType === 'sql' ? (
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '8px 0 0 0', lineHeight: 1.5 }}>
+              Runs a real in-browser SQLite engine — full SQL executes against the preloaded tables.
+            </p>
+          ) : (
+            <div style={{ marginTop: '8px', padding: '8px 10px', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+              <span style={{ fontSize: '10.5px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.4px', color: '#10b981' }}>
+                {pyodide ? 'Real execution · DataFrame subset' : 'Engine loading…'}
+              </span>
+              <p style={{ fontSize: '11px', color: 'var(--text-secondary)', margin: '4px 0 0 0', lineHeight: 1.5 }}>
+                Your code runs for real against a Spark-style DataFrame engine (a documented subset). Preloaded: <code>df_employees</code>, <code>df_orders</code>, <code>df_sales</code>, <code>df_products</code>, plus <code>F</code> and <code>col</code>. Call <code>.show()</code> to display results.
+              </p>
+              <details style={{ marginTop: '6px' }}>
+                <summary style={{ fontSize: '11px', color: 'var(--text-muted)', cursor: 'pointer' }}>Supported operations</summary>
+                <ul style={{ margin: '6px 0 0 0', paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                  {SPARKLITE_SUPPORTED.map((s, i) => (
+                    <li key={i} style={{ fontSize: '10.5px', color: 'var(--text-muted)', lineHeight: 1.4 }}><code>{s}</code></li>
+                  ))}
+                </ul>
+              </details>
+            </div>
+          )}
         </div>
 
         <div>

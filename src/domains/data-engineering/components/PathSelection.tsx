@@ -1,12 +1,15 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Database, Code, Zap, Layers, Network, Terminal, Cloud, Radio, Workflow, Warehouse, Container, ShieldCheck, Siren, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
 import type { Category, Domain } from '../../../core/types/types';
 import { FRONTEND_TECHS } from '../../frontend/loader';
 import { BACKEND_TECHS } from '../../backend-engineering/loader';
 import { allTopics } from '../data';
+import { LearnJourneyPanel } from './LearnJourneyPanel';
+import { Diagnostic } from './Diagnostic';
+import { EngagementBar } from './EngagementBar';
 
 interface PathSelectionProps {
-  onSelectTech: (tech: Category) => void;
+  onSelectTech: (tech: Category, topicId?: string) => void;
   onBack: () => void;
   domain?: Domain;
 }
@@ -27,6 +30,7 @@ const hexToBg = (hex: string) => {
 };
 
 export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBack, domain = 'data-engineering' }) => {
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
   const countFor = (id: Category) => allTopics.filter(t => t.category === id).length;
   // Ordered as the recommended zero-to-job learning path (Phase 1.1 roadmap).
   const dataOptions: TechOption[] = [
@@ -127,57 +131,40 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
         </p>
       </div>
 
-      {/* Guided Learning Roadmap (Data Engineering only) */}
+      {/* Engagement (Data Engineering only) */}
+      {isData && <EngagementBar topics={allTopics} />}
+
+      {/* Personalized journey helpers (Data Engineering only) */}
       {isData && (
-        <div style={{ width: '100%', maxWidth: '1100px', marginBottom: '36px', boxSizing: 'border-box' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--text-muted)' }}>Your Learning Path</span>
-            <span style={{ height: '1px', flex: 1, background: 'var(--border-glass)' }} />
-            {nextStepId && (
-              <button
-                onClick={() => onSelectTech(nextStepId)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontFamily: 'inherit', padding: '7px 14px', borderRadius: '999px', border: 'none', background: 'linear-gradient(135deg, #3b82f6, #a855f7)', color: '#fff', fontSize: '12.5px', fontWeight: 700 }}
-              >
-                {dataOptions.some(t => completedFor(t.id) > 0) ? 'Continue' : 'Start here'} <ChevronRight size={15} />
-              </button>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '6px' }}>
-            {dataOptions.map((tech, i) => {
-              const done = completedFor(tech.id);
-              const pct = tech.topicCount ? Math.round((done / tech.topicCount) * 100) : 0;
-              const isNext = tech.id === nextStepId;
-              const isDone = tech.topicCount > 0 && done >= tech.topicCount;
-              return (
-                <React.Fragment key={tech.id}>
-                  <button
-                    onClick={() => onSelectTech(tech.id)}
-                    title={`${tech.title} — ${done}/${tech.topicCount} done`}
-                    style={{
-                      flex: '1 0 auto', minWidth: '132px', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                      display: 'flex', flexDirection: 'column', gap: '8px',
-                      padding: '12px 14px', borderRadius: '12px',
-                      border: `1px solid ${isNext ? tech.color : 'var(--border-glass)'}`,
-                      background: isNext ? tech.bg : 'var(--bg-glass)',
-                      boxShadow: isNext ? `0 6px 18px -10px ${tech.color}` : 'none',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ flexShrink: 0, width: '24px', height: '24px', borderRadius: '999px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800, background: isDone ? '#10b981' : tech.color, color: '#fff' }}>{isDone ? '✓' : i + 1}</span>
-                      <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>{tech.title.replace(' (Start Here)', '')}</span>
-                    </div>
-                    <div style={{ height: '5px', borderRadius: '999px', background: 'var(--bg-inner)', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: tech.color, borderRadius: '999px' }} />
-                    </div>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600 }}>{isNext ? 'Recommended next' : isDone ? 'Completed' : done > 0 ? `${pct}%` : `${tech.topicCount} topics`}</span>
-                  </button>
-                  {i < dataOptions.length - 1 && <span style={{ alignSelf: 'center', color: 'var(--text-muted)', flexShrink: 0 }}>→</span>}
-                </React.Fragment>
-              );
-            })}
-          </div>
-        </div>
+        <LearnJourneyPanel
+          topics={allTopics}
+          onSelectTech={onSelectTech}
+          onStartDiagnostic={() => setShowDiagnostic(true)}
+        />
       )}
+
+      {isData && showDiagnostic && (
+        <Diagnostic
+          onPick={(track) => { setShowDiagnostic(false); onSelectTech(track as Category); }}
+          onClose={() => setShowDiagnostic(false)}
+        />
+      )}
+
+      {/* Removed the old horizontal learning path as requested */}
+
+      <div style={{ width: '100%', maxWidth: '1100px', marginBottom: '24px' }}>
+        <h2 style={{
+          fontSize: '24px',
+          fontWeight: 800,
+          color: 'var(--text-primary)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px'
+        }}>
+          Explore Modules
+          <div style={{ height: '2px', flex: 1, background: 'linear-gradient(90deg, var(--border-glass), transparent)' }} />
+        </h2>
+      </div>
 
       <div style={{
         display: 'grid',

@@ -135,8 +135,10 @@ export const GeminiTab: React.FC<GeminiTabProps> = ({ topic }) => {
               Save Key
             </button>
           </div>
-          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-            Your key is saved locally in your browser and used directly with Google's API endpoints.
+          <span style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            This assistant is optional and requires your own Google Gemini API key — get one free at{' '}
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent, #a855f7)' }}>aistudio.google.com/app/apikey</a>.
+            Your key is stored only in this browser and is sent directly to Google's API — never to us.
           </span>
         </div>
       )}

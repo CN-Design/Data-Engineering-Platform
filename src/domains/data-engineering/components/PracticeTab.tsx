@@ -51,6 +51,37 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
     }
   });
 
+  // Real activity log (local, per-device) used to compute a genuine study streak.
+  // Each entry is a 'YYYY-MM-DD' date on which the learner solved a challenge.
+  const [activityDays, setActivityDays] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('de_activity_days');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const todayKey = () => new Date().toISOString().slice(0, 10);
+
+  // Consecutive-day streak ending today (or yesterday if not yet active today).
+  const computeStreak = (days: string[]): number => {
+    const set = new Set(days);
+    if (set.size === 0) return 0;
+    const d = new Date();
+    // Allow the streak to still count if the user hasn't practiced yet *today*
+    // but did yesterday.
+    if (!set.has(d.toISOString().slice(0, 10))) d.setDate(d.getDate() - 1);
+    let streak = 0;
+    while (set.has(d.toISOString().slice(0, 10))) {
+      streak += 1;
+      d.setDate(d.getDate() - 1);
+    }
+    return streak;
+  };
+
+  const studyStreak = computeStreak(activityDays);
+
   // SQL.js init
   useEffect(() => {
     const loadSql = async () => {
@@ -87,6 +118,13 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
   const markSolved = (id: string) => {
     const updated = { ...solvedChallenges, [id]: true };
     setSolvedChallenges(updated);
+    // Record real activity for today's date (dedup) to drive the study streak.
+    const today = todayKey();
+    if (!activityDays.includes(today)) {
+      const nextDays = [...activityDays, today];
+      setActivityDays(nextDays);
+      try { localStorage.setItem('de_activity_days', JSON.stringify(nextDays)); } catch { /* ignore */ }
+    }
     onCompleteChallenge(id);
   };
 
@@ -316,10 +354,10 @@ except Exception as e:
             </div>
 
             <div className="glass-panel" style={{ padding: '20px', display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <Flame size={40} color="#f97316" />
+              <Flame size={40} color={studyStreak > 0 ? '#f97316' : 'var(--text-muted)'} />
               <div>
-                <strong style={{ fontSize: '24px', display: 'block' }}>3 Days</strong>
-                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Current Study Streak</span>
+                <strong style={{ fontSize: '24px', display: 'block' }}>{studyStreak} {studyStreak === 1 ? 'Day' : 'Days'}</strong>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{studyStreak > 0 ? 'Current Study Streak' : 'Solve a challenge to start a streak'}</span>
               </div>
             </div>
 

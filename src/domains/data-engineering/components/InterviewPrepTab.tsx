@@ -16,12 +16,23 @@ import {
   Search,
   Loader2,
   Lightbulb,
+  Play,
 } from 'lucide-react';
 import { formatText } from '../../../core/utils/textFormatting';
+import { MockInterview } from './MockInterview';
 
 interface InterviewPrepTabProps {
   tech: Category;
 }
+
+// Logical clusters so the category nav isn't a wall of chips.
+const CATEGORY_GROUPS: { label: string; ids: InterviewCategory[] }[] = [
+  { label: 'Core Q&A', ids: ['basic', 'intermediate', 'advanced'] },
+  { label: 'Applied', ids: ['scenario', 'production', 'optimization'] },
+  { label: 'Design', ids: ['architecture', 'systemdesign'] },
+  { label: 'Coding', ids: ['coding', 'takehome'] },
+  { label: 'Behavioral', ids: ['behavioral'] },
+];
 
 const TECH_LABELS: Partial<Record<Category, string>> = {
   'data-engineering': 'Data Engineering',
@@ -60,10 +71,12 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
   const [search, setSearch] = useState<string>('');
   const [difficultyFilter, setDifficultyFilter] = useState<Difficulty | 'all'>('all');
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const [mockActive, setMockActive] = useState(false);
 
   // Reset to first category when the technology changes.
   useEffect(() => {
     setActiveCategory('basic');
+    setMockActive(false);
   }, [tech]);
 
   // Fetch the active category's question file.
@@ -121,50 +134,64 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
     return matchesDifficulty && matchesSearch;
   });
 
+  if (mockActive) {
+    return <MockInterview tech={tech} techLabel={techLabel(tech)} onExit={() => setMockActive(false)} />;
+  }
+
+  const catById = (id: InterviewCategory) => INTERVIEW_CATEGORIES.find(c => c.id === id);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1000px', margin: '0 auto' }}>
       {/* Header */}
-      <div>
-        <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>
-          {techLabel(tech)} Interview Preparation
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '6px 0 0 0' }}>
-          A complete interview system for {techLabel(tech)} — basics to architecture, scenarios, production support, optimization and coding. Pick a category, then expand any question for a full, interview-ready answer.
-        </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px', flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>
+            {techLabel(tech)} Interview Preparation
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '6px 0 0 0', maxWidth: '70ch' }}>
+            A complete interview system for {techLabel(tech)} — basics to architecture, scenarios, production support, optimization and coding. Pick a category, or run a timed mock interview.
+          </p>
+        </div>
+        <button
+          onClick={() => setMockActive(true)}
+          className="btn btn-primary"
+          style={{ padding: '10px 16px', fontSize: '13.5px', whiteSpace: 'nowrap', flexShrink: 0 }}
+        >
+          <Play size={15} /> Mock Interview
+        </button>
       </div>
 
-      {/* Category navigation */}
-      <div
-        className="scrollable-tabs"
-        style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', background: 'var(--bg-inner)', padding: '6px', borderRadius: '12px', border: '1px solid var(--border-glass)' }}
-      >
-        {INTERVIEW_CATEGORIES.map(cat => {
-          const active = cat.id === activeCategory;
-          return (
-            <button
-              key={cat.id}
-              onClick={() => setActiveCategory(cat.id)}
-              title={cat.description}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '8px 14px',
-                borderRadius: '8px',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '13.5px',
-                fontWeight: active ? 700 : 500,
-                background: active ? 'var(--bg-inner-active, rgba(59,130,246,0.15))' : 'transparent',
-                color: active ? 'var(--text-primary)' : 'var(--text-muted)',
-                transition: 'all 0.2s ease',
-              }}
-            >
-              {cat.id === 'coding' ? <Code2 size={15} /> : <HelpCircle size={15} />}
-              {cat.label}
-            </button>
-          );
-        })}
+      {/* Grouped category navigation */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', background: 'var(--bg-inner)', padding: '12px', borderRadius: '12px', border: '1px solid var(--border-glass)' }}>
+        {CATEGORY_GROUPS.map(group => (
+          <div key={group.label} style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '10.5px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--text-muted)', width: '86px', flexShrink: 0 }}>{group.label}</span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              {group.ids.map(id => {
+                const cat = catById(id);
+                if (!cat) return null;
+                const active = id === activeCategory;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setActiveCategory(id)}
+                    title={cat.description}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 12px', borderRadius: '8px',
+                      border: `1px solid ${active ? 'transparent' : 'var(--border-glass)'}`, cursor: 'pointer', fontSize: '13px',
+                      fontWeight: active ? 700 : 500,
+                      background: active ? 'var(--bg-inner-active, rgba(59,130,246,0.15))' : 'var(--bg-secondary)',
+                      color: active ? 'var(--text-primary)' : 'var(--text-muted)', transition: 'all 0.2s ease',
+                    }}
+                  >
+                    {id === 'coding' ? <Code2 size={14} /> : <HelpCircle size={14} />}
+                    {cat.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Search + difficulty filter */}

@@ -11,7 +11,9 @@ import { warehousingTopics } from './warehousing/topics';
 import { devopsTopics } from './devops/topics';
 import { dataqualityTopics } from './dataquality/topics';
 import { sreTopics } from './sre/topics';
-import { codingChallenges } from './coding_challenges';
+// NOTE: coding_challenges (~1.2MB) is intentionally NOT imported here so it
+// stays out of the main bundle. It is dynamically imported by App only when
+// the Data Engineering Practice tab is opened. See App.tsx.
 
 // NOTE: Interview Q&A now lives as JSON under public/content/interview/<tech>/
 // and is loaded at runtime by InterviewPrepTab, so the old per-topic
@@ -31,7 +33,6 @@ export {
   devopsTopics,
   dataqualityTopics,
   sreTopics,
-  codingChallenges,
 };
 
 export const allTopics = [
@@ -49,5 +50,3 @@ export const allTopics = [
   ...sreTopics,
   ...databricksTopics,
 ];
-
-export const allChallenges = codingChallenges;

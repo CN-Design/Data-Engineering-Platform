@@ -2,13 +2,18 @@ import React, { useState, useEffect } from 'react';
 import type { Topic } from '../../../core/types/types';
 import {
   Book, Lightbulb, Code, ShieldCheck, AlertTriangle, CheckCircle2,
-  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight, ArrowLeft, Loader2
+  HelpCircle, ChevronDown, ChevronUp, FileText, Settings, Award, ArrowRight, ArrowLeft, Loader2, ClipboardCheck
 } from 'lucide-react';
-import type { PremiumTopicData } from '../../../core/types/types';
+import type { PremiumTopicData, ExplainerScript } from '../../../core/types/types';
 import { PremiumTopicRenderer } from './PremiumTopicRenderer';
+import { ExplainerPlayer } from './ExplainerPlayer';
 import { PremiumExamplesRenderer } from './PremiumExamplesRenderer';
 import { PremiumTipsRenderer } from './PremiumTipsRenderer';
 import { PremiumInterviewRenderer } from './PremiumInterviewRenderer';
+import { TopicStudyHeader } from './TopicStudyHeader';
+import { SelfCheckQuiz } from './SelfCheckQuiz';
+import { TopicNextUp } from './TopicNextUp';
+import { getMastery } from '../utils/learnProgress';
 
 interface LearnTabProps {
   topic: Topic | null;
@@ -16,21 +21,35 @@ interface LearnTabProps {
   onToggleComplete: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  siblingTopics?: Topic[];
+  onNavigateTopic?: (t: Topic) => void;
 }
 
 
 
-export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete, onPrevious, onNext }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'concept' | 'examples' | 'bestpractices' | 'interview'>('concept');
+export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggleComplete, onPrevious, onNext, siblingTopics, onNavigateTopic }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'concept' | 'examples' | 'bestpractices' | 'interview' | 'selfcheck'>('concept');
   const [revealedQs, setRevealedQs] = useState<Record<number, boolean>>({});
   const [premiumData, setPremiumData] = useState<PremiumTopicData | null>(null);
   const [isLoadingPremium, setIsLoadingPremium] = useState<boolean>(false);
+  const [mastery, setMasteryState] = useState<number>(0);
+  const [explainer, setExplainer] = useState<ExplainerScript | null>(null);
+  const [showExplainer, setShowExplainer] = useState<boolean>(false);
 
   // Automatically switch to 'concept' when topic changes
   useEffect(() => {
     setActiveSubTab('concept');
     setPremiumData(null);
+    setExplainer(null);
+    setShowExplainer(false);
+    setMasteryState(topic?.id ? getMastery(topic.id) : 0);
     if (!topic?.id) return;
+
+    // Optional animated explainer for this topic (shown only if a script exists).
+    fetch(`/content/explainer/${topic.category}/${topic.id}.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((data: ExplainerScript | null) => { if (data && Array.isArray(data.scenes)) setExplainer(data); })
+      .catch(() => { /* no explainer for this topic */ });
 
     const fetchPremiumJSON = async () => {
       setIsLoadingPremium(true);
@@ -128,6 +147,15 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         >
           <Award size={15} /> Topic Q&amp;A ({interviewCount})
         </button>
+        <button
+          onClick={() => setActiveSubTab('selfcheck')}
+          className={`tab-btn ${activeSubTab === 'selfcheck' ? 'active' : ''}`}
+          role="tab" id="de-subtab-selfcheck" aria-selected={activeSubTab === 'selfcheck'} aria-controls="de-subpanel"
+          title="Test yourself and track mastery"
+          style={{ fontSize: '13px', padding: '8px 16px', borderRadius: '8px' }}
+        >
+          <ClipboardCheck size={15} /> Self-Check{mastery > 0 ? ` · ${mastery}%` : ''}
+        </button>
       </div>
 
       {/* Sub tab content */}
@@ -143,7 +171,28 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
                 <span>Loading premium deep dive content...</span>
               </div>
             ) : premiumData ? (
-              <PremiumTopicRenderer data={premiumData} />
+              <>
+                {explainer && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <button
+                      onClick={() => setShowExplainer(v => !v)}
+                      className="glass-panel"
+                      style={{ cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 16px', border: '1px solid var(--border-glass)', background: 'var(--bg-secondary)', width: '100%' }}
+                      aria-expanded={showExplainer}
+                    >
+                      <span style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg,#3b82f6,#a855f7)', color: '#fff' }}>▶</span>
+                      <span style={{ flex: 1 }}>
+                        <span style={{ display: 'block', fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>Watch the 60-second explainer</span>
+                        <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)' }}>{explainer.scenes.length} animated scenes · optional narration</span>
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{showExplainer ? 'Hide' : 'Watch'}</span>
+                    </button>
+                    {showExplainer && <ExplainerPlayer script={explainer} />}
+                  </div>
+                )}
+                <TopicStudyHeader topic={topic} data={premiumData} mastery={mastery} />
+                <PremiumTopicRenderer data={premiumData} topicId={topic.id} />
+              </>
             ) : (
               <>
                 <div className="glass-panel section-card">
@@ -468,7 +517,25 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
             )}
           </div>
         )}
+
+        {/* TAB: SELF-CHECK */}
+        {activeSubTab === 'selfcheck' && (
+          <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            {premiumData ? (
+              <SelfCheckQuiz topic={topic} data={premiumData} onMasteryChange={setMasteryState} />
+            ) : (
+              <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
+                Self-Check becomes available once this topic&apos;s deep-dive content has loaded.
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Up next / related / checkpoint */}
+      {siblingTopics && siblingTopics.length > 0 && onNavigateTopic && (
+        <TopicNextUp topic={topic} siblingTopics={siblingTopics} onNavigate={onNavigateTopic} />
+      )}
 
       {/* Complete trigger and Navigation */}
       <div className="nav-buttons-row">

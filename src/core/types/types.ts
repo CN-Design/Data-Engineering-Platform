@@ -209,6 +209,47 @@ export interface InterviewQuestion {
   difficulty: Difficulty;
 }
 
+// Objective, auto-graded multiple-choice question for a topic's Self-Check.
+// Loaded at runtime from /content/quiz/<tech>/<topicId>.json.
+export interface McqQuestion {
+  id: string;
+  question: string;
+  options: string[];      // 3–4 choices
+  correctIndex: number;   // index into options
+  explanation: string;    // shown after answering
+}
+
+// Animated, narrated topic explainer ("60-second video"). A data-driven script
+// rendered by ExplainerPlayer from a fixed set of scene templates. Loaded at
+// runtime from /content/explainer/<tech>/<topicId>.json.
+export type ExplainerTemplate = 'title' | 'bullets' | 'flow' | 'compare' | 'code' | 'callout';
+
+export interface ExplainerScene {
+  template: ExplainerTemplate;
+  narration?: string;   // spoken + shown as caption
+  seconds?: number;     // auto-advance duration (default 5)
+  icon?: string;        // optional emoji/glyph accent
+  accent?: string;      // optional hex accent color (else auto-cycled)
+  kicker?: string;      // optional small uppercase label above the headline
+  tag?: string;         // callout pill label (e.g., "Remember")
+  // template-specific fields (all optional; the renderer uses what's relevant)
+  headline?: string;
+  subtitle?: string;
+  items?: string[];                                   // bullets
+  nodes?: string[];                                   // flow
+  columns?: { title: string; points: string[] }[];   // compare
+  code?: string;                                      // code
+  lang?: string;                                      // code language label
+  text?: string;                                      // callout
+  tone?: 'good' | 'bad' | 'neutral';                  // callout
+}
+
+export interface ExplainerScript {
+  topicId: string;
+  title: string;
+  scenes: ExplainerScene[];
+}
+
 export interface CodingChallenge {
   id: string;
   topicId: string;

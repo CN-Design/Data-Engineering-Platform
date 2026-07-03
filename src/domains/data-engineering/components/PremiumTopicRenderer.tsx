@@ -1,7 +1,8 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import type { PremiumTopicData } from '../../../core/types/types';
 import { Book, Server, GitBranch, Activity, CheckCircle2, GitFork, Layers, Database, Search, Inbox, Send, Cpu, CircleDot, ChevronUp, ChevronDown, AlertTriangle, Scale } from 'lucide-react';
 import { formatText } from '../../../core/utils/textFormatting';
+import { TopicDiagram } from './diagrams';
 
 const ARCH_ACCENT = '#f59e0b';
 
@@ -196,77 +197,19 @@ const DeepDiveItem: React.FC<{ title: string; body: string; sub?: string }> = ({
 
 interface PremiumTopicRendererProps {
   data: PremiumTopicData;
+  topicId?: string;
 }
 
-export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data }) => {
+export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data, topicId }) => {
   const { coreConcept, industryUseCases, comparisonSection } = data;
   const rootRef = useRef<HTMLDivElement>(null);
-  const [sections, setSections] = useState<{ id: string; label: string }[]>([]);
-  const [activeId, setActiveId] = useState<string>('');
-
-  // Build an in-page table of contents from the rendered sections, so the deep
-  // premium content is navigable instead of one long scroll.
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const secs = Array.from(root.querySelectorAll('section.premium-section')) as HTMLElement[];
-    secs.forEach((s, i) => { if (!s.id) s.id = `de-sec-${i}`; });
-    setSections(secs.map(s => ({ id: s.id, label: (s.querySelector('h2')?.textContent || 'Section').trim() })));
-
-    // Highlight the section currently in view.
-    const obs = new IntersectionObserver(
-      entries => {
-        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) setActiveId((visible[0].target as HTMLElement).id);
-      },
-      { rootMargin: '-20% 0px -70% 0px', threshold: 0 }
-    );
-    secs.forEach(s => obs.observe(s));
-    return () => obs.disconnect();
-  }, [data]);
-
-  const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   if (!coreConcept) return null;
 
   return (
     <div ref={rootRef} className="premium-content-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '32px', fontFamily: '"Outfit", sans-serif' }}>
 
-      {/* In-page section navigation (auto-generated table of contents) */}
-      {sections.length > 1 && (
-        <nav
-          style={{
-            position: 'sticky', top: '8px', zIndex: 20,
-            display: 'flex', gap: '6px', flexWrap: 'nowrap', overflowX: 'auto',
-            padding: '8px', borderRadius: '12px',
-            background: 'color-mix(in srgb, var(--bg-inner) 88%, transparent)',
-            border: '1px solid var(--border-glass)',
-            backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.06)',
-          }}
-          aria-label="Section navigation"
-        >
-          {sections.map(s => {
-            const active = s.id === activeId;
-            return (
-              <button
-                key={s.id}
-                onClick={() => jumpTo(s.id)}
-                style={{
-                  whiteSpace: 'nowrap', cursor: 'pointer', fontFamily: 'inherit',
-                  padding: '6px 12px', borderRadius: '8px', border: 'none',
-                  fontSize: '12.5px', fontWeight: active ? 700 : 500,
-                  color: active ? '#fff' : 'var(--text-muted)',
-                  background: active ? '#3b82f6' : 'transparent',
-                  transition: 'background .15s ease, color .15s ease',
-                }}
-              >
-                {s.label}
-              </button>
-            );
-          })}
-        </nav>
-      )}
+
 
       {/* Overview Section */}
       <section className="glass-panel premium-section">
@@ -542,7 +485,10 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
           Architecture & Data Flow
         </h2>
         
-        {coreConcept.architectureFlow && <ArchitectureFlow flow={coreConcept.architectureFlow} />}
+        <TopicDiagram
+          topicId={topicId}
+          fallback={coreConcept.architectureFlow ? <ArchitectureFlow flow={coreConcept.architectureFlow} /> : null}
+        />
         
         <div>
           <h3 style={{ color: 'var(--text-primary)', marginBottom: '16px', fontSize: '16px', fontWeight: 600 }}>Step-by-Step Execution</h3>

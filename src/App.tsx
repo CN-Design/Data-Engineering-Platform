@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
-import { allTopics, allChallenges } from './domains/data-engineering/data';
+import { allTopics } from './domains/data-engineering/data';
 import { Sidebar } from './core/components/Sidebar';
 import { LearnTab } from './domains/data-engineering/components/LearnTab';
 import { InterviewPrepTab } from './domains/data-engineering/components/InterviewPrepTab';
 import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
 import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
 import { ProjectsTab } from './domains/data-engineering/components/ProjectsTab';
+import { setLastTopic as setDeLastTopic } from './domains/data-engineering/utils/learnProgress';
+import { recordActivityToday as recordDeActivity } from './domains/data-engineering/utils/engagement';
 import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
-import type { Topic, Category, Domain } from './core/types/types';
+import type { Topic, Category, Domain, CodingChallenge } from './core/types/types';
 import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft, Rocket } from 'lucide-react';
 import { PathSelection } from './domains/data-engineering/components/PathSelection';
 import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab';
@@ -29,6 +31,18 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  // DE coding challenges (~1.2MB) are code-split: loaded only when the DE
+  // Practice tab is first opened, keeping them out of the initial bundle.
+  const [deChallenges, setDeChallenges] = useState<CodingChallenge[]>([]);
+
+  useEffect(() => {
+    if (activeTab !== 'practice' || currentDomain !== 'data-engineering' || deChallenges.length) return;
+    let cancelled = false;
+    import('./domains/data-engineering/data/coding_challenges').then(m => {
+      if (!cancelled) setDeChallenges(m.codingChallenges);
+    });
+    return () => { cancelled = true; };
+  }, [activeTab, currentDomain, deChallenges.length]);
 
   // Sync theme with document element and localStorage
   useEffect(() => {
@@ -67,6 +81,8 @@ export default function App() {
     };
     setCompletedTopics(updated);
     localStorage.setItem('de_completed_topics', JSON.stringify(updated));
+    // Record a real activity day when a DE topic is marked complete (fuels streak/XP).
+    if (currentDomain === 'data-engineering' && updated[activeTopic.id]) recordDeActivity();
   };
 
   const markChallengeCompleted = (challengeId: string) => {
@@ -91,7 +107,7 @@ export default function App() {
   if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering') && !selectedTech) {
     return <PathSelection
       domain={currentDomain}
-      onSelectTech={async (tech) => {
+      onSelectTech={async (tech, topicId) => {
         setSelectedTech(tech);
         setActiveTab('learn');
         if (currentDomain === 'frontend') {
@@ -106,7 +122,13 @@ export default function App() {
           setActiveTopic(topics[0] || null);
         } else {
           const techTopics = allTopics.filter(t => t.category === tech);
-          if (techTopics.length > 0) setActiveTopic(techTopics[0]);
+          // Deep-link to a specific topic when requested (resume / due-for-revision),
+          // otherwise start at the track's first topic.
+          const target = (topicId && techTopics.find(t => t.id === topicId)) || techTopics[0];
+          if (target) {
+            setActiveTopic(target);
+            setDeLastTopic(target.id);
+          }
         }
       }}
       onBack={() => setCurrentDomain('dashboard')}
@@ -133,6 +155,7 @@ export default function App() {
         setActiveTopic={(t) => {
           setActiveTopic(t);
           setActiveTab('learn');
+          if (currentDomain === 'data-engineering') setDeLastTopic(t.id);
         }}
         completedTopics={completedTopics}
         isOpen={isSidebarOpen}
@@ -526,6 +549,8 @@ export default function App() {
                 onToggleComplete={toggleTopicCompleted}
                 onPrevious={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
                 onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+                siblingTopics={sidebarTopics}
+                onNavigateTopic={(t) => { setActiveTopic(t); setDeLastTopic(t.id); }}
               />
             )
           )}
@@ -539,9 +564,13 @@ export default function App() {
               <FrontendPracticeTab tech={selectedTech} theme={theme} />
             ) : isBackend && selectedTech ? (
               <BackendPracticeTab tech={selectedTech} theme={theme} />
+            ) : deChallenges.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '60px', color: 'var(--text-secondary)' }}>
+                Loading coding challenges…
+              </div>
             ) : (
               <PracticeTab
-                challenges={allChallenges}
+                challenges={deChallenges}
                 onCompleteChallenge={markChallengeCompleted}
                 theme={theme}
               />
