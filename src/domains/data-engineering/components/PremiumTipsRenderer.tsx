@@ -59,6 +59,33 @@ export const PremiumTipsRenderer: React.FC<PremiumTipsRendererProps> = ({ data }
                 </ul>
               </div>
             )}
+
+            {bestPractices.designRecommendations && bestPractices.designRecommendations.length > 0 && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '8px', borderTop: '3px solid #06b6d4' }}>
+                <strong style={{ color: 'var(--text-primary)', fontSize: '15px' }}>Design Recommendations</strong>
+                <ul style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '12px 0 0 0', paddingLeft: '20px', lineHeight: 1.6 }}>
+                  {bestPractices.designRecommendations.map((p, i) => <li key={i} style={{ marginBottom: '6px' }}>{formatText(p)}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {bestPractices.namingConventions && bestPractices.namingConventions.length > 0 && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '8px', borderTop: '3px solid #f59e0b' }}>
+                <strong style={{ color: 'var(--text-primary)', fontSize: '15px' }}>Naming Conventions</strong>
+                <ul style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '12px 0 0 0', paddingLeft: '20px', lineHeight: 1.6 }}>
+                  {bestPractices.namingConventions.map((p, i) => <li key={i} style={{ marginBottom: '6px' }}>{formatText(p)}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {bestPractices.documentationStandards && bestPractices.documentationStandards.length > 0 && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '20px', borderRadius: '8px', borderTop: '3px solid #8b5cf6' }}>
+                <strong style={{ color: 'var(--text-primary)', fontSize: '15px' }}>Documentation Standards</strong>
+                <ul style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: '12px 0 0 0', paddingLeft: '20px', lineHeight: 1.6 }}>
+                  {bestPractices.documentationStandards.map((p, i) => <li key={i} style={{ marginBottom: '6px' }}>{formatText(p)}</li>)}
+                </ul>
+              </div>
+            )}
           </div>
         </section>
       )}

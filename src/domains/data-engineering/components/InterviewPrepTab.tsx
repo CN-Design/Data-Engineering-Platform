@@ -82,7 +82,13 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
     const load = async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/content/interview/${tech}/${activeCategory}.json`);
+        // Some categories are role-level (tech-agnostic): they load from a
+        // single shared file that appears on every technology's tab.
+        const SHARED_CATEGORIES = ['behavioral', 'systemdesign', 'takehome'];
+        const url = SHARED_CATEGORIES.includes(activeCategory)
+          ? `/content/interview/_shared/${activeCategory}.json`
+          : `/content/interview/${tech}/${activeCategory}.json`;
+        const res = await fetch(url);
         if (res.ok) {
           const data = (await res.json()) as InterviewPrepQuestion[];
           const arr = Array.isArray(data) ? data : [];

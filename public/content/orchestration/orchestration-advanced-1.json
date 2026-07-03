@@ -1,0 +1,398 @@
+{
+  "coreConcept": {
+    "overview": [
+      "XComs (cross-communications) are Airflow's built-in mechanism for passing SMALL bits of data (metadata like row counts, file paths, timestamps, IDs) between tasks in a DAG; by default they are stored as key/value records in the Airflow metadata database, keyed by dag_id, task_id, run_id, and key.",
+      "The TaskFlow API (Airflow 2.x+) makes XCom implicit: a Python function decorated with @task automatically pushes its return value as an XCom, and when that value is passed as an argument to another @task function, Airflow automatically pulls it — so most modern DAGs never call xcom_push/xcom_pull directly.",
+      "TaskGroups are a UI and organizational construct (a context manager or the @task_group decorator) that visually bundle related tasks into a collapsible box in the Graph view, prefix task_ids with the group name, and let you wire dependencies between whole groups (group1 >> group2); they replace the deprecated/removed SubDAG pattern.",
+      "The single most important rule: XCom is for small metadata, NOT big data. Passing DataFrames, files, or large payloads through XCom bloats the metadata DB and can exceed column limits — instead pass a REFERENCE (an S3 path or table name) and store the payload in object storage, or configure a custom XCom backend."
+    ],
+    "learningObjectives": [
+      "Explain how XComs store and retrieve data, the default 'return_value' key, and how to push/pull explicitly with ti.xcom_push / ti.xcom_pull as well as implicitly via the TaskFlow API.",
+      "Apply the 'small metadata only' rule: recognize the large-data anti-pattern and instead pass references, or configure a custom XCom backend that transparently offloads payloads to S3/GCS.",
+      "Organize complex DAGs with TaskGroups (context manager and @task_group), understand task_id prefixing and nesting, wire group-to-group dependencies, and know why TaskGroup replaced SubDAG.",
+      "Consume XComs in dynamic task mapping (.expand()) and pull from specific or multiple upstream task_ids, including map_indexes."
+    ],
+    "formalDefinition": "An XCom is a persisted key/value record in the Airflow metadata database (table `xcom`) uniquely identified by (dag_id, run_id, task_id, map_index, key). A task instance publishes an XCom via ti.xcom_push(key, value) — and any value returned from a task is automatically pushed under the reserved key 'return_value'. A downstream task instance reads it via ti.xcom_pull(task_ids=..., key=...). The TaskFlow API layers implicit XCom on top: @task-decorated function returns become 'return_value' XComs and function arguments become xcom_pull calls resolved at execution time. A TaskGroup is a logical grouping object (not a separate DAG run) that namespaces its members' task_ids with a group_id prefix and renders as a single collapsible node in the UI; dependencies declared against the group apply to its boundary tasks.",
+    "simpleExplanation": "Think of tasks in a pipeline as workers on an assembly line who cannot talk to each other directly because each runs in its own process (possibly on a different machine). XCom is the small sticky-note system between them: one worker writes a short note ('I processed 4,200 rows, the file is at s3://bucket/day.parquet') and pins it to a shared board (the metadata DB); the next worker reads that note. The rule is the note must be SMALL — you never staple the whole shipment to the board, you just write down where the shipment is. TaskGroups are like drawing labeled boxes on the factory floor plan ('Staging', 'Transform', 'Publish') so a complicated line is easy to read and you can say 'do everything in the Staging box before anything in the Transform box' with one arrow.",
+    "historicalContext": "XComs have existed since early Airflow as the canonical way to share small state between otherwise isolated tasks. In Airflow 1.x, sharing data was verbose (explicit xcom_push/xcom_pull, often via provide_context and PythonOperator). Airflow 2.0 (December 2020) introduced the TaskFlow API (@task, @dag decorators, PEP 8-style Python authoring), which turned XCom into an implicit, almost invisible dependency: return a value, use it as an argument. Airflow 2.0 also introduced custom XCom backends (BaseXCom subclasses) so large XCom values can be serialized to external stores like S3/GCS instead of the DB. TaskGroups arrived in Airflow 2.0 as the modern replacement for SubDAGs — SubDagOperator was deprecated and has since been removed in Airflow 3.x — because SubDAGs caused scheduler deadlocks and performance problems. Airflow 2.3 (2022) added dynamic task mapping (.expand()), which consumes XComs to fan out tasks at runtime, and 2.7+/3.x continued to harden the metadata model.",
+    "whyItMatters": {
+      "business": "Pipelines that pass the right small facts between steps (which files landed, how many rows, which partition) produce correct, auditable data products; misusing XCom for large data bloats the metadata DB, slows the scheduler for every team, and can bring the whole Airflow deployment to a crawl — a cross-team outage, not just one pipeline's problem.",
+      "engineering": "TaskFlow's implicit XCom makes DAGs read like ordinary Python (return a value, pass it along), cutting boilerplate and dependency-wiring bugs; TaskGroups keep 100-task DAGs readable and maintainable, which directly reduces on-call confusion and time-to-diagnose.",
+      "scalability": "Keeping XCom payloads tiny keeps the metadata DB small and the scheduler fast even with thousands of DAG runs; offloading large data to object storage (via references or custom backends) and fanning out with dynamic task mapping lets a single DAG scale to hundreds of parallel work units without DB pressure.",
+      "cost": "A small, healthy metadata DB runs on cheaper instances and needs less maintenance; avoiding megabyte XComs prevents runaway DB growth, expensive vacuuming, and the scheduler-latency-driven need to over-provision workers.",
+      "reliability": "Correct XCom usage (small, serializable, referenced payloads) plus clear TaskGroup structure makes retries deterministic and reruns safe; the metadata DB stays the source of truth for task state without becoming a data lake that risks corruption or bloat-induced downtime."
+    },
+    "coreComponents": [
+      {
+        "name": "XCom (the key/value record)",
+        "definition": "A row in the metadata DB's `xcom` table identified by (dag_id, run_id, task_id, map_index, key) holding a JSON-serializable (by default) value; the reserved key 'return_value' holds whatever a task returns.",
+        "purpose": "To let one task publish a small result that later tasks in the same DAG run can read, bridging otherwise isolated task processes.",
+        "responsibilities": "Persist small serialized values, associate them with the correct run and task, and serve them back to xcom_pull with correct scoping.",
+        "examples": "ti.xcom_push(key='row_count', value=4200) | ti.xcom_pull(task_ids='extract', key='row_count') | a @task returning {'path': 's3://.../day.parquet'} stored under 'return_value'"
+      },
+      {
+        "name": "TaskFlow API (@task / @dag)",
+        "definition": "Decorator-based DAG authoring where @task turns a Python function into a task whose return value is auto-pushed as XCom and whose arguments are auto-pulled from upstream XComs.",
+        "purpose": "To make XCom implicit and DAGs read like plain Python, removing manual push/pull and explicit dependency wiring.",
+        "responsibilities": "Register the function as a task, serialize its return as 'return_value', resolve argument XComs at execution time, and infer dependencies from data flow.",
+        "examples": "@task def extract(): return path | @task def load(p): ... | load(extract())  # dependency + XCom inferred"
+      },
+      {
+        "name": "TaskGroup (context manager / @task_group)",
+        "definition": "A logical grouping object that namespaces member task_ids with a group_id prefix and renders as one collapsible node in the UI; created via `with TaskGroup('name') as tg:` or the @task_group decorator.",
+        "purpose": "To organize and visually simplify complex DAGs and to wire dependencies at the group level.",
+        "responsibilities": "Prefix contained task_ids (group.task), render a collapsible boundary in the Graph view, and expose group-level dependency operators (>>).",
+        "examples": "with TaskGroup('staging') as staging: ... | staging >> transform | @task_group def publish(): ..."
+      },
+      {
+        "name": "Custom XCom Backend",
+        "definition": "A subclass of airflow.models.xcom.BaseXCom that overrides serialize_value/deserialize_value to store large values externally (e.g., S3/GCS) while keeping only a small reference in the metadata DB.",
+        "purpose": "To let pipelines pass larger objects through the XCom API transparently without bloating the metadata database.",
+        "responsibilities": "Serialize values to external storage, store the storage key in the DB, and transparently fetch/deserialize on pull.",
+        "examples": "Configure xcom_backend = my_pkg.S3XComBackend in airflow.cfg / AIRFLOW__CORE__XCOM_BACKEND env var"
+      }
+    ],
+    "internalWorking": [
+      "When a task returns a value, the executor calls the configured XCom backend's serialize_value and writes a row into the metadata DB's `xcom` table under key 'return_value', scoped to the exact (dag_id, run_id, task_id, map_index). Explicit ti.xcom_push does the same under a caller-chosen key. The default backend JSON-serializes the value, so it must be JSON-serializable (dicts, lists, strings, numbers, booleans); non-serializable objects raise at push time.",
+      "When a downstream task calls ti.xcom_pull(task_ids=..., key=...), Airflow runs a SELECT against the `xcom` table filtered by the current run_id and the requested task_ids/key, deserializes the stored value via the backend, and returns it. If task_ids is a list, it returns a list of values in order; pulling with no matching row returns None, which is a frequent source of silent bugs.",
+      "In the TaskFlow API, argument passing is not a direct function call at parse time — it produces an XComArg. At execution time Airflow resolves each XComArg by pulling the upstream task's 'return_value' XCom, so the actual data crosses through the metadata DB (or the custom backend) exactly like classic XCom; the decorator just hides the push/pull and infers the task dependency from the data reference.",
+      "Dynamic task mapping (.expand()) consumes an XCom that is a list: at runtime Airflow reads the upstream 'return_value', creates one mapped task instance per element (each with a distinct map_index), and each instance's XComs are stored keyed by that map_index. A downstream task can xcom_pull with map_indexes to select specific mapped outputs, and returning from a mapped task stores per-index XComs that can be reduced (e.g., pulled as a list) downstream.",
+      "A TaskGroup does NOT create a separate DAG or DAG run (unlike the old SubDAG). It is purely a parse-time namespacing and UI construct: every task defined inside gets its task_id prefixed with the group_id (group_id.task_id), the Graph view renders a single collapsible box, and declaring `groupA >> groupB` expands into edges from groupA's leaf/exit tasks to groupB's root/entry tasks. Because there is no extra scheduling entity, TaskGroups avoid the scheduler deadlocks and resource duplication that made SubDAGs problematic."
+    ],
+    "architectureFlow": "Upstream task returns/pushes value -> XCom backend serialize_value -> metadata DB `xcom` row keyed by (dag_id, run_id, task_id, map_index, key) -> downstream task xcom_pull (or TaskFlow argument resolves XComArg) -> backend deserialize_value -> value available in downstream task; TaskGroups wrap subsets of these tasks as UI/namespace boundaries with group >> group edges",
+    "dataFlowWalkthrough": [
+      "1. An `extract` task reads a source, writes the raw payload to object storage (s3://bucket/2026-01-01/orders.parquet), and returns a small dict {'path': 's3://...', 'row_count': 4200} — Airflow serializes it and stores it under key 'return_value'.",
+      "2. A `transform` task is defined with `transform(extract())` (TaskFlow) or with explicit `ti.xcom_pull(task_ids='extract')`; at execution time Airflow pulls that dict from the metadata DB, and the task uses the PATH to read the actual data from S3 — never the data itself through XCom.",
+      "3. The transform runs inside a TaskGroup ('transform') alongside a validate step; the group prefixes their task_ids (transform.run, transform.validate) and renders as one collapsible box, and the whole group depends on the staging group via `staging >> transform`.",
+      "4. A dynamic step calls process.expand(partition=list_partitions()) where list_partitions() returned a list XCom; Airflow fans out one mapped task per partition, each storing its own per-map_index XCom, and a final `publish` task pulls those results (e.g., as a list) to write a manifest — again passing references, not bulk data, back through XCom."
+    ],
+    "keyTerminology": [
+      {
+        "term": "XCom (cross-communication)",
+        "meaning": "A small key/value record in the metadata DB used to pass data between tasks in the same DAG run; the reserved key 'return_value' holds a task's returned value.",
+        "importance": "It is THE built-in inter-task data channel; understanding its size limits and scoping is essential to avoid metadata-DB bloat and None-pull bugs."
+      },
+      {
+        "term": "TaskFlow API (@task)",
+        "meaning": "Decorator-based authoring where returning a value auto-pushes an XCom and passing it as an argument auto-pulls it, making XCom implicit.",
+        "importance": "It is the modern, idiomatic way to write DAGs; most current Airflow code relies on implicit XCom rather than manual push/pull."
+      },
+      {
+        "term": "TaskGroup",
+        "meaning": "A UI/namespacing construct that groups tasks into a collapsible node and prefixes their task_ids with the group_id; supports group-to-group dependencies.",
+        "importance": "It is the modern replacement for SubDAGs and the primary tool for keeping large, staged DAGs readable and maintainable."
+      },
+      {
+        "term": "Custom XCom backend",
+        "meaning": "A BaseXCom subclass that stores XCom values in external storage (S3/GCS) while keeping only a reference in the DB.",
+        "importance": "It lets teams safely pass larger objects via the XCom API without polluting the metadata database."
+      },
+      {
+        "term": "Dynamic task mapping (.expand())",
+        "meaning": "Runtime fan-out that creates one mapped task instance per element of an upstream list XCom, each with its own map_index.",
+        "importance": "It is how modern Airflow parallelizes over variable-length inputs, and it is driven directly by XCom values."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "XCom is for small metadata, not big data",
+        "explanation": "The default XCom backend serializes values into a column in the metadata database. That column has practical size constraints (dependent on the DB — SQLite and MySQL are far smaller than Postgres, where the underlying type can be large but is still never meant for bulk data), and every push writes a row that the scheduler and webserver must read, serialize, and eventually clean up. Passing a pandas DataFrame, a file's contents, or a multi-megabyte JSON blob through XCom bloats the metadata DB, slows the scheduler for EVERY DAG (a shared-resource problem), and can hit hard column limits and fail. The correct pattern is to store the large payload in object storage or a table and pass only a REFERENCE through XCom — an S3 path, a table name, a partition key, a row count. If you genuinely need to move larger objects through the XCom API, configure a custom XCom backend that transparently offloads the value to S3/GCS and stores only a pointer in the DB. Internalize the phrase: XCom carries the shipping label, never the shipment."
+      },
+      {
+        "concept": "TaskGroups replaced SubDAGs — and why",
+        "explanation": "SubDAGs (SubDagOperator) were the old way to group tasks, but each SubDAG spawned its own DAG run and was scheduled by a SubDagOperator that itself occupied a worker slot — leading to notorious deadlocks (the SubDAG's tasks and the operator competing for slots), duplicated scheduling overhead, and confusing execution semantics. SubDAGs were deprecated in Airflow 2.0 and removed in Airflow 3.x. TaskGroups solve the same readability problem WITHOUT any of that cost: they are a pure parse-time grouping that only affects task_id namespacing (group_id.task_id) and the Graph-view rendering (a single collapsible box). There is no extra DAG run, no extra operator holding a slot, and no separate scheduling entity. You can nest TaskGroups, generate them dynamically in a loop, and declare dependencies at the group boundary (staging >> transform >> publish), all while every task still lives in and is scheduled by the single parent DAG. This is why any new code should use TaskGroups and legacy SubDAGs should be migrated."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Classic XCom:** explicit ti.xcom_push(key, value) and ti.xcom_pull(task_ids=..., key=...), with the reserved 'return_value' key auto-populated by any task that returns a value.",
+      "**TaskFlow (implicit) XCom:** @task function returns become XComs and function arguments become auto-pulls (XComArg), hiding push/pull entirely and inferring dependencies.",
+      "**Multi-task / filtered pulls:** xcom_pull(task_ids=['a','b']) returns a list of values; pulling by a custom key or by map_indexes selects specific outputs, including from dynamically mapped tasks.",
+      "**Custom XCom backends:** BaseXCom subclasses (e.g., an S3/GCS backend) that serialize large values externally and keep only a reference in the metadata DB, configured via AIRFLOW__CORE__XCOM_BACKEND.",
+      "**TaskGroup forms:** the `with TaskGroup('id') as tg:` context manager, the @task_group TaskFlow decorator, nested TaskGroups, and dynamically generated TaskGroups (built in a Python loop) for repeated staged patterns."
+    ],
+    "advantages": [
+      "**Isolation-friendly communication:** XCom lets independent, distributed task processes share small state through the reliable metadata DB without any shared filesystem assumption.",
+      "**Readable, low-boilerplate DAGs:** the TaskFlow API turns dependency wiring and data passing into ordinary Python return/argument flow, reducing bugs and code volume.",
+      "**Maintainable large DAGs:** TaskGroups collapse dozens of tasks into labeled boxes and enable group-level dependencies, dramatically improving Graph-view readability and on-call diagnosis.",
+      "**Scalable fan-out:** dynamic task mapping consumes XCom lists to parallelize over variable-length inputs at runtime without hand-writing each task."
+    ],
+    "disadvantages": [
+      "**Strict size ceiling:** XCom is unsuitable for large data; misuse bloats the metadata DB and degrades the entire scheduler, a shared-resource failure mode.",
+      "**Serialization constraints:** default XCom requires JSON-serializable values, so custom objects need conversion or a custom backend, adding friction.",
+      "**Silent None on missing pulls:** xcom_pull returns None when no matching XCom exists (wrong task_ids/key/run), producing hard-to-trace downstream failures.",
+      "**No cross-DAG-run sharing by default:** XComs are scoped to a single run, so sharing state across runs requires Variables, external stores, or explicit design."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use XCom to pass small metadata (paths, counts, IDs, flags) between tasks, and prefer the TaskFlow API for implicit passing. Use TaskGroups to organize any DAG with more than a handful of related, staged tasks. Use dynamic task mapping when the number of parallel units is data-dependent. Use a custom XCom backend when you must move somewhat larger objects through the XCom API.",
+      "whenToAvoid": "Never push DataFrames, file contents, or large blobs through the default XCom — pass a reference and store the payload in object storage instead. Avoid TaskGroups purely for nesting when a flat DAG is already clear. Avoid relying on XCom to share state across separate DAG runs; use Variables or an external store for that."
+    },
+    "realWorldAnalogy": "Running a DAG is like a relay-race kitchen where each cook works at a separate station and cannot shout across the room. XCom is the little order-ticket rail: a cook clips a short ticket ('sauce is in fridge, shelf 3, 2 liters') and the next cook reads it — you would never try to clip the entire pot of sauce to the rail, only the note saying where it is. TaskGroups are the labeled zones painted on the kitchen floor ('Prep', 'Cook', 'Plate') so a visiting inspector instantly understands the flow and can say 'finish all Prep before any Cook' with a single line, even though there are twenty individual stations inside each zone.",
+    "commonMisconceptions": [
+      {
+        "myth": "You can pass a pandas DataFrame or a big file between tasks using XCom as long as it fits.",
+        "reality": "Even when it technically 'fits', large XComs bloat the shared metadata DB, slow the scheduler for every DAG, and can hit column limits and fail. Pass a reference (S3 path, table name) and store the payload externally, or use a custom XCom backend that offloads to object storage transparently."
+      },
+      {
+        "myth": "A TaskGroup is basically a SubDAG and runs as its own DAG.",
+        "reality": "A TaskGroup is purely a parse-time namespacing and UI grouping construct with no separate DAG run, no extra operator, and no separate scheduling — which is exactly why it replaced SubDAGs, whose separate runs caused deadlocks and overhead. TaskGroup tasks are scheduled by the single parent DAG."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Keep XCom payloads tiny (references and counts) so the metadata DB and scheduler stay fast under thousands of runs; use dynamic task mapping to fan out over data-dependent inputs, and configure a custom XCom backend to move larger objects to S3/GCS rather than the DB.",
+      "reliability": "Treat XComs as small and JSON-serializable; guard downstream logic against xcom_pull returning None; keep tasks idempotent so retries and reruns replay pushes/pulls deterministically within a run.",
+      "faultTolerance": "Because XComs are scoped to a run, design retries to re-derive values rather than assume cross-run state; use TaskGroups plus trigger rules to isolate failures within a stage without failing unrelated stages.",
+      "monitoring": "Watch metadata DB size and `xcom` table growth as a first-class SLI; alert on rapid growth (a sign of large-payload misuse) and on scheduler loop latency, which XCom bloat directly degrades.",
+      "security": "Never push secrets or PII through XCom, since values are stored in and readable from the metadata DB and UI; use Airflow Connections/Variables (with a secrets backend) and pass only non-sensitive references.",
+      "costOptimization": "A lean metadata DB (small XComs, regular xcom cleanup / retention) runs on smaller instances and avoids expensive vacuum/maintenance; offloading big data to cheap object storage beats paying for DB storage and scheduler slowdown.",
+      "performance": "Prefer references over payloads to minimize serialize/deserialize and DB round-trips; use TaskFlow to avoid redundant explicit pulls, and pull only the specific task_ids/map_indexes you need instead of broad multi-task pulls."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "XCom two ways: classic xcom_push/pull vs TaskFlow implicit passing",
+        "overview": "The same 'extract row count and path, then load' flow written first with explicit XCom, then with the TaskFlow API where XCom is implicit.",
+        "code": "from airflow import DAG\nfrom airflow.decorators import task\nfrom airflow.operators.python import PythonOperator\nimport pendulum\n\n# ---------- Classic XCom (explicit push/pull) ----------\ndef extract(**context):\n    ti = context[\"ti\"]\n    # Store the BIG data in object storage; push only a small reference\n    path = \"s3://warehouse/raw/2026-01-01/orders.parquet\"\n    ti.xcom_push(key=\"path\", value=path)\n    ti.xcom_push(key=\"row_count\", value=4200)\n    # A returned value is auto-pushed under the reserved key 'return_value'\n    return {\"status\": \"ok\"}\n\ndef load(**context):\n    ti = context[\"ti\"]\n    path = ti.xcom_pull(task_ids=\"extract\", key=\"path\")\n    rows = ti.xcom_pull(task_ids=\"extract\", key=\"row_count\")\n    # Use the PATH to read data from S3 - never pull the data itself via XCom\n    print(f\"Loading {rows} rows from {path}\")\n\nwith DAG(\"classic_xcom\", start_date=pendulum.datetime(2026, 1, 1), schedule=None, catchup=False) as dag:\n    e = PythonOperator(task_id=\"extract\", python_callable=extract)\n    l = PythonOperator(task_id=\"load\", python_callable=load)\n    e >> l\n\n# ---------- TaskFlow API (implicit XCom) ----------\nwith DAG(\"taskflow_xcom\", start_date=pendulum.datetime(2026, 1, 1), schedule=None, catchup=False) as dag2:\n    @task\n    def extract_tf() -> dict:\n        # Return value is auto-pushed as the 'return_value' XCom\n        return {\"path\": \"s3://warehouse/raw/2026-01-01/orders.parquet\", \"row_count\": 4200}\n\n    @task\n    def load_tf(meta: dict) -> None:\n        # 'meta' is auto-pulled from extract_tf's return_value XCom\n        print(f\"Loading {meta['row_count']} rows from {meta['path']}\")\n\n    load_tf(extract_tf())  # dependency AND XCom passing inferred automatically\n",
+        "language": "python",
+        "breakdown": "In the classic version, extract explicitly calls ti.xcom_push under custom keys ('path', 'row_count') and its returned dict lands under the reserved 'return_value' key; load explicitly pulls by task_ids and key. Note it pushes a reference (S3 path) plus a count — never the data. In the TaskFlow version, extract_tf's return is auto-pushed, and writing load_tf(extract_tf()) both wires the dependency (extract_tf >> load_tf) and injects the pulled dict as the argument — no push/pull is written by hand.",
+        "expectedOutput": "Loading 4200 rows from s3://warehouse/raw/2026-01-01/orders.parquet",
+        "commonIssues": "Pulling with the wrong task_ids or key returns None silently, causing a downstream KeyError/TypeError. Returning a non-JSON-serializable object (e.g., a DataFrame) fails at push time or bloats the DB. Mixing classic and TaskFlow patterns and forgetting that the classic default key is 'return_value'.",
+        "optimizationTips": "Prefer TaskFlow for readability and fewer wiring bugs; pull only the specific task_ids/keys you need; always store large payloads in object storage and pass just the reference."
+      },
+      {
+        "title": "TaskGroups: staged ELT with group-to-group dependencies and nesting",
+        "overview": "Organize an ELT DAG into staging, transform, and publish TaskGroups, wire them with group-level dependencies, and pass a small reference between stages.",
+        "code": "from airflow import DAG\nfrom airflow.decorators import task, task_group\nfrom airflow.utils.task_group import TaskGroup\nimport pendulum\n\nwith DAG(\"elt_with_taskgroups\", start_date=pendulum.datetime(2026, 1, 1),\n         schedule=\"@daily\", catchup=False) as dag:\n\n    # --- Staging group via the context manager ---\n    with TaskGroup(\"staging\") as staging:\n        @task\n        def extract() -> str:\n            # push only a reference to the landed data\n            return \"s3://warehouse/staging/2026-01-01/orders.parquet\"\n\n        @task\n        def validate(path: str) -> str:\n            print(f\"Validating {path}\")\n            return path\n\n        staged_path = validate(extract())  # task_ids become staging.extract, staging.validate\n\n    # --- Transform group via the @task_group decorator ---\n    @task_group(group_id=\"transform\")\n    def transform_group(path: str) -> str:\n        @task\n        def clean(p: str) -> str:\n            print(f\"Cleaning data referenced by {p}\")\n            return \"s3://warehouse/curated/2026-01-01/orders.parquet\"\n\n        @task\n        def enrich(p: str) -> str:\n            print(f\"Enriching {p}\")\n            return p\n\n        return enrich(clean(path))\n\n    curated_path = transform_group(staged_path)\n\n    # --- Publish group ---\n    with TaskGroup(\"publish\") as publish:\n        @task\n        def write_manifest(p: str) -> None:\n            print(f\"Publishing manifest pointing to {p}\")\n        write_manifest(curated_path)\n\n    # Group-to-group dependency (in addition to the data-inferred edges)\n    staging >> transform_group() if False else None  # data flow already wires order\n",
+        "language": "python",
+        "breakdown": "The 'staging' TaskGroup is built with the context manager: every task inside is namespaced (staging.extract, staging.validate) and renders as one collapsible box. The 'transform' group uses the @task_group decorator, which is composable like a function and returns its last XComArg (curated_path). Data flow (validate(extract()), transform_group(staged_path), write_manifest(curated_path)) both passes small references via implicit XCom AND establishes the staging -> transform -> publish ordering; you can also declare explicit group-level edges like `staging >> publish` when there is no data dependency.",
+        "expectedOutput": "Validating s3://warehouse/staging/2026-01-01/orders.parquet\nCleaning data referenced by s3://warehouse/staging/2026-01-01/orders.parquet\nEnriching s3://warehouse/curated/2026-01-01/orders.parquet\nPublishing manifest pointing to s3://warehouse/curated/2026-01-01/orders.parquet",
+        "commonIssues": "Forgetting that task_ids are prefixed by the group_id, so an xcom_pull(task_ids='extract') must use 'staging.extract'. Expecting a TaskGroup to run as a separate DAG (it does not). Declaring duplicate group_ids in the same DAG.",
+        "optimizationTips": "Use nested and dynamically generated TaskGroups (build them in a loop) for repeated staged patterns; keep group-level dependencies for readability, and let TaskFlow data flow handle intra-group ordering."
+      },
+      {
+        "title": "Testing tasks and inspecting XComs from the CLI",
+        "overview": "Run a single task locally to exercise its XCom push, run a whole DAG offline, and inspect task states — without a scheduler.",
+        "code": "# Run one task for a logical date; executes its callable and pushes its XComs\nairflow tasks test taskflow_xcom extract_tf 2026-01-01\n\n# Run an entire DAG end-to-end locally (no scheduler needed), useful in CI\nairflow dags test taskflow_xcom 2026-01-01\n\n# List tasks in a DAG as a tree to verify TaskGroup prefixing\nairflow tasks list elt_with_taskgroups --tree\n\n# After a run, inspect the state of every task instance in a run\nairflow tasks states-for-dag-run elt_with_taskgroups manual__2026-01-01T00:00:00+00:00\n\n# Confirm the DAG is parsed and registered\nairflow dags list\n",
+        "language": "bash",
+        "breakdown": "`airflow tasks test` runs a single task's code for the given logical date directly in the CLI process (executing xcom_push), which is ideal for iterating on one task. `airflow dags test` runs the full DAG offline so you can validate the whole XCom/TaskGroup flow in CI. `airflow tasks list --tree` prints the task hierarchy, showing group_id-prefixed ids like staging.extract. `airflow tasks states-for-dag-run` reports each task instance's state for a specific run_id.",
+        "expectedOutput": "[2026-01-01 ...] INFO - Marking task as SUCCESS. dag_id=taskflow_xcom, task_id=extract_tf, run_id=...\n<TaskGroup staging>\n    <Task extract> staging.extract\n    <Task validate> staging.validate\nsuccess",
+        "commonIssues": "Passing the wrong logical date format, or expecting `airflow tasks test` to trigger downstream tasks (it runs only the one task). Using an incorrect run_id in states-for-dag-run. Forgetting that TaskGroup prefixes show up in `--tree` and CLI task_ids.",
+        "optimizationTips": "Wire `airflow dags test` into CI to catch XCom-serialization and dependency errors before deploy; use `airflow tasks test` for fast single-task iteration during development."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A daily ELT must extract order data, transform it, and publish a curated dataset, coordinating multiple tasks that pass small metadata between them while keeping the large data out of the metadata database and keeping a 40-task DAG readable for on-call engineers.",
+    "inputData": "A daily source export of orders landed in S3 (raw/2026-01-01/orders.parquet, ~2 GB), plus a variable number of country partitions that must be processed in parallel.",
+    "architecture": "TaskGroups organize the DAG into staging, transform, and publish stages; each task passes only small references (S3 paths, row counts, partition keys) through XCom via the TaskFlow API; dynamic task mapping fans out per-partition processing; a custom S3 XCom backend is configured so any larger intermediate objects are offloaded to object storage rather than the DB.",
+    "processingSteps": [
+      "1. In the 'staging' TaskGroup, an extract @task writes raw orders to S3 and returns a small dict {'path': 's3://.../orders.parquet', 'row_count': ...}; the return is auto-pushed as an XCom.",
+      "2. A list_partitions @task returns the list of country partitions found; this list XCom drives dynamic task mapping downstream.",
+      "3. In the 'transform' TaskGroup, process.expand(partition=list_partitions()) fans out one mapped task per partition, each reading its slice from S3 (via the reference) and returning the curated partition path as a per-map_index XCom.",
+      "4. A reduce @task pulls the list of curated partition paths (mapped XComs) and writes a single manifest reference, still keeping only paths in XCom.",
+      "5. In the 'publish' TaskGroup, a publish @task reads the manifest reference and registers the curated dataset; the whole flow is ordered staging -> transform -> publish via group-level and data-inferred dependencies."
+    ],
+    "output": "A curated, partitioned dataset in S3 plus a manifest, with the DAG's XComs containing only small references (paths, counts, partition keys) — never the order data itself.",
+    "monitoring": "Track rows extracted, partitions processed, and per-task duration; monitor metadata DB and `xcom` table size to ensure the large-data-in-XCom anti-pattern never creeps in, and alert on scheduler loop latency.",
+    "errorHandling": "Tasks are idempotent (paths are deterministic per logical date) so retries safely re-derive references; guard downstream logic against xcom_pull returning None; TaskGroups plus trigger rules isolate a failed transform partition from unrelated stages.",
+    "finalResult": "A readable, staged ELT DAG that scales to a variable number of partitions via dynamic task mapping, passes only tiny metadata through XCom, keeps the metadata DB lean, and remains easy to diagnose because related tasks are grouped into collapsible staging/transform/publish boxes."
+  },
+  "industryUseCases": [
+    {
+      "company": "Airbnb (Airflow's birthplace)",
+      "problem": "Hundreds of interdependent ETL tasks needed to share small state (partitions, run metadata) and stay readable at scale.",
+      "solution": "Use XCom for small metadata handoffs and TaskGroups to organize large DAGs into logical stages, keeping bulk data in the warehouse/object storage.",
+      "benefits": "Readable, maintainable large DAGs and a healthy metadata DB, avoiding the scheduler slowdowns caused by oversized inter-task payloads."
+    },
+    {
+      "company": "Astronomer (managed Airflow)",
+      "problem": "Customers frequently misused XCom to pass DataFrames, bloating the metadata DB and degrading scheduler performance for the whole deployment.",
+      "solution": "Promote the reference-passing pattern and provide custom XCom backends that transparently offload large values to S3/GCS while storing only a pointer in the DB.",
+      "benefits": "Lean metadata DBs, faster schedulers, and the ability to move larger objects through the XCom API safely without DB pressure."
+    },
+    {
+      "company": "Data platform teams building ELT on Airflow (e.g., fintech/e-commerce)",
+      "problem": "Variable-length inputs (per-country or per-account partitions) needed parallel processing without hand-writing each task.",
+      "solution": "Drive dynamic task mapping (.expand()) from a list XCom and group the fan-out inside a transform TaskGroup for clarity.",
+      "benefits": "Runtime-scalable parallelism over data-dependent inputs with clear, collapsible stage boundaries and small XCom footprints."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Keep XCom payloads to references and counts so the metadata DB stays small and the scheduler loop stays fast even with thousands of concurrent runs; use dynamic task mapping to fan out over variable inputs and a custom XCom backend to route any larger objects to object storage rather than the DB.",
+    "faultTolerance": "Make tasks idempotent so retries re-derive references deterministically within a run; because XComs are run-scoped, never assume cross-run state on retry, and use TaskGroups with trigger rules to contain failures to a single stage.",
+    "highAvailability": "Since XComs live in the metadata DB, run that DB in a highly available configuration (managed Postgres with replicas/failover); keep it lean so failover and maintenance windows are fast and low-risk.",
+    "disasterRecovery": "Back up the metadata DB (which holds XComs and task state) regularly; keep source data and derived outputs in durable object storage so a run can be safely re-executed and XComs re-derived after a restore.",
+    "performanceOptimization": "Prefer TaskFlow implicit passing to avoid redundant explicit pulls; pull only the specific task_ids/map_indexes needed; avoid multi-task broad pulls; and never serialize large objects through the default backend, which forces expensive DB writes/reads.",
+    "costOptimization": "A lean metadata DB (small XComs plus xcom retention/cleanup) runs on smaller instances and needs less vacuum/maintenance; offloading bulk data to cheap object storage is far cheaper than paying for DB storage and the scheduler slowdown large XComs cause.",
+    "securityConsiderations": "Never store secrets or PII in XCom, since values are readable in the metadata DB and the UI; use Connections/Variables with a secrets backend and pass only non-sensitive references; restrict UI access so XCom values are not exposed broadly.",
+    "monitoringAndObservability": "Treat `xcom` table size and metadata DB growth as first-class SLIs; alert on rapid growth (signaling large-payload misuse) and on scheduler loop latency; expose per-task duration and per-stage (TaskGroup) success rates.",
+    "dataQualityValidation": "Validate the small metadata passed via XCom (e.g., non-null path, positive row_count) at stage boundaries; guard against xcom_pull returning None; fail fast when a reference is missing rather than proceeding on bad data.",
+    "loggingAndAlerting": "Log the references pushed/pulled at each stage for traceability (never secrets); alert on None pulls, serialization failures, and metadata DB size thresholds so XCom misuse is caught before it degrades the shared scheduler."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Pass references, not payloads:** put large data in object storage or a table and push only a small reference (S3 path, table name, row count) through XCom.",
+      "**Prefer the TaskFlow API:** let return values and arguments carry XCom implicitly to reduce push/pull boilerplate and dependency-wiring bugs.",
+      "**Use TaskGroups for structure:** organize any non-trivial DAG into staging/transform/publish groups for readability and group-level dependencies, and migrate any legacy SubDAGs.",
+      "**Configure a custom XCom backend** (S3/GCS) when you must move somewhat larger objects through the XCom API, so the metadata DB stays lean."
+    ],
+    "engineeringStandards": [
+      "Keep XCom values small and JSON-serializable; never push DataFrames, file contents, or secrets/PII.",
+      "Make tasks idempotent so retries and reruns re-derive XCom references deterministically within a run.",
+      "Guard every downstream consumer against xcom_pull returning None (missing/wrong task_ids or key)."
+    ],
+    "designRecommendations": [
+      "Model inter-task communication as 'shipping labels' (references) and store the actual data externally.",
+      "Use dynamic task mapping (.expand()) driven by a list XCom for data-dependent parallelism instead of hand-written parallel tasks.",
+      "Nest and, where useful, dynamically generate TaskGroups for repeated staged patterns rather than duplicating task definitions."
+    ],
+    "namingConventions": [
+      "Give TaskGroups clear stage names (staging, transform, publish) since they prefix member task_ids (staging.extract).",
+      "Use descriptive XCom keys ('path', 'row_count', 'partition') rather than relying only on the default 'return_value' when multiple values are pushed.",
+      "Name @task functions after the business step (extract, validate, enrich) so implicit dependencies read naturally."
+    ],
+    "documentationStandards": [
+      "Document what each XCom carries, its expected type, and that it is a reference (not bulk data).",
+      "Document TaskGroup stage boundaries and the group-to-group dependency order.",
+      "Document any custom XCom backend configuration and where offloaded values are stored."
+    ],
+    "testingStrategies": [
+      "Use `airflow tasks test` to exercise a single task's XCom push in isolation during development.",
+      "Use `airflow dags test` in CI to validate the full XCom/TaskGroup flow offline, catching serialization and dependency errors before deploy.",
+      "Test the None-pull path and the mapped-XCom reduce step, and assert task_id prefixes for grouped tasks with `airflow tasks list --tree`."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Passing large data (DataFrames, file contents, big JSON) through XCom.",
+      "whyItHappens": "It is the easiest thing to do — just return the object — and it appears to work on small dev data.",
+      "impact": "The metadata DB bloats, the scheduler slows for every DAG in the deployment, and pushes can hit column size limits and fail — a shared-resource outage.",
+      "correctApproach": "Store the payload in object storage or a table and push only a reference (path/table/count); if larger objects must flow through the XCom API, configure a custom XCom backend that offloads to S3/GCS."
+    },
+    {
+      "mistake": "Ignoring that xcom_pull returns None on a missing/mismatched pull.",
+      "whyItHappens": "Wrong task_ids (often forgetting the TaskGroup prefix), wrong key, or pulling before the value exists, with no error raised at pull time.",
+      "impact": "Downstream tasks receive None and fail later with confusing KeyError/TypeError, or silently process bad data.",
+      "correctApproach": "Use the correct prefixed task_ids and key, validate the pulled value (assert not None), and prefer TaskFlow argument passing which makes the dependency explicit."
+    },
+    {
+      "mistake": "Using SubDAGs (or treating a TaskGroup like a separate DAG) for grouping.",
+      "whyItHappens": "Legacy habit from Airflow 1.x, or misunderstanding that TaskGroups create a sub-run.",
+      "impact": "SubDAGs cause scheduler deadlocks and overhead and are removed in Airflow 3.x; expecting a TaskGroup to run separately leads to wrong dependency and XCom assumptions.",
+      "correctApproach": "Use TaskGroups (context manager or @task_group) which only namespace task_ids and organize the UI, with all tasks scheduled by the single parent DAG; migrate any remaining SubDAGs."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Passing data between tasks",
+      "optionA": "XCom (reference / small metadata)",
+      "optionB": "External store (S3/GCS/warehouse) + reference in XCom",
+      "explanation": "XCom itself is the channel for SMALL values and lives in the metadata DB. For anything beyond tiny metadata, you store the actual data in an external store and pass only a reference through XCom. So these are complementary, not either/or: use XCom for the label and object storage for the shipment. Pushing the shipment itself through XCom (default backend) bloats the DB and degrades the scheduler; a custom XCom backend blends the two by offloading values externally while preserving the XCom API."
+    },
+    {
+      "feature": "Grouping tasks in a DAG",
+      "optionA": "TaskGroup",
+      "optionB": "SubDAG (SubDagOperator)",
+      "explanation": "TaskGroup is a pure parse-time namespacing/UI construct with no separate DAG run, no extra operator holding a worker slot, and no separate scheduling — tasks are scheduled by the parent DAG. SubDAG spawned its own DAG run scheduled by SubDagOperator, causing deadlocks, duplicated overhead, and confusing semantics. SubDAG was deprecated in 2.0 and removed in 3.x; TaskGroup is the modern, recommended replacement for all grouping needs."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is an XCom in Airflow and where is it stored?",
+        "answer": "An XCom (cross-communication) is a small key/value record used to pass data between tasks in the same DAG run. By default it is stored in the Airflow metadata database, keyed by dag_id, run_id, task_id, map_index, and key. Any value a task returns is auto-pushed under the reserved key 'return_value'.",
+        "explanation": "Stress that XComs are for SMALL data and live in the metadata DB, which is why size matters. Mention the default 'return_value' key as the thing interviewers often probe."
+      },
+      {
+        "question": "What is a TaskGroup and why would you use one?",
+        "answer": "A TaskGroup groups related tasks into a single collapsible node in the Airflow UI and prefixes their task_ids with the group_id. You use it to organize complex DAGs into readable stages and to declare dependencies at the group level (group1 >> group2). It is the modern replacement for SubDAGs.",
+        "explanation": "Emphasize that it is a UI/namespacing construct only — no separate DAG run — which is the key differentiator from SubDAGs."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How does the TaskFlow API change how XCom is used?",
+        "answer": "With the TaskFlow API, a @task function's return value is automatically pushed as its 'return_value' XCom, and when you pass that value as an argument to another @task function, Airflow automatically pulls it and infers the dependency. So you rarely call xcom_push/xcom_pull directly — XCom becomes implicit, and DAGs read like ordinary Python.",
+        "explanation": "Explain that argument passing produces an XComArg resolved at execution time, so data still crosses through the metadata DB — the mechanism is the same, only the syntax is cleaner."
+      },
+      {
+        "question": "Why is passing a DataFrame through XCom a bad idea, and what should you do instead?",
+        "answer": "The default XCom backend serializes values into a metadata-DB column with practical size limits; large values bloat the DB, slow the scheduler for every DAG, and can exceed column limits and fail. Instead, store the DataFrame in object storage or a table and pass only a reference (an S3 path) through XCom, or configure a custom XCom backend that offloads large values to S3/GCS transparently.",
+        "explanation": "The interviewer wants the 'reference not payload' rule and awareness of the shared-scheduler impact and the custom-backend escape hatch."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How does dynamic task mapping consume XComs, and how do you read specific mapped outputs?",
+        "answer": "Dynamic task mapping (.expand()) takes an upstream XCom that is a list and, at runtime, creates one mapped task instance per element, each with a distinct map_index. Each mapped instance stores its own XCom keyed by that map_index. Downstream you can pull the collection (e.g., as a list to reduce) or select specific outputs with xcom_pull using map_indexes.",
+        "explanation": "Show you understand map_index scoping and the fan-out/reduce pattern — a common advanced follow-up is how to aggregate mapped results."
+      },
+      {
+        "question": "How would you build a custom XCom backend, and when is it justified?",
+        "answer": "Subclass airflow.models.xcom.BaseXCom and override serialize_value to write large values to external storage (e.g., S3) returning a small reference stored in the DB, and deserialize_value to fetch and rehydrate them on pull. Configure it via AIRFLOW__CORE__XCOM_BACKEND. It is justified when you must move objects larger than tiny metadata through the XCom API without bloating the metadata DB, giving you the clean XCom programming model with external storage underneath.",
+        "explanation": "Mention serialize_value/deserialize_value and the config key; stress it keeps only a reference in the DB, preserving scheduler health."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your Airflow scheduler has slowed dramatically and the metadata DB has grown to hundreds of GB. Investigation shows the `xcom` table is enormous. What happened and how do you fix it?",
+        "thinkingProcess": "A giant xcom table means tasks are pushing large values (likely DataFrames or file contents) into XCom, which lands in the metadata DB. That bloats the DB and slows the scheduler for every DAG. The fix is to stop passing payloads through XCom, pass references instead, offload large data to object storage (or a custom XCom backend), and clean up existing XComs with retention.",
+        "expectedAnswer": "Identify the offending DAGs pushing large XComs and refactor them to store payloads in S3/object storage and pass only references (paths/counts). For cases that genuinely need larger objects via the XCom API, configure a custom XCom backend that offloads to S3/GCS. Add xcom retention/cleanup to shrink the table, and add monitoring/alerting on `xcom` table size so the anti-pattern is caught early. Result: lean metadata DB and a fast scheduler again."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a daily ELT DAG that processes a variable number of partitions in parallel, passes state between stages cleanly, and stays readable and healthy at scale.",
+        "designApproach": "Author with the TaskFlow API so XCom passing is implicit; organize the DAG into staging, transform, and publish TaskGroups; have extract write data to object storage and return only references; use a list_partitions task to drive dynamic task mapping (.expand()) for per-partition parallelism inside the transform group; reduce the mapped reference outputs into a manifest in the publish group. Configure a custom S3 XCom backend for any larger intermediate objects.",
+        "tradeOffs": "Passing references keeps the metadata DB lean but requires idempotent, deterministic paths and None-pull guards. Dynamic task mapping adds runtime scalability at the cost of a more dynamic Graph view. A custom XCom backend adds infrastructure but removes DB-size risk.",
+        "scalingStrategy": "Fan out via .expand() so parallelism scales with the number of partitions; keep XComs to references so the metadata DB and scheduler stay fast under many runs; run the metadata DB in an HA managed configuration and add xcom retention; monitor `xcom` table size and scheduler loop latency as SLIs."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the reserved default XCom key, and when is it populated?",
+      "How do task_ids look for a task defined inside a TaskGroup, and how does that affect xcom_pull?",
+      "How do you pull XComs from multiple upstream tasks in one call?",
+      "Why were SubDAGs deprecated and removed, and what replaced them?",
+      "What types are XCom values allowed to be with the default backend, and how do you handle non-serializable objects?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "XComs pass SMALL metadata between tasks via the metadata DB (auto under 'return_value', explicit via xcom_push/xcom_pull, implicit via TaskFlow) — pass references not big data — and TaskGroups namespace/collapse related tasks in the UI, replacing SubDAGs.",
+    "keyConcepts": [
+      "XCom = small key/value in the metadata DB keyed by (dag_id, run_id, task_id, map_index, key); returns auto-push under 'return_value'.",
+      "TaskFlow API makes XCom implicit: return a value, pass it as an argument; dependency and pull are inferred.",
+      "Golden rule: XCom carries references (S3 path, count), NEVER DataFrames/files — that bloats the DB and slows the scheduler.",
+      "Custom XCom backends offload large values to S3/GCS while keeping only a reference in the DB.",
+      "TaskGroups group/prefix tasks in the UI with no separate DAG run; they replaced deprecated/removed SubDAGs."
+    ],
+    "formulas": [],
+    "commands": [
+      "airflow tasks test my_dag my_task 2026-01-01",
+      "airflow dags test my_dag 2026-01-01",
+      "airflow tasks states-for-dag-run my_dag manual__2026-01-01T00:00:00+00:00",
+      "airflow dags list",
+      "airflow tasks list my_dag --tree"
+    ],
+    "interviewPoints": [
+      "XCom is small metadata in the metadata DB; 'return_value' is the default key.",
+      "TaskFlow makes XCom implicit via return values and arguments (XComArg).",
+      "Pass references, not payloads; use a custom XCom backend for larger objects.",
+      "TaskGroup namespaces/collapses tasks with no separate run; it replaced SubDAG.",
+      "Dynamic task mapping (.expand()) consumes a list XCom to fan out with map_index."
+    ],
+    "quickNotes": [
+      "xcom_pull returns None on a missing/mismatched pull — always guard against it.",
+      "Tasks inside a TaskGroup get group_id-prefixed task_ids (staging.extract).",
+      "XCom values must be JSON-serializable with the default backend.",
+      "SubDagOperator is deprecated (2.0) and removed (3.x) — use TaskGroup.",
+      "Never put secrets/PII in XCom; use Connections/Variables with a secrets backend."
+    ]
+  },
+  "keyTakeaways": [
+    "XComs are Airflow's built-in channel for passing SMALL metadata between otherwise isolated tasks, stored in the metadata DB keyed by (dag_id, run_id, task_id, map_index, key), with any returned value auto-pushed under the reserved 'return_value' key.",
+    "The TaskFlow API makes XCom implicit — return a value and pass it as an argument, and Airflow auto-pushes, auto-pulls, and infers the dependency — so modern DAGs rarely call xcom_push/xcom_pull directly.",
+    "The golden rule is that XCom carries references (S3 paths, counts, IDs), never big data; pushing DataFrames or files bloats the shared metadata DB and slows the scheduler for every pipeline, so offload payloads to object storage or a custom XCom backend.",
+    "TaskGroups organize complex DAGs into collapsible, group_id-prefixed stages with group-to-group dependencies, and are the modern replacement for SubDAGs, which caused scheduler deadlocks and were removed in Airflow 3.x.",
+    "Dynamic task mapping (.expand()) consumes a list XCom to fan out one mapped task instance per element (each with its own map_index), enabling data-dependent parallelism that still passes only small references through XCom."
+  ]
+}

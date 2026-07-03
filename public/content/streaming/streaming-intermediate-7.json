@@ -1,0 +1,413 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Change Data Capture (CDC) is the practice of capturing every row-level insert, update, and delete in a database as an ordered stream of change events, rather than repeatedly querying the database for what changed. Debezium is the leading open-source CDC platform, deployed as a Kafka Connect source connector, that turns a database's transaction log into Kafka topics.",
+      "The key insight is log-based CDC: instead of polling tables (which misses deletes, adds load, and is stale), Debezium reads the database's write-ahead log (Postgres WAL via logical decoding with pgoutput) or binary log (MySQL binlog). This captures the exact, ordered history of changes with minimal impact on the source, including deletes and intermediate updates that query-based CDC would miss.",
+      "Debezium first takes a consistent initial snapshot of the existing table data, then switches to streaming changes from the log. Each change becomes a richly structured change event (an envelope with before, after, op, source, and ts_ms) written to a topic per table. Downstream systems (data lakes, warehouses, search indexes) consume these events to stay continuously in sync with the source database."
+    ],
+    "learningObjectives": [
+      "Explain what CDC is and why log-based CDC is preferred over query-based (batch) approaches for freshness, completeness, and low source impact.",
+      "Describe how Debezium works as a Kafka Connect source connector: initial snapshot then streaming from the WAL/binlog, and topic-per-table output.",
+      "Interpret a Debezium change event envelope (before/after/op/source/ts_ms) and the op codes c, u, d, and r, including tombstones for deletes with log compaction.",
+      "Understand Postgres replication slots (pgoutput), slot bloat risk, delivery semantics (at-least-once), idempotent sinks, and schema-change handling."
+    ],
+    "formalDefinition": "Debezium is an open-source distributed platform for change data capture, implemented as a set of Kafka Connect source connectors, that reads the committed changes from a database's transaction log and emits them as structured events to Kafka topics. For PostgreSQL it uses logical replication: a logical decoding output plugin (pgoutput, built into modern Postgres) decodes the write-ahead log for the tables covered by a publication, and Debezium consumes that stream through a named logical replication slot that tracks the confirmed log position (LSN). The connector performs an initial consistent snapshot of selected tables, then continuously streams subsequent inserts, updates, and deletes. Each event is a change event with an envelope containing the row state before and after the change, an operation code (c=create, u=update, d=delete, r=read/snapshot), source metadata, and timestamps, published to a topic named per table. Delivery is at-least-once, so consumers/sinks must be idempotent.",
+    "simpleExplanation": "Imagine a bank that keeps a detailed logbook of every single change to every account (the transaction log). Instead of walking into the vault every hour to re-count all the accounts (query-based batch, which is slow, stale, and can't tell you what was deleted), Debezium simply reads over the bank's shoulder as it writes each entry in the logbook and photocopies every change as it happens. It first takes one careful photo of the current state of all accounts (the initial snapshot), then keeps streaming every subsequent entry. Each photocopy shows what the row looked like before and after, whether it was a create, update, or delete, and when it happened. Those photocopies flow into Kafka, one stack per table, so the lake or warehouse always mirrors the database within seconds.",
+    "historicalContext": "Traditional data integration relied on nightly batch ETL and query-based CDC (polling a last_updated column), which was stale, added query load, and silently missed hard deletes. Log-based CDC emerged to read the database's own replication log, the same mechanism databases use for replicas. Debezium started at Red Hat around 2016 as an open-source, Kafka-native CDC platform and became the de facto standard, with connectors for MySQL, Postgres, MongoDB, SQL Server, Oracle, Db2, and more. For Postgres, early versions relied on external logical-decoding plugins (decoderbufs, wal2json), but modern Debezium (2.x/3.x) defaults to pgoutput, the plugin built into PostgreSQL 10+, removing an external dependency. Debezium 2.x and 3.x added incremental snapshots (KIP-style signaling to snapshot without stopping streaming), improved schema-change handling, and tighter integration with the Kafka Connect exactly-once source framework.",
+    "whyItMatters": {
+      "business": "CDC gives the business a real-time mirror of operational data in analytics stores, so dashboards, fraud detection, personalization, and reporting reflect what is happening now rather than yesterday. It removes brittle nightly export jobs and lets teams build event-driven products (notifications, search sync, cache invalidation) on top of database changes without touching application code.",
+      "engineering": "Log-based CDC decouples analytics and downstream systems from the operational database: consumers read a change stream from Kafka instead of querying production. Engineers stop writing polling scripts that miss deletes and hammer the DB, and instead get a complete, ordered, replayable history of every change with before/after images for free.",
+      "scalability": "Reading the transaction log adds negligible load compared to repeated full-table scans, so CDC scales to large, busy databases. Kafka fans the change stream out to any number of independent consumers (lake, warehouse, search, cache) without additional load on the source, and topic-per-table plus partitioning by key scales throughput.",
+      "cost": "CDC eliminates expensive full-table exports and the compute they burn on both the database and the pipeline, replacing them with incremental change streams. It reduces storage and query costs downstream (only changes move) and cuts engineering cost by replacing bespoke sync jobs with a configurable connector.",
+      "reliability": "Because Debezium tracks its position in the log (the LSN via a replication slot), it can resume exactly where it left off after a restart with no missed changes, and the ordered, at-least-once stream plus idempotent sinks give durable, self-correcting synchronization. Deletes are captured explicitly, so downstream stores never drift out of sync silently."
+    },
+    "coreComponents": [
+      {
+        "name": "Log-based capture (WAL / binlog reader)",
+        "definition": "The mechanism by which Debezium reads committed changes from the database transaction log: PostgreSQL logical decoding (pgoutput) over the WAL, or MySQL's binlog.",
+        "purpose": "Capture the exact, ordered set of row changes (including deletes and intermediate updates) with minimal load, instead of querying tables.",
+        "responsibilities": "Attach to the log stream, decode row changes for the configured tables, track the current log position, and hand changes to the connector for event construction.",
+        "examples": "Debezium consuming decoded WAL records for public.orders via pgoutput and turning each committed change into a change event."
+      },
+      {
+        "name": "Initial snapshot",
+        "definition": "A consistent read of the existing rows in the selected tables performed when the connector first starts (or is re-bootstrapped), before streaming from the log.",
+        "purpose": "Give downstream consumers the full current state of the tables so subsequent streamed changes build on a complete baseline.",
+        "responsibilities": "Read table rows in a consistent view, emit them as events with op=r (read), record the log position at which streaming should begin, then transition to streaming.",
+        "examples": "On first start, Debezium emits one op=r event per existing orders row, then streams new c/u/d changes from the captured start LSN."
+      },
+      {
+        "name": "Change event envelope",
+        "definition": "The structured message Debezium emits per change, containing before, after, op, source metadata, and ts_ms, typically Avro/JSON serialized.",
+        "purpose": "Convey not just the new row but the full context of the change (previous state, operation type, source position, timing) so consumers can apply it precisely.",
+        "responsibilities": "Represent create/update/delete/read operations uniformly; carry before and after row images (subject to REPLICA IDENTITY for updates/deletes); include source LSN, table, txId, and timestamps.",
+        "examples": "An update event with op=u, before={status:pending}, after={status:shipped}, and source.lsn/table/ts_ms populated."
+      },
+      {
+        "name": "Replication slot and publication (Postgres)",
+        "definition": "A Postgres logical replication slot is a server-side cursor that retains WAL until a consumer confirms it; a publication defines which tables' changes are decoded.",
+        "purpose": "Guarantee Debezium can resume from its last confirmed position and control which tables are captured.",
+        "responsibilities": "Persist the confirmed_flush_lsn so WAL is retained until Debezium acknowledges it; scope decoding to the publication's tables; prevent data loss across connector restarts.",
+        "examples": "A slot named debezium retaining WAL from confirmed_flush_lsn, with a publication covering public.orders and public.customers."
+      },
+      {
+        "name": "Topic-per-table routing",
+        "definition": "Debezium writes each captured table's change events to its own Kafka topic, named by a configurable prefix plus schema and table (e.g., prefix.public.orders).",
+        "purpose": "Keep each table's change stream independent and consumable, and let the message key (the primary key) drive partitioning and log compaction.",
+        "responsibilities": "Derive topic names from topic.prefix and table identity; key events by primary key; optionally emit tombstones on delete to support compaction.",
+        "examples": "Changes to public.orders land in topic dbserver1.public.orders keyed by order id."
+      }
+    ],
+    "internalWorking": [
+      "On first start, Debezium acquires (or creates) a Postgres logical replication slot and, using the configured plugin.name=pgoutput and a publication, establishes what will be decoded. It records the current WAL position, then performs an initial snapshot: it reads the selected tables in a consistent view and emits one event per row with op=r, giving consumers the full baseline state.",
+      "After the snapshot, the connector switches to streaming. It consumes the logical decoding stream from the replication slot; the plugin decodes each committed WAL record into row-level changes for the publication's tables, preserving commit order. Debezium converts each into a change event and produces it to the table's Kafka topic keyed by primary key.",
+      "For each change it builds the envelope: op (c/u/d for insert/update/delete, r for snapshot reads), an after image for creates/updates, a before image for updates/deletes (the completeness of before/after for deletes and updates depends on the table's REPLICA IDENTITY setting in Postgres), and a source block with the LSN, table, transaction id, and timestamps plus a top-level ts_ms for when Debezium processed it.",
+      "On delete, Debezium emits a delete event (op=d with the before image and a null after), and if configured for log compaction it follows it with a tombstone: a record with the same key and a null value so a compacted topic eventually removes all records for that key, mirroring the deletion downstream.",
+      "Debezium periodically confirms the LSN it has safely produced back to the replication slot (advancing confirmed_flush_lsn), which lets Postgres reclaim older WAL. On restart it resumes streaming from the slot's confirmed position, so no changes are missed; because a crash can re-emit already-produced events, delivery is at-least-once and sinks must be idempotent. If the connector is down or slow, the slot holds WAL, risking disk bloat until it catches up."
+    ],
+    "architectureFlow": "Application writes to Postgres -> changes recorded in the WAL -> logical decoding plugin (pgoutput) decodes WAL for the publication's tables -> Debezium consumes the stream via a named replication slot (tracking LSN) -> [initial snapshot emits op=r events first, then streaming] -> Debezium builds change event envelopes (before/after/op/source/ts_ms) keyed by primary key -> Kafka Connect converter serializes (e.g., Avro + Schema Registry) -> events produced to topic-per-table (prefix.schema.table); deletes emit op=d plus optional tombstone -> Debezium confirms LSN to the slot so Postgres reclaims WAL -> downstream idempotent sink (S3/JDBC/warehouse) consumes and applies changes at-least-once",
+    "dataFlowWalkthrough": [
+      "1. Postgres is configured for logical replication (wal_level=logical) and the Debezium connector is deployed with plugin.name=pgoutput, a slot.name, a publication, and table.include.list; Debezium creates or attaches to the replication slot and records the current WAL position.",
+      "2. Debezium runs the initial snapshot, reading the selected tables consistently and emitting one event per existing row with op=r to each table's topic, so consumers get the complete baseline.",
+      "3. The connector switches to streaming: the pgoutput plugin decodes committed WAL records, and Debezium turns each insert/update/delete into a change event keyed by primary key.",
+      "4. Each event's envelope is populated (op, before/after images subject to REPLICA IDENTITY, source LSN/table/txId, ts_ms), serialized by the configured converter (e.g., Avro via Schema Registry), and produced to the table's topic; deletes also emit a tombstone if compaction is used.",
+      "5. Debezium periodically advances the slot's confirmed_flush_lsn so Postgres can reclaim WAL, and on restart resumes from that position; an idempotent sink consumes the topics and upserts/deletes downstream, so at-least-once redelivery does not create duplicates or drift."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Log-based CDC vs query-based CDC",
+        "meaning": "Log-based CDC reads the database transaction log to capture every change in order; query-based CDC polls tables (e.g., a last_updated column) for rows that changed.",
+        "importance": "Log-based is complete (captures deletes and intermediate updates), low-impact, and near-real-time, whereas query-based is stale, adds query load, and misses hard deletes; this distinction is the core reason Debezium exists."
+      },
+      {
+        "term": "Change event envelope (before/after/op/source/ts_ms)",
+        "meaning": "The structured Debezium message that carries the row state before and after a change, the operation code, source metadata (LSN, table, txId), and a processing timestamp.",
+        "importance": "It lets consumers apply changes precisely (e.g., detect what field changed, handle deletes with the prior key) and audit ordering and timing, which a plain row snapshot cannot provide."
+      },
+      {
+        "term": "Operation codes (c / u / d / r)",
+        "meaning": "The op field values: c=create (insert), u=update, d=delete, and r=read (a row emitted during the initial snapshot).",
+        "importance": "Consumers branch on op to insert, upsert, or delete downstream and to distinguish snapshot backfill (r) from live changes, which is essential for correct sink behavior."
+      },
+      {
+        "term": "Replication slot (Postgres)",
+        "meaning": "A server-side object that retains WAL until the consumer confirms it has been processed, tracking confirmed_flush_lsn so Debezium can resume without missing changes.",
+        "importance": "It provides resumability but is also a risk: if the connector is stopped or lagging, the slot pins WAL and can fill the disk (slot bloat), so it must be monitored and cleaned up when a connector is retired."
+      },
+      {
+        "term": "Tombstone record",
+        "meaning": "A record with a non-null key and a null value that Debezium emits after a delete event so a log-compacted topic eventually purges all records for that key.",
+        "importance": "It is how deletions propagate correctly through compacted topics and downstream key-value stores, ensuring deleted rows do not linger; consumers must handle null values as deletions."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "REPLICA IDENTITY controls what before/after images you get",
+        "explanation": "In Postgres, the amount of old-row data available for updates and deletes depends on the table's REPLICA IDENTITY. The default (using the primary key) means delete events and the before image of updates contain only the key columns. Setting REPLICA IDENTITY FULL makes Postgres log the entire old row, so Debezium can populate a complete before image, at the cost of more WAL volume. Teams that rely on full before images (e.g., for auditing or diffing) must set this deliberately and accept the extra WAL cost."
+      },
+      {
+        "concept": "The initial snapshot then streaming handoff must be seamless",
+        "explanation": "Debezium records the log position before or at the start of the snapshot and begins streaming from exactly that position afterward, so no change is missed or duplicated at the boundary (any overlap is reconciled by at-least-once + idempotent sinks). Understanding this handoff matters when re-bootstrapping a connector: dropping the slot and re-snapshotting re-reads everything (op=r) and is expensive, while incremental snapshots (Debezium 2.x) let you snapshot specific tables without stopping the live stream."
+      },
+      {
+        "concept": "Delivery is at-least-once, so sinks must be idempotent",
+        "explanation": "Debezium plus Kafka Connect is at-least-once by default: after a crash it may re-emit events it had already produced before confirming the LSN, so consumers can see duplicates. To keep downstream stores correct, sinks must apply changes idempotently, for example keyed upserts (ON CONFLICT DO UPDATE) and key-based deletes, or use the exactly-once source framework where supported. Never assume each change event arrives exactly once."
+      },
+      {
+        "concept": "Schema changes flow through and must be handled",
+        "explanation": "When the source table's schema changes (a column added or type changed), Debezium reflects the new structure in subsequent events and, for databases like MySQL, can publish DDL to a schema-history topic. With a Schema Registry and Avro, compatible evolution lets sinks adapt automatically, but incompatible changes (dropping a required column, incompatible type change) can break consumers or violate registry compatibility. Pipelines must set compatibility rules and plan schema migrations so CDC does not silently break downstream."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Log-based CDC (Debezium):** Reads the WAL/binlog for complete, ordered, low-impact capture including deletes; the modern standard for near-real-time sync.",
+      "**Query-based CDC:** Polls a last_updated/incrementing column (e.g., JDBC source in incrementing/timestamp mode); simpler but stale, adds load, and misses hard deletes.",
+      "**Snapshot modes:** initial (snapshot then stream, the default), never (stream only, assume baseline exists), initial_only (snapshot then stop), and incremental snapshots (backfill specific tables without stopping streaming).",
+      "**Postgres logical decoding plugins:** pgoutput (built into Postgres 10+, the modern default) versus older external plugins decoderbufs and wal2json.",
+      "**Delete handling:** delete event (op=d) alone, versus delete event plus a tombstone for log-compacted topics; and REPLICA IDENTITY DEFAULT (key only) versus FULL (complete before image)."
+    ],
+    "advantages": [
+      "**Complete, ordered capture:** Every insert, update, and delete is captured in commit order with before/after context, unlike query-based CDC which misses deletes and intermediate states.",
+      "**Low source impact and near-real-time:** Reading the transaction log adds far less load than repeated full scans and delivers changes within seconds.",
+      "**Resumable and replayable:** The replication slot/LSN lets Debezium resume exactly where it left off, and Kafka retains the change stream for many independent consumers.",
+      "**Decouples systems:** Downstream lakes, warehouses, search indexes, and caches consume a change stream instead of querying production, enabling event-driven architectures without app changes."
+    ],
+    "disadvantages": [
+      "**Operational complexity:** Requires database configuration (wal_level=logical, replication privileges, slots/publications) and careful monitoring of slot lag and bloat.",
+      "**Slot bloat risk:** A stopped or lagging connector pins WAL via its replication slot and can fill the database disk, causing an outage if unmonitored.",
+      "**At-least-once semantics:** Consumers can see duplicates after failures, so every sink must be idempotent, adding design burden.",
+      "**Schema-change fragility:** Source DDL changes flow downstream and can break consumers or violate registry compatibility if migrations are not planned."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use Debezium/log-based CDC when you need near-real-time, complete, ordered replication of a database into Kafka and downstream stores: syncing operational databases to a lake/warehouse, keeping search indexes and caches fresh, powering event-driven microservices from database changes, or building audit/history streams. It shines when deletes matter, freshness matters, and you must not add heavy query load to production.",
+      "whenToAvoid": "Avoid full CDC when a simple periodic batch load is sufficient and cheaper (small, slowly changing reference tables), when you cannot enable logical replication or lack the database privileges/config, or when the operational burden of slots, snapshots, and idempotent sinks outweighs the freshness benefit. Query-based CDC may be acceptable when deletes are irrelevant and modest staleness is fine."
+    },
+    "realWorldAnalogy": "Debezium is like a court stenographer sitting beside a busy clerk's desk. Rather than periodically walking to the filing cabinet to re-read every folder and guess what changed (query-based batch, which is slow and never notices a folder that was shredded), the stenographer transcribes every single action the clerk takes as it happens: a new file created, a record amended, a folder shredded, noting the before and after and the exact time. When they first arrive, they photograph the current contents of every cabinet (the initial snapshot), then keep transcribing live. Each transcript page (change event) is filed by case number (primary key) into per-case trays (topics), and a special blank page marks a shredded folder (tombstone) so downstream archivists remove it too. The stenographer marks how far they have transcribed (the LSN in the slot) so they can resume exactly there after a break, and the clerk keeps the logbook pages until the stenographer confirms they are copied.",
+    "commonMisconceptions": [
+      {
+        "myth": "Debezium queries the database tables to find changes.",
+        "reality": "Debezium reads the transaction log (Postgres WAL via logical decoding, MySQL binlog), not the tables. This is why it captures deletes and intermediate updates with minimal load; only the one-time initial snapshot reads table rows."
+      },
+      {
+        "myth": "CDC gives you exactly-once delivery, so consumers can ignore duplicates.",
+        "reality": "Debezium with Kafka Connect is at-least-once by default; after a crash it can re-emit events already produced before the LSN was confirmed. Sinks must be idempotent (keyed upserts, key-based deletes) or use the exactly-once source framework where supported."
+      },
+      {
+        "myth": "A replication slot is harmless and needs no attention.",
+        "reality": "A slot retains WAL until the consumer confirms it. If the connector stops or lags, the slot pins WAL and can fill the disk, taking down the database. Slots must be monitored for lag and dropped when a connector is permanently retired."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Reading the WAL/binlog scales to busy databases with low overhead; distribute load by capturing tables across connectors and by keying topics on primary keys so partitions parallelize consumption. Kafka fans the stream out to many consumers without extra database load. Use incremental snapshots to backfill new tables without pausing streaming, and size Connect tasks/workers for the change volume.",
+      "reliability": "The replication slot's confirmed LSN provides resumability with no missed changes across restarts. Run Debezium in distributed Connect mode so state (offsets/config/status) lives in replicated Kafka topics; use replication.factor>=3 on those internal topics and the CDC topics. Because delivery is at-least-once, make every sink idempotent so retries do not corrupt downstream state.",
+      "faultTolerance": "On connector or worker failure, Connect rebalances and Debezium resumes from the slot's confirmed position; the slot retains WAL in the meantime so nothing is lost. Guard against slot bloat by alerting on replication lag and on Postgres WAL/disk usage, and ensure a stopped connector's slot is either resumed promptly or dropped to release WAL.",
+      "monitoring": "Track Debezium JMX metrics (MilliSecondsBehindSource / streaming lag, snapshot progress, queue sizes), Kafka Connect task states, and Postgres pg_replication_slots (active flag, restart_lsn, and WAL retained). Alert on rising streaming lag, an inactive slot with growing retained WAL, snapshot stalls, and DLQ/deserialization errors on downstream sinks.",
+      "security": "Grant the Debezium database user the minimum privileges needed for replication (REPLICATION role, SELECT on captured tables, and publication management as required); connect over TLS. Externalize database credentials via Connect config providers rather than plaintext, secure the Connect REST API, and restrict Kafka ACLs on CDC and internal topics to the Connect principal.",
+      "costOptimization": "CDC is far cheaper than repeated full-table exports; keep it lean by capturing only needed tables/columns (table.include.list, column filters), avoiding REPLICA IDENTITY FULL unless full before images are required (it increases WAL), and tuning topic retention/compaction. Right-size Connect workers to change volume and consolidate low-volume captures on shared clusters.",
+      "performance": "Tune snapshot and streaming batch sizes (max.batch.size, max.queue.size, poll intervals) to balance throughput and lag; use compact typed converters (Avro/Protobuf) to reduce payload size. Ensure captured tables have suitable primary keys for keying/compaction, and keep the connector caught up so the slot does not accumulate WAL and slow the database."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Debezium Postgres source connector config (pgoutput CDC)",
+        "overview": "Capture inserts/updates/deletes from Postgres public.orders and public.customers via logical replication with pgoutput, emit Avro events keyed by primary key, and route deletes with tombstones for downstream compaction.",
+        "code": "{\n  \"name\": \"orders-postgres-source\",\n  \"config\": {\n    \"connector.class\": \"io.debezium.connector.postgresql.PostgresConnector\",\n    \"tasks.max\": \"1\",\n\n    \"database.hostname\": \"postgres\",\n    \"database.port\": \"5432\",\n    \"database.user\": \"debezium\",\n    \"database.password\": \"${file:/secrets/db.properties:pg_password}\",\n    \"database.dbname\": \"acme\",\n\n    \"plugin.name\": \"pgoutput\",\n    \"slot.name\": \"debezium_orders\",\n    \"publication.name\": \"dbz_publication\",\n    \"publication.autocreate.mode\": \"filtered\",\n\n    \"topic.prefix\": \"dbserver1\",\n    \"table.include.list\": \"public.orders,public.customers\",\n    \"snapshot.mode\": \"initial\",\n\n    \"key.converter\": \"io.confluent.connect.avro.AvroConverter\",\n    \"key.converter.schema.registry.url\": \"http://schema-registry:8081\",\n    \"value.converter\": \"io.confluent.connect.avro.AvroConverter\",\n    \"value.converter.schema.registry.url\": \"http://schema-registry:8081\",\n\n    \"tombstones.on.delete\": \"true\",\n    \"heartbeat.interval.ms\": \"10000\",\n    \"max.batch.size\": \"2048\",\n    \"max.queue.size\": \"8192\"\n  }\n}\n",
+        "language": "json",
+        "breakdown": "connector.class selects the Debezium Postgres connector and tasks.max=1 because a single Postgres connector consumes one replication slot (Postgres CDC is single-task per slot). plugin.name=pgoutput uses the built-in logical decoding plugin; slot.name and publication.name identify the durable replication slot and the set of captured tables (publication.autocreate.mode=filtered lets Debezium create a publication limited to the include list). topic.prefix=dbserver1 makes topics dbserver1.public.orders and dbserver1.public.customers; table.include.list scopes capture; snapshot.mode=initial takes a baseline snapshot then streams. Avro converters (key and value) register schemas in Schema Registry. tombstones.on.delete=true emits a null-value record after each delete for log compaction, and heartbeat.interval.ms keeps the slot LSN advancing on low-traffic tables so WAL does not accumulate. max.batch.size/max.queue.size tune streaming throughput. The password uses a config-provider reference instead of plaintext.",
+        "expectedOutput": "The connector reaches RUNNING; on first start it emits op=r snapshot events for every existing orders/customers row, then streams c/u/d events. Topics dbserver1.public.orders and dbserver1.public.customers receive Avro records keyed by primary key; deletes produce an op=d event followed by a tombstone (null value). Schema Registry shows registered key/value schemas for both topics.",
+        "commonIssues": "Postgres not set to wal_level=logical (connector fails to create the slot); the debezium user lacking the REPLICATION role or SELECT on tables; tasks.max>1 for Postgres (only one task per slot is used); forgetting heartbeat on low-traffic tables so the slot pins WAL and disk fills; a leftover slot from a deleted connector continuing to retain WAL; converter/registry misconfiguration breaking serialization.",
+        "optimizationTips": "Keep tasks.max=1 for a single Postgres slot and split load across databases/connectors if needed; enable heartbeats to keep the slot advancing on quiet tables; capture only needed tables/columns to reduce WAL and event volume; avoid REPLICA IDENTITY FULL unless full before images are required; monitor pg_replication_slots and drop retired slots; use tombstones with compacted topics so deletes propagate to downstream key-value stores."
+      },
+      {
+        "title": "A sample Debezium change event (update) with before/after/op",
+        "overview": "The value payload of an update event on public.orders, showing the envelope fields consumers branch on: before, after, op, source (with LSN), and ts_ms.",
+        "code": "{\n  \"schema\": { \"type\": \"struct\", \"name\": \"dbserver1.public.orders.Envelope\", \"...\": \"(field schemas omitted)\" },\n  \"payload\": {\n    \"before\": {\n      \"id\": 1042,\n      \"customer_id\": 77,\n      \"status\": \"pending\",\n      \"amount_cents\": 4999\n    },\n    \"after\": {\n      \"id\": 1042,\n      \"customer_id\": 77,\n      \"status\": \"shipped\",\n      \"amount_cents\": 4999\n    },\n    \"source\": {\n      \"version\": \"3.0.0.Final\",\n      \"connector\": \"postgresql\",\n      \"name\": \"dbserver1\",\n      \"ts_ms\": 1751462400000,\n      \"snapshot\": \"false\",\n      \"db\": \"acme\",\n      \"schema\": \"public\",\n      \"table\": \"orders\",\n      \"txId\": 5561,\n      \"lsn\": 24567890,\n      \"sequence\": \"[\\\"24567800\\\",\\\"24567890\\\"]\"\n    },\n    \"op\": \"u\",\n    \"ts_ms\": 1751462400123\n  }\n}\n",
+        "language": "json",
+        "breakdown": "The message has a schema block (Connect schema, shown abbreviated) and a payload envelope. before is the row prior to the change and after is the row after; here status changed from pending to shipped while other fields stayed. op=u marks an update (c=create/insert, d=delete, r=snapshot read). The source block carries provenance: connector version, logical name, source commit time (source.ts_ms), snapshot flag, database/schema/table, transaction id (txId), and the WAL position (lsn) used for ordering and resumption. The top-level ts_ms is when Debezium processed the change. For a delete, op would be d with after=null and before populated (subject to REPLICA IDENTITY), typically followed by a tombstone record.",
+        "expectedOutput": "A consumer of dbserver1.public.orders reading this record sees op=u and applies an upsert of order 1042 with status=shipped downstream. A create would show before=null, op=c; a delete would show after=null, op=d, then a separate tombstone (null value) to purge the key from compacted topics.",
+        "commonIssues": "Assuming before is fully populated for updates/deletes when REPLICA IDENTITY is DEFAULT (only key columns present); ignoring tombstones and letting deleted keys linger in compacted stores; not branching on op so deletes are treated as upserts; confusing source.ts_ms (source commit time) with the top-level ts_ms (Debezium processing time) when measuring lag.",
+        "optimizationTips": "Branch sink logic on op (c/u -> upsert, d -> delete) and handle tombstones as deletions; use source.lsn/ts_ms to measure end-to-end lag and to order events; set REPLICA IDENTITY FULL only when a complete before image is genuinely needed; use the ExtractNewRecordState SMT to flatten the envelope to just the after row when a sink expects plain records rather than the full envelope."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A logistics company must keep its analytics lake and a real-time order-status dashboard perfectly in sync with the operational Postgres database, including deletes, without adding query load to production or running brittle nightly exports. Changes must appear downstream within seconds and survive connector and broker restarts with no missed or silently dropped rows.",
+    "inputData": "Postgres tables public.orders and public.customers under continuous inserts, status updates, and occasional deletes. Postgres is configured with wal_level=logical and a debezium user with the REPLICATION role; the tables have primary keys for keying and (for orders) REPLICA IDENTITY FULL to capture full before images for auditing.",
+    "architecture": "A distributed Kafka Connect cluster runs the orders-postgres-source Debezium connector (plugin.name=pgoutput, slot debezium_orders, publication dbz_publication, snapshot.mode=initial, Avro converters via Schema Registry, tombstones.on.delete=true, heartbeats). It emits to topics dbserver1.public.orders and dbserver1.public.customers keyed by primary key. Downstream, an idempotent JDBC/warehouse sink upserts on primary key and applies deletes, and an S3 sink lands the change stream as Parquet for the lake.",
+    "processingSteps": [
+      "1. On first start, Debezium creates/attaches the replication slot, records the WAL position, and runs the initial snapshot, emitting op=r events for every existing orders and customers row so the lake and dashboard get a complete baseline.",
+      "2. The connector switches to streaming; pgoutput decodes committed WAL records and Debezium turns each insert/update/delete into a change event keyed by primary key, in commit order.",
+      "3. Each event envelope is populated (op, before/after, source LSN/txId, ts_ms), serialized as Avro (schemas registered), and produced to the per-table topic; deletes emit op=d plus a tombstone.",
+      "4. The idempotent sinks consume the topics: the JDBC/warehouse sink upserts on primary key for c/u and deletes on d/tombstone, while the S3 sink lands the change stream as partitioned Parquet.",
+      "5. Debezium periodically confirms the LSN to the slot so Postgres reclaims WAL; on any restart it resumes from that position, and heartbeats keep the slot advancing during quiet periods so WAL does not accumulate."
+    ],
+    "output": "The warehouse table and dashboard mirror Postgres within seconds, including deletions (via op=d and tombstones), and the S3 lake holds the full ordered change history as Parquet for analytics and replay. Schema Registry tracks the evolving key/value schemas.",
+    "monitoring": "The team watches Debezium streaming lag (MilliSecondsBehindSource), snapshot progress, Connect task states, sink consumer lag, and Postgres pg_replication_slots (active flag and retained WAL). Alerts fire on rising lag, an inactive slot with growing WAL, snapshot stalls, and sink DLQ/deserialization errors.",
+    "errorHandling": "Because delivery is at-least-once, the sinks are idempotent (keyed upserts and key-based deletes), so redelivery after a crash does not create duplicates or drift. A connector/worker failure triggers a rebalance and resumes from the slot's confirmed LSN with no missed changes; the slot retains WAL during downtime, and heartbeats plus monitoring prevent slot bloat from filling the disk.",
+    "finalResult": "Analytics and the dashboard stay continuously and accurately in sync with production Postgres, deletes included, with no query load on the database and no nightly export jobs. The pipeline self-heals across failures, and the ordered change stream in Kafka can be replayed to rebuild downstream stores at any time."
+  },
+  "industryUseCases": [
+    {
+      "company": "Retail / e-commerce analytics",
+      "problem": "Order, inventory, and customer changes (including deletes) must reach the lake and warehouse in near real time without straining production databases or missing hard deletes.",
+      "solution": "Debezium captures Postgres/MySQL changes via log-based CDC into Kafka, and idempotent lake/warehouse sinks apply upserts and deletes, giving a continuously synced, replayable change stream.",
+      "benefits": "Seconds-fresh analytics, complete capture of deletes and updates, minimal source load, and no fragile nightly exports."
+    },
+    {
+      "company": "SaaS platforms with search and cache sync",
+      "problem": "A primary database must stay in sync with a search index and caches so user-facing features reflect recent changes and deletions immediately.",
+      "solution": "Debezium streams row changes to Kafka; an Elasticsearch/Redis sink upserts by document id and uses tombstones to remove deleted entries, keeping indexes and caches consistent.",
+      "benefits": "Near-real-time freshness, correct handling of deletes via tombstones, decoupled systems, and replayable synchronization."
+    },
+    {
+      "company": "Microservices adopting the outbox / event-driven pattern",
+      "problem": "Services need to publish reliable domain events without dual-writing to a database and a message broker, which risks inconsistency.",
+      "solution": "Services write events to an outbox table in the same transaction as their data; Debezium captures the outbox via CDC and publishes the events to Kafka (often with the Outbox Event Router SMT).",
+      "benefits": "Atomic, reliable event publishing with no dual-write problem, ordered delivery, and full decoupling of producers and consumers."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Log-based capture adds low overhead even on busy databases, and Kafka fans the change stream out to many independent consumers without extra source load. For Postgres, capture is single-task per replication slot, so scale by splitting tables across connectors/databases and by keying topics on primary keys for parallel consumption. Use incremental snapshots to backfill newly captured tables without pausing streaming, and size Connect workers to the change volume.",
+    "faultTolerance": "Debezium resumes from the replication slot's confirmed LSN after connector or worker failure, so no committed change is missed, and the slot retains WAL during downtime. Run distributed Connect so offsets/config/status persist in replicated Kafka topics. Because delivery is at-least-once, idempotent sinks (keyed upserts, key-based deletes) ensure redelivery does not corrupt downstream state. Guard against slot bloat by resuming or dropping stopped connectors promptly.",
+    "highAvailability": "Deploy a distributed Connect cluster across zones with internal topics at replication.factor>=3 so any worker can resume the connector after failure. For the database, plan for failover: after a Postgres primary failover the replication slot may need to be recreated or use tooling that syncs slots to standbys, and the connector must resume from a valid LSN. Ensure Schema Registry and Kafka are themselves highly available.",
+    "disasterRecovery": "Keep connector configs in version control as the source of truth (they also live in connect-configs). Retain CDC topics with enough retention (or compaction) to replay and rebuild downstream stores. For DR, redeploy the connector against the DR database and re-snapshot or resume from a preserved offset; because sinks are idempotent, re-landing data is safe. Document slot recreation and re-snapshot procedures for primary failover and cross-region recovery.",
+    "performanceOptimization": "Tune max.batch.size, max.queue.size, and poll settings to balance throughput and streaming lag; enable heartbeats so the slot LSN advances on low-traffic tables. Use compact typed converters (Avro/Protobuf), capture only needed tables/columns to cut WAL and event volume, and avoid REPLICA IDENTITY FULL unless full before images are required. Ensure captured tables have good primary keys for keying and compaction.",
+    "costOptimization": "CDC is much cheaper than repeated full-table exports and their compute; minimize cost by scoping captured tables/columns, keeping REPLICA IDENTITY at DEFAULT where full before images are not needed (less WAL), and tuning topic retention/compaction. Consolidate low-volume captures on shared Connect clusters and right-size workers to change volume rather than peak table size.",
+    "securityConsiderations": "Grant the Debezium user least privilege (REPLICATION role, SELECT on captured tables, publication management as needed) and connect over TLS. Externalize database credentials via Connect config providers (never plaintext in configs or connect-configs), secure the Connect REST API with TLS/auth, and restrict Kafka ACLs on CDC and internal topics to the Connect principal. Mask sensitive columns with SMTs where required.",
+    "monitoringAndObservability": "Scrape Debezium JMX metrics (MilliSecondsBehindSource for streaming lag, SnapshotCompleted/RowsScanned, queue/batch sizes), Connect task states, and Kafka lag on sinks. Critically, monitor Postgres pg_replication_slots for the slot's active flag, restart_lsn, and the amount of WAL retained, plus overall WAL/disk usage. Alert on rising lag, an inactive slot with growing WAL, snapshot stalls, and downstream deserialization/DLQ errors.",
+    "dataQualityValidation": "Use Schema Registry compatibility settings so incompatible source schema changes are caught before breaking sinks. Reconcile row counts between the source tables and the downstream store, verify that deletes propagate (op=d and tombstones remove rows), and add assertions for key uniqueness and expected op distributions. Periodically compare a source table snapshot against the synced target to detect drift.",
+    "loggingAndAlerting": "Enable Connect error logging and, on sinks, DLQ with context headers to capture unprocessable records; centralize worker logs and correlate by connector/task and by source LSN/txId for traceability. Alert on connector/task FAILED states, streaming lag exceeding an SLO, slot inactivity with growing retained WAL, snapshot failures, and Schema Registry compatibility rejections, and page when downstream freshness breaches its target."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Enable heartbeats and monitor the replication slot:** so the LSN advances on quiet tables and slot bloat (retained WAL) never fills the database disk.",
+      "**Make every downstream sink idempotent:** use keyed upserts and key-based deletes because Debezium delivery is at-least-once.",
+      "**Use tombstones with log-compacted topics for deletes:** so deleted keys are purged from compacted topics and downstream key-value stores.",
+      "**Scope capture with table/column includes:** capture only needed tables and columns to reduce WAL, event volume, and cost."
+    ],
+    "engineeringStandards": [
+      "Configure Postgres with wal_level=logical and grant the Debezium user least-privilege replication access; use plugin.name=pgoutput.",
+      "Run Debezium in distributed Connect mode with internal and CDC topics at replication.factor>=3 and configs in version control.",
+      "Externalize database credentials via config providers; never store plaintext passwords in connector JSON or connect-configs."
+    ],
+    "designRecommendations": [
+      "Keep tasks.max=1 per Postgres slot and split load across connectors/databases rather than over-provisioning tasks.",
+      "Set REPLICA IDENTITY FULL only when full before images are genuinely needed, accepting the extra WAL cost.",
+      "Use the ExtractNewRecordState SMT to flatten the envelope when a sink expects the plain after row instead of the full envelope."
+    ],
+    "namingConventions": [
+      "Set topic.prefix per logical source so topics are prefix.schema.table (e.g., dbserver1.public.orders) and unambiguous.",
+      "Name replication slots and publications by purpose and connector (e.g., slot debezium_orders, publication dbz_publication) for easy correlation.",
+      "Name the connector by domain and direction (e.g., orders-postgres-source) so its role is obvious."
+    ],
+    "documentationStandards": [
+      "Document the Postgres prerequisites (wal_level, privileges, REPLICA IDENTITY settings) and the slot/publication names.",
+      "Record snapshot.mode, captured tables/columns, converter/registry settings, and delete/tombstone handling with rationale.",
+      "Document the slot cleanup and re-snapshot procedures for connector retirement and database failover."
+    ],
+    "testingStrategies": [
+      "Test the full lifecycle: initial snapshot (op=r) then streaming c/u/d, and assert downstream state matches the source.",
+      "Exercise deletes end to end and verify op=d plus tombstones purge the key from compacted topics and downstream stores.",
+      "Inject connector restarts and a slow consumer to verify resumption from the slot LSN and that idempotent sinks avoid duplicates, and test a schema change against registry compatibility."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Leaving a replication slot behind after deleting or stopping a connector.",
+      "whyItHappens": "Deleting the Connect connector does not drop the Postgres slot, and teams forget that the slot is a separate server-side object.",
+      "impact": "The orphaned slot keeps retaining WAL indefinitely, filling the database disk and eventually causing a production outage.",
+      "correctApproach": "Monitor pg_replication_slots, and when retiring a connector drop its slot (SELECT pg_drop_replication_slot('name')); enable heartbeats so active slots keep advancing on quiet tables."
+    },
+    {
+      "mistake": "Assuming exactly-once delivery and building non-idempotent sinks.",
+      "whyItHappens": "CDC is marketed as reliable, and teams equate reliable with exactly-once, so they insert rows blindly instead of upserting.",
+      "impact": "After a crash, Debezium re-emits already-produced events, and non-idempotent sinks create duplicate rows or apply changes twice, corrupting downstream data.",
+      "correctApproach": "Treat delivery as at-least-once: use keyed upserts (ON CONFLICT DO UPDATE) and key-based deletes, or the exactly-once source framework where supported, so redelivery is harmless."
+    },
+    {
+      "mistake": "Expecting a full before image on updates/deletes with default REPLICA IDENTITY.",
+      "whyItHappens": "Developers assume Debezium always provides the complete previous row, not realizing Postgres only logs old-row data per the table's REPLICA IDENTITY.",
+      "impact": "The before image contains only key columns, so auditing/diffing logic that reads other before fields silently gets nulls or missing data.",
+      "correctApproach": "Set REPLICA IDENTITY FULL on tables that truly need complete before images (accepting more WAL), and otherwise design consumers to rely on the after image plus keys."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Capture method",
+      "optionA": "Log-based CDC (Debezium reads WAL/binlog)",
+      "optionB": "Query-based CDC (poll a last_updated/incrementing column)",
+      "explanation": "Log-based CDC reads the transaction log for complete, ordered, near-real-time capture including deletes, with low source load. Query-based CDC is simpler and needs no special DB config but is stale (polling interval), adds query load, and misses hard deletes and intermediate updates. Debezium is preferred whenever deletes and freshness matter."
+    },
+    {
+      "feature": "Postgres logical decoding plugin",
+      "optionA": "pgoutput (built into Postgres 10+)",
+      "optionB": "wal2json / decoderbufs (external plugins)",
+      "explanation": "pgoutput ships with modern Postgres, so there is no external plugin to install or maintain, and it is the modern Debezium default. wal2json/decoderbufs were used before pgoutput support matured and require installing the plugin on the server. Prefer pgoutput on Postgres 10+ for simplicity and support."
+    },
+    {
+      "feature": "Delete propagation",
+      "optionA": "Delete event only (op=d)",
+      "optionB": "Delete event plus tombstone (null value)",
+      "explanation": "An op=d event tells consumers a row was deleted, which is enough for a sink that issues explicit deletes. A following tombstone (same key, null value) is required for log-compacted topics and key-value sinks so compaction physically removes the key. Enable tombstones.on.delete when compaction or downstream KV stores must purge deleted keys."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is Change Data Capture (CDC) and why use log-based CDC over batch queries?",
+        "answer": "CDC captures every row-level insert, update, and delete in a database as an ordered stream of change events. Log-based CDC reads the database transaction log (Postgres WAL, MySQL binlog) rather than polling tables, so it captures deletes and intermediate updates completely, adds minimal load, and delivers changes in near real time, unlike batch queries which are stale, load the database, and miss hard deletes.",
+        "explanation": "Interviewers want the core definition plus the concrete advantages of log-based CDC (completeness, low impact, freshness) versus query-based/batch approaches."
+      },
+      {
+        "question": "What is Debezium and how is it deployed?",
+        "answer": "Debezium is an open-source CDC platform implemented as Kafka Connect source connectors for databases like Postgres, MySQL, MongoDB, and SQL Server. It reads the database's transaction log and emits structured change events to Kafka topics, running inside a Kafka Connect worker configured via JSON like any other source connector.",
+        "explanation": "A strong answer identifies Debezium as a Connect source connector (not a standalone service) and names the log-based capture and topic output."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "Walk through a Debezium change event envelope and the op codes.",
+        "answer": "Each event has an envelope with before (row prior to change), after (row after change), op (c=create, u=update, d=delete, r=snapshot read), a source block (connector version, db/schema/table, txId, LSN, source commit time), and a top-level ts_ms (Debezium processing time). Consumers branch on op: c/u become upserts and d becomes a delete, often followed by a tombstone for compacted topics.",
+        "explanation": "Tests whether the candidate can read a change event and knows the semantics of each op code and the before/after images."
+      },
+      {
+        "question": "How does Debezium capture Postgres changes, and what is a replication slot?",
+        "answer": "Debezium uses Postgres logical replication: with wal_level=logical and plugin.name=pgoutput, it consumes decoded WAL changes for the tables in a publication through a named logical replication slot. The slot tracks the confirmed_flush_lsn so Debezium can resume exactly where it left off; Postgres retains WAL until the slot confirms it, which enables resumability but risks disk bloat if the connector lags or stops.",
+        "explanation": "Looks for understanding of pgoutput, publications, and especially the slot's dual role: resumability and the bloat risk."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How does Debezium avoid missing or losing changes across the snapshot-to-streaming handoff and restarts?",
+        "answer": "On first start Debezium records the WAL position, runs a consistent initial snapshot emitting op=r events, then begins streaming from exactly that recorded position, so nothing between snapshot and streaming is lost. It periodically confirms the LSN to the replication slot, and on restart resumes from the slot's confirmed_flush_lsn. Because a crash can re-emit events produced before the LSN was confirmed, delivery is at-least-once, so sinks must be idempotent.",
+        "explanation": "Probes deep understanding of the snapshot/streaming boundary, LSN confirmation for resumability, and the at-least-once consequence requiring idempotent sinks."
+      },
+      {
+        "question": "What is slot bloat, why does it happen, and how do you prevent it?",
+        "answer": "A Postgres replication slot retains WAL until the consumer confirms the LSN. If the Debezium connector is stopped, failing, or lagging, its slot pins WAL that Postgres cannot reclaim, so disk usage grows and can crash the database. Prevent it by monitoring pg_replication_slots (active flag and retained WAL), enabling heartbeats so the slot advances on low-traffic tables, resuming stopped connectors promptly, and dropping slots for connectors that are permanently retired.",
+        "explanation": "A common production failure mode; strong answers connect the slot's WAL-retention semantics to the disk-fill risk and give concrete monitoring/heartbeat/cleanup mitigations."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your Postgres disk is steadily filling up even though data volume is stable, and alerts show growing WAL. A Debezium connector was recently disabled but not fully removed. What is happening and how do you fix it?",
+        "thinkingProcess": "Growing WAL with stable data points to a replication slot retaining WAL that Postgres cannot reclaim. Disabling the Connect connector does not drop its Postgres slot; the orphaned slot keeps pinning WAL at its last confirmed LSN, so the disk fills. The fix is to either resume consuming from the slot or drop it, then add monitoring and heartbeats to prevent recurrence.",
+        "expectedAnswer": "Explain that the orphaned replication slot is retaining WAL. Query pg_replication_slots to find the inactive slot and its retained WAL; if the connector is truly retired, drop the slot with SELECT pg_drop_replication_slot('debezium_orders') to release WAL, or restart/resume the connector so it advances and confirms the LSN. Then add monitoring on slot activity and retained WAL, enable heartbeat.interval.ms so slots advance on quiet tables, and document that retiring a connector must include dropping its slot."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a CDC pipeline to keep a data warehouse and a search index continuously in sync with a Postgres operational database, including deletes, tolerant of failures and safe against duplicates.",
+        "designApproach": "Enable Postgres logical replication (wal_level=logical) and deploy a Debezium Postgres source connector (plugin.name=pgoutput, a named slot, a publication over the captured tables, snapshot.mode=initial, Avro converters via Schema Registry, tombstones.on.delete=true, heartbeats) on a distributed Connect cluster. Emit topic-per-table keyed by primary key. Consume with idempotent sinks: a warehouse/JDBC sink that upserts on key and deletes on op=d/tombstone, and an Elasticsearch sink that upserts by document id. Keep internal and CDC topics at replication.factor>=3 and configs in version control.",
+        "tradeOffs": "Log-based CDC gives complete, low-impact, near-real-time capture but requires DB config, slot monitoring, and idempotent sinks (at-least-once). REPLICA IDENTITY FULL enables full before images at higher WAL cost. Single-task-per-slot on Postgres limits per-connector parallelism, so scale by splitting tables/databases. Schema evolution must be governed via registry compatibility.",
+        "scalingStrategy": "Key topics by primary key for parallel consumer scaling; split captured tables across connectors/databases since Postgres capture is single-task per slot; use incremental snapshots to add tables without pausing streaming. Monitor streaming lag, slot activity/retained WAL, and sink lag; alert on lag, inactive slots with growing WAL, and DLQ errors. Scale Connect workers and Kafka partitions with change volume, and ensure Schema Registry and Kafka are HA."
+      }
+    ],
+    "followUpQuestions": [
+      "How do incremental snapshots (Debezium 2.x) let you backfill a new table without stopping the live stream?",
+      "What changes with Kafka Connect exactly-once source support for Debezium, and which sinks still need idempotency?",
+      "How does the Outbox Event Router SMT implement the transactional outbox pattern with Debezium?",
+      "How do you handle a Postgres primary failover so the replication slot and connector resume correctly?",
+      "When would you flatten the change event with ExtractNewRecordState versus keep the full before/after envelope?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Debezium is a Kafka Connect source connector for log-based change data capture that reads a database's transaction log (Postgres WAL via pgoutput, MySQL binlog), takes an initial snapshot then streams inserts/updates/deletes as before/after/op/source/ts_ms envelopes to a topic per table, resuming from a replication slot's LSN with at-least-once delivery.",
+    "keyConcepts": [
+      "Log-based CDC reads the WAL/binlog (complete + low-impact) instead of polling tables (query-based CDC misses deletes).",
+      "Debezium = Kafka Connect source connector; does initial snapshot (op=r) then streams c/u/d changes, topic-per-table keyed by PK.",
+      "Change event envelope = before / after / op (c,u,d,r) / source (LSN, table, txId) / ts_ms.",
+      "Postgres uses logical replication (wal_level=logical, plugin.name=pgoutput) via a named slot tracking confirmed_flush_lsn.",
+      "At-least-once delivery -> sinks must be idempotent; deletes emit op=d + optional tombstone for compaction; slots risk WAL bloat."
+    ],
+    "formulas": [],
+    "commands": [
+      "curl -X POST -H 'Content-Type: application/json' --data @debezium-postgres.json http://localhost:8083/connectors",
+      "ALTER SYSTEM SET wal_level = logical;  -- then restart Postgres",
+      "SELECT slot_name, active, restart_lsn, confirmed_flush_lsn FROM pg_replication_slots;",
+      "kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic dbserver1.public.orders --from-beginning",
+      "SELECT pg_drop_replication_slot('debezium_orders');  -- release WAL when retiring a connector"
+    ],
+    "interviewPoints": [
+      "Define CDC and explain why log-based beats query-based (completeness of deletes, low load, freshness).",
+      "Describe the change event envelope and op codes (c/u/d/r) and how consumers branch on op.",
+      "Explain Postgres logical replication: wal_level=logical, pgoutput, publication, and the replication slot's LSN.",
+      "Explain snapshot-then-streaming, at-least-once delivery, and why sinks must be idempotent.",
+      "Describe slot bloat (WAL retention risk) and mitigations: heartbeats, monitoring, dropping retired slots."
+    ],
+    "quickNotes": [
+      "Postgres needs wal_level=logical; modern Debezium defaults to plugin.name=pgoutput (built in on PG 10+).",
+      "Postgres capture is single-task per slot; scale by splitting tables/databases across connectors.",
+      "Enable tombstones.on.delete for log-compacted topics and key-value sinks.",
+      "REPLICA IDENTITY DEFAULT gives key-only before images; use FULL for complete before images (more WAL).",
+      "Monitor pg_replication_slots and enable heartbeats to prevent slot bloat filling the disk."
+    ]
+  },
+  "keyTakeaways": [
+    "CDC captures every insert, update, and delete as an ordered stream, and log-based CDC (reading the WAL/binlog) beats query-based polling by capturing deletes and intermediate changes with low source impact and near-real-time freshness.",
+    "Debezium is a Kafka Connect source connector that performs an initial consistent snapshot (op=r events) and then streams changes, writing a topic per table keyed by primary key.",
+    "Each change is a structured envelope with before, after, op (c/u/d/r), a source block (LSN, table, txId, commit time), and ts_ms, so consumers can apply upserts and deletes precisely; deletes emit op=d plus an optional tombstone for log compaction.",
+    "For Postgres, Debezium uses logical replication (wal_level=logical, plugin.name=pgoutput) via a named replication slot that tracks the confirmed LSN for resumability, but that slot retains WAL and can bloat the disk if the connector lags or is left behind, so it must be monitored and heartbeated.",
+    "Delivery is at-least-once, so downstream sinks must be idempotent (keyed upserts and key-based deletes), and source schema changes must be governed (e.g., via Schema Registry compatibility) so CDC keeps downstream stores accurately and durably in sync."
+  ]
+}

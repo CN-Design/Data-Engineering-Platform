@@ -1,0 +1,413 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Observability for deployments is the practice of making a running data service prove that it is alive, ready to serve, and behaving correctly - so the platform can restart it, gate traffic away from it, or roll it back automatically instead of relying on an engineer to notice a broken deploy.",
+      "In Kubernetes this rests on three probes: liveness (is the process healthy, or should it be restarted?), readiness (is this pod ready to receive traffic right now?), and startup (has a slow-starting app like a Spark driver or Airflow scheduler finished booting before liveness starts checking?).",
+      "Around the probes sit the deployment controls and signals that turn health into decisions: rollout status and progressDeadlineSeconds, kubectl rollout undo, Argo Rollouts automated rollback on failed analysis, the four golden signals and DORA metrics, and SLOs with error budgets that decide whether it is even safe to ship."
+    ],
+    "learningObjectives": [
+      "Distinguish liveness, readiness, and startup probes, choose the right probe type (httpGet, exec, tcpSocket) and tuning (initialDelaySeconds, periodSeconds, failureThreshold), and explain why confusing liveness with readiness causes crash loops.",
+      "Observe and control deployment health using rollout status, progressDeadlineSeconds, manual kubectl rollout undo, and automated Argo Rollouts analysis-based and blue-green rollback.",
+      "Instrument deployments with the four golden signals, DORA metrics, Prometheus metrics, and data-service health endpoints (Airflow /health, dbt run results, source freshness), and use SLOs and error budgets to gate deploy decisions."
+    ],
+    "formalDefinition": "Observability for deployments is the set of health signals, endpoints, and metrics a system exposes and the automated policies that consume them to decide whether a newly deployed workload should keep running, receive traffic, or be rolled back. In Kubernetes it is anchored by three container probes - liveness (restart on failure), readiness (add or remove the pod from Service endpoints), and startup (defer liveness/readiness until initialization completes) - each configured with a probe mechanism (httpGet, exec, or tcpSocket) and timing/threshold parameters. It extends beyond probes to rollout observability (rollout status, progressDeadlineSeconds), rollback mechanisms (manual undo, progressive-delivery analysis, blue-green), and higher-order deployment metrics (the four golden signals, DORA metrics, SLOs, and error budgets) that make deploy decisions data-driven rather than manual. Its defining property is closed-loop automation: the deployment does not merely emit health, it emits health that the platform acts on without a human in the path.",
+    "simpleExplanation": "Think of deploying a data service like putting a new bus into service. Before it carries passengers, the depot checks its engine turns over (startup probe: give the slow diesel time to warm up), keeps checking the engine keeps running (liveness probe: if it seizes, tow it back and swap in another), and asks 'are the doors open and is it at the stop?' before letting anyone board (readiness probe: only route riders to buses that can actually take them). If a whole new fleet of buses starts breaking down after a schedule change, the dispatcher watches the numbers - late arrivals, breakdowns, complaints - and if they cross a line, automatically reverts to yesterday's schedule (rollback) instead of waiting for the phones to ring.",
+    "historicalContext": "Early service health was a single ping: a load balancer checked one TCP port and assumed 'port open' meant 'ready'. Kubernetes (2014-2015) formalized the split between liveness and readiness probes, recognizing that a pod can be alive but not ready (still warming caches, waiting on a database). Slow-starting apps kept tripping liveness during boot, so Kubernetes added the startup probe (GA in 1.20, 2020) to protect initialization. In parallel, Google's SRE book (2016) popularized the four golden signals, and the DORA program (State of DevOps reports, from 2014 onward, formalized in the 2018 Accelerate book) established deployment frequency, lead time, change failure rate, and MTTR as the industry metrics for delivery performance. Progressive delivery tools - Argo Rollouts and Flagger (around 2019) - then wired metric analysis directly into the deploy, so a canary or blue-green cutover rolls back automatically when Prometheus analysis fails, closing the loop between observability and deployment.",
+    "whyItMatters": {
+      "business": "Automated health and rollback turn a bad deploy from a multi-hour outage and an on-call scramble into a self-correcting non-event, protecting revenue-critical pipelines and dashboards and letting the team ship more often with confidence.",
+      "engineering": "Correct probes and rollout controls remove the guesswork from 'is this deploy healthy?' - traffic only reaches ready pods, unhealthy pods restart themselves, and failed rollouts revert automatically, so engineers debug real problems instead of firefighting flapping services.",
+      "scalability": "As the number of services and deploys grows, human eyes cannot watch every rollout; probe-driven traffic gating and analysis-based rollback scale deployment safety across hundreds of services without adding on-call load.",
+      "cost": "Catching a bad deploy in a canary or via a failed liveness restart avoids the far larger cost of a full-fleet outage, reprocessed data, missed SLAs, and the engineering hours spent on a manual incident and rollback.",
+      "reliability": "Readiness gating prevents traffic hitting half-started pods, liveness restarts recover hung processes, startup probes stop crash loops on slow boots, and error-budget-driven gating keeps risky deploys from eroding the SLO - together these are the core levers of deployment reliability."
+    },
+    "coreComponents": [
+      {
+        "name": "Liveness probe",
+        "definition": "A periodic health check that asks 'is this container still working?'; if it fails failureThreshold times in a row, the kubelet kills and restarts the container.",
+        "purpose": "To automatically recover from unrecoverable in-process states - deadlocks, hung event loops, exhausted threads - that the process cannot fix itself but a restart clears.",
+        "responsibilities": "Detect a wedged process, trigger a container restart on sustained failure, and stay cheap and dependency-free so it reports on the process itself, not on downstream systems.",
+        "examples": "httpGet /healthz on an Airflow webserver | exec pg_isready in a sidecar | a lightweight /livez that returns 200 as long as the event loop is responsive"
+      },
+      {
+        "name": "Readiness probe",
+        "definition": "A periodic check that asks 'can this pod serve requests right now?'; failure removes the pod from the Service's endpoints so no new traffic is routed to it, without killing it.",
+        "purpose": "To gate traffic so requests only reach pods that have finished warming up and whose dependencies are available, and to drain a pod during rollout or transient dependency loss.",
+        "responsibilities": "Report true only when the app can actually serve, check critical dependencies where appropriate, and cause the Service/load balancer to add or remove the pod from rotation as readiness flips.",
+        "examples": "httpGet /ready that checks the DB connection pool | readiness that returns 503 while a cache warms | gating a dbt-serving API until models are loaded"
+      },
+      {
+        "name": "Startup probe",
+        "definition": "A one-time-per-start gate that runs before liveness and readiness take effect, giving slow-initializing containers a long window to finish booting.",
+        "purpose": "To protect slow-starting apps - Spark drivers, Airflow schedulers, large model loaders - from being killed by an aggressive liveness probe during a legitimately long startup.",
+        "responsibilities": "Poll until the app has started (or the failureThreshold x periodSeconds budget is exhausted), then hand off to liveness/readiness, decoupling long boot times from steady-state check intervals.",
+        "examples": "startupProbe with failureThreshold 30 and periodSeconds 10 (a 5-minute boot budget) on an Airflow scheduler | httpGet /started once the Spark driver's UI is up"
+      },
+      {
+        "name": "Rollout status and controls",
+        "definition": "The Deployment controller's view of a rolling update - which pods are updated, available, and healthy - governed by progressDeadlineSeconds and inspectable with kubectl rollout status.",
+        "purpose": "To make a deploy observable and bounded: to know when a rollout has succeeded, stalled, or failed, and to time out and surface a stuck rollout rather than hanging forever.",
+        "responsibilities": "Track updated/available replicas, mark the rollout Progressing/Complete/Failed, enforce progressDeadlineSeconds, and record revision history so a prior revision can be restored.",
+        "examples": "kubectl rollout status deploy/airflow-scheduler | progressDeadlineSeconds: 600 | kubectl rollout history to see revisions"
+      },
+      {
+        "name": "Automated rollback and progressive delivery",
+        "definition": "Mechanisms that revert a bad deploy - manual kubectl rollout undo, or Argo Rollouts/Flagger analysis and blue-green cutovers that abort and roll back when metric analysis fails.",
+        "purpose": "To limit the blast radius of a bad release by shifting traffic gradually and reverting automatically on failing signals, rather than exposing all users to a broken version.",
+        "responsibilities": "Shift traffic in steps (canary/blue-green), run metric analysis against Prometheus, promote on success, and abort and roll back to the last good revision on failed analysis or a manual undo.",
+        "examples": "kubectl rollout undo deploy/api --to-revision=4 | Argo Rollouts AnalysisTemplate on error-rate | blue-green with instant switch-back of the Service selector"
+      }
+    ],
+    "internalWorking": [
+      "The kubelet on each node runs the probes locally against the container. For httpGet it opens an HTTP request to the container's port/path and treats any 2xx or 3xx as success; for tcpSocket it just checks the port accepts a connection; for exec it runs a command inside the container and treats exit code 0 as success - all governed by initialDelaySeconds, periodSeconds, timeoutSeconds, successThreshold, and failureThreshold.",
+      "The startup probe, if defined, runs first and suspends liveness and readiness entirely: the kubelet keeps polling it up to failureThreshold times spaced periodSeconds apart, so the total startup budget is failureThreshold x periodSeconds; only after it succeeds do liveness and readiness begin, which is why it prevents slow-boot crash loops.",
+      "A failing liveness probe (failureThreshold consecutive failures) makes the kubelet kill the container; the pod's restartPolicy brings it back, incrementing the restart count, and repeated failures produce the CrashLoopBackOff state with exponentially increasing back-off between restarts.",
+      "A failing readiness probe does not restart anything - it flips the pod's Ready condition to false, and the endpoints controller removes the pod's IP from the Service's EndpointSlice, so kube-proxy / the load balancer stops sending it new traffic; when readiness recovers, the IP is added back and traffic resumes.",
+      "During a rolling update the Deployment controller creates a new ReplicaSet and scales it up while scaling the old one down within maxSurge/maxUnavailable bounds, only counting a new pod as available once it is Ready; if it cannot make progress within progressDeadlineSeconds the rollout is marked Failed, and Argo Rollouts extends this by pausing at each canary/blue-green step to run metric analysis and automatically calling a rollback to the previous ReplicaSet when analysis fails."
+    ],
+    "architectureFlow": "code merged & image built -> kubectl/Argo applies new Deployment/Rollout -> new ReplicaSet scaled up (maxSurge) -> startupProbe gates slow boot -> readinessProbe must pass before pod joins Service endpoints -> livenessProbe monitors steady state (restart on failure) -> rollout progresses within progressDeadlineSeconds -> Prometheus scrapes golden-signal metrics -> Argo Rollouts analysis compares error rate/latency to threshold -> pass: promote & scale down old ReplicaSet | fail: automatic rollback (or kubectl rollout undo) -> DORA metrics & error budget updated to inform the next deploy",
+    "dataFlowWalkthrough": [
+      "1. A new image is applied via a Deployment (or Argo Rollout); the controller creates a new ReplicaSet and starts adding pods under maxSurge/maxUnavailable limits.",
+      "2. Each new pod's startup probe runs first, polling /started until the slow-starting app (e.g. the Airflow scheduler) has booted within its failureThreshold x periodSeconds budget; liveness and readiness stay dormant until it passes.",
+      "3. The readiness probe then checks /ready (including its DB pool); only when it returns success is the pod's IP added to the Service EndpointSlice, so traffic reaches it only when it can truly serve.",
+      "4. The liveness probe begins monitoring /healthz on periodSeconds intervals; a sustained failure triggers a restart, while Prometheus scrapes the pod's /metrics for the golden signals (latency, traffic, errors, saturation).",
+      "5. Argo Rollouts pauses the canary step and runs an AnalysisTemplate querying Prometheus for the new version's error rate; if it stays under threshold the rollout promotes and scales down the old ReplicaSet, otherwise it aborts and rolls back automatically - and the outcome updates DORA metrics and the error budget that gate the next deploy."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Liveness vs readiness probe",
+        "meaning": "Liveness answers 'should this container be restarted?' (failure kills and restarts it); readiness answers 'should this pod get traffic?' (failure removes it from the Service without restarting).",
+        "importance": "Confusing the two is the most common probe bug: a dependency check in a liveness probe restarts healthy pods during a downstream blip, turning a transient issue into a self-inflicted crash loop."
+      },
+      {
+        "term": "Startup probe",
+        "meaning": "A probe that runs only during initialization and defers liveness/readiness until the app has finished booting, with a budget of failureThreshold x periodSeconds.",
+        "importance": "It lets slow-starting data apps (Spark drivers, Airflow schedulers, model servers) boot without being killed by an aggressive liveness probe, eliminating startup crash loops."
+      },
+      {
+        "term": "progressDeadlineSeconds",
+        "meaning": "The maximum time a Deployment rollout may make no progress before it is marked Failed, so a stuck rollout surfaces instead of hanging indefinitely.",
+        "importance": "It bounds a bad deploy in time, turning a silently stalled rollout into a detectable failure that CI/CD or an operator can act on (e.g. trigger a rollback)."
+      },
+      {
+        "term": "Four golden signals",
+        "meaning": "Latency, traffic, errors, and saturation - the four service-level signals from Google SRE that summarize the health of a running service.",
+        "importance": "They are the metrics progressive-delivery analysis watches during a rollout; a spike in errors or latency on the new version is the trigger for automatic rollback."
+      },
+      {
+        "term": "DORA metrics",
+        "meaning": "Deployment frequency, lead time for changes, change failure rate, and mean time to restore (MTTR) - the four DevOps Research and Assessment measures of delivery performance.",
+        "importance": "They quantify whether deployment practices are healthy at the team level: high change failure rate or MTTR signals that health checks, testing, and rollback need investment."
+      },
+      {
+        "term": "SLO and error budget",
+        "meaning": "An SLO is a target reliability level (e.g. 99.9% success); the error budget is the small allowed shortfall (0.1%) that can be 'spent' on risk like deploys.",
+        "importance": "The error budget makes deploy decisions objective: with budget remaining, ship freely; when it is exhausted, freeze risky deploys and prioritize reliability work."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Liveness restarts, readiness gates - never mix them",
+        "explanation": "The single most important discipline in deployment health is keeping liveness and readiness cleanly separated by intent. A liveness probe should test only whether the process itself is fundamentally broken and needs a restart - it must be cheap, local, and free of downstream dependencies. A readiness probe should test whether the pod can serve right now, which may include dependency checks, and its failure simply removes the pod from traffic without killing it. The classic anti-pattern is putting a database check in the liveness probe: when the database has a brief hiccup, every pod's liveness fails simultaneously, the kubelet restarts them all at once, they come up and immediately fail again, and a transient dependency blip becomes a fleet-wide crash loop. Put dependency checks in readiness; keep liveness about the process."
+      },
+      {
+        "concept": "Progressive delivery closes the loop between metrics and rollback",
+        "explanation": "Traditional deploys are open-loop: you ship, then a human watches dashboards and decides whether to roll back. Progressive delivery with Argo Rollouts or Flagger closes that loop. The new version is rolled out in steps (canary percentages or a parallel blue-green stack), and at each step an AnalysisTemplate queries Prometheus for the new version's golden signals - error rate, p99 latency, saturation. If the metrics stay within thresholds the rollout promotes automatically; if they breach, the rollout aborts and reverts to the last good ReplicaSet without a human in the path. This turns observability from a passive dashboard into an active control system, dramatically shrinking the blast radius and MTTR of a bad deploy."
+      },
+      {
+        "concept": "Health endpoints for data services are more than 'process up'",
+        "explanation": "Data services need health signals richer than 'the port is open'. Airflow exposes a /health endpoint reporting the state of the scheduler and metadata database, which makes a good readiness/liveness source but must be interpreted carefully - a probe should not restart the webserver just because the scheduler is momentarily behind. dbt does not run continuously, so its 'health' is expressed as artifacts: run_results.json indicating model success/failure and source freshness checks indicating data staleness; these feed pipeline observability and deploy gating rather than Kubernetes probes. The lesson is to map each service's real notion of 'healthy' - scheduler heartbeats, connection pools, model freshness - onto the right mechanism: probes for continuously-serving processes, artifact and metric checks for batch jobs."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Probe mechanisms:** httpGet (an HTTP request, 2xx/3xx = healthy - most common for web/API services), tcpSocket (port accepts a connection - for non-HTTP services), and exec (a command runs inside the container, exit 0 = healthy - for CLI checks like pg_isready), plus gRPC probes for gRPC services.",
+      "**Probe roles:** liveness (restart), readiness (gate traffic), and startup (defer the other two during boot) - the same mechanism can back different roles with different tuning.",
+      "**Rollout strategies:** rolling update (default, gradual pod replacement), recreate (kill all then start new), blue-green (two full stacks, instant switch), and canary (a small percentage first, then ramp).",
+      "**Rollback approaches:** manual kubectl rollout undo to a prior revision, automated analysis-based rollback (Argo Rollouts/Flagger aborting on failed metric analysis), and blue-green switch-back (flip the Service selector to the old stack).",
+      "**Deployment metric frameworks:** the four golden signals (service-level: latency, traffic, errors, saturation), the RED method (Rate, Errors, Duration), the USE method (Utilization, Saturation, Errors), and DORA metrics (team/delivery-level).",
+      "**Health signal sources for data services:** Kubernetes probes for long-running processes, application health endpoints (Airflow /health), and artifact/metric checks for batch jobs (dbt run_results, source freshness, data quality tests)."
+    ],
+    "advantages": [
+      "**Self-healing:** liveness probes restart wedged processes automatically, so hung schedulers or drivers recover without paging an engineer.",
+      "**Zero-downtime deploys:** readiness gating means the load balancer only sends traffic to pods that can serve, so rolling updates don't drop requests.",
+      "**Bounded, self-reverting deploys:** progressDeadlineSeconds plus analysis-based rollback catch and revert bad releases automatically, shrinking blast radius and MTTR.",
+      "**Data-driven ship decisions:** golden signals, DORA metrics, and error budgets make 'is it safe to deploy?' an objective, measurable question rather than a gut call."
+    ],
+    "disadvantages": [
+      "**Easy to misconfigure:** wrong probe type, too-short initialDelaySeconds, or dependency checks in liveness cause crash loops that are worse than no probe.",
+      "**Added complexity:** progressive delivery (Argo Rollouts, analysis templates, Prometheus queries) is powerful but adds moving parts to learn and operate.",
+      "**Metric dependency:** analysis-based rollback is only as good as the metrics and thresholds; noisy or missing metrics cause false rollbacks or missed regressions.",
+      "**Batch/data-job mismatch:** probes assume long-running servers, so batch jobs (dbt runs, Spark batch) need separate artifact/metric-based health rather than probes."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use full deployment observability - startup/readiness/liveness probes, progressDeadlineSeconds, and analysis-based progressive delivery - for continuously-serving, business-critical data services (Airflow web/scheduler, serving APIs, streaming jobs) where a bad deploy is expensive and traffic must be gated; use error-budget gating whenever you have a defined SLO and want objective deploy decisions.",
+      "whenToAvoid": "Skip Kubernetes probes for short-lived batch jobs (a dbt run, a one-off Spark job) where Job/CronJob completion and artifact checks are the right health signal; avoid heavyweight progressive delivery for low-stakes internal tools where a simple rolling update and manual rollout undo are sufficient and the operational overhead isn't justified."
+    },
+    "realWorldAnalogy": "Deployment observability is like the safety systems of an airline putting a new aircraft into service. Before the plane carries passengers it runs a long pre-flight checklist that must complete no matter how long it takes (startup probe protecting a slow boot). The gate agent only boards passengers once the crew confirms the cabin is ready (readiness gating traffic). In flight, sensors continuously watch the engines and will divert or ground the plane if something fails hard (liveness restarting a broken process). And the airline tracks fleet-wide numbers - on-time rate, incident rate, time-to-recover (DORA metrics and golden signals) - and if a newly rolled-out configuration starts causing problems across the fleet, operations reverts to the previous known-good setup automatically rather than waiting for a crash to force the issue (analysis-based rollback).",
+    "commonMisconceptions": [
+      {
+        "myth": "The liveness and readiness probes should just check the same endpoint - health is health.",
+        "reality": "They have opposite consequences: liveness failure restarts the container, readiness failure only removes it from traffic. Pointing liveness at a dependency-checking endpoint means a downstream blip restarts every healthy pod at once, causing a self-inflicted crash loop. Keep liveness cheap and local; put dependency checks in readiness."
+      },
+      {
+        "myth": "A rollback just means redeploying the old code, so it's slow and manual.",
+        "reality": "Kubernetes keeps revision history, so 'kubectl rollout undo' restores the previous ReplicaSet in seconds without rebuilding anything, and Argo Rollouts / blue-green can switch back to the last good version almost instantly and automatically when metric analysis fails - rollback is fast and can be fully automated."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Keep probes cheap and local so they don't add load as replica counts grow, tune periodSeconds to balance detection speed against probe overhead, and use analysis-based canaries so deployment safety scales to hundreds of services without proportionally more human oversight.",
+      "reliability": "Separate liveness (restart) from readiness (gate) strictly, give slow apps a startup probe with a generous budget, set progressDeadlineSeconds so stuck rollouts fail loudly, and drive risky-deploy decisions from an explicit SLO and error budget.",
+      "faultTolerance": "Readiness gating drains failing pods from traffic without killing them, liveness restarts recover hung processes, and analysis-based rollback plus retained revision history mean a bad deploy self-reverts to a known-good state rather than requiring a manual rebuild.",
+      "monitoring": "Scrape the golden signals (latency, traffic, errors, saturation) per version via Prometheus, expose data-service health endpoints (Airflow /health) and artifacts (dbt run_results, freshness), and track DORA metrics (deployment frequency, lead time, change failure rate, MTTR) to see if delivery health is improving.",
+      "security": "Expose health/metrics endpoints on a separate port or path with network policy or auth so probes and Prometheus can reach them but they are not publicly exposed, and avoid leaking sensitive dependency details or credentials in health responses.",
+      "costOptimization": "Catch bad deploys early with canary analysis to avoid full-fleet reprocessing and outage costs, right-size maxSurge so rollouts don't temporarily double expensive replica counts, and avoid over-frequent probes that waste CPU.",
+      "performance": "Point probes at lightweight endpoints that don't do heavy work or fan out to dependencies (especially liveness), set timeoutSeconds sensibly so a slow probe doesn't cause false failures, and keep analysis queries efficient so rollout steps aren't delayed."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Deployment with startup, readiness, and liveness probes for a slow-starting data service",
+        "overview": "A Kubernetes Deployment for an Airflow-style service that boots slowly. The startup probe gives it a long boot budget, the readiness probe gates traffic until dependencies are up, and the liveness probe stays cheap so it only restarts a genuinely wedged process.",
+        "code": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: airflow-scheduler\n  labels:\n    app: airflow-scheduler\nspec:\n  replicas: 2\n  progressDeadlineSeconds: 600   # fail the rollout if no progress in 10m\n  selector:\n    matchLabels:\n      app: airflow-scheduler\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxSurge: 1\n      maxUnavailable: 0          # never drop below desired ready count\n  template:\n    metadata:\n      labels:\n        app: airflow-scheduler\n    spec:\n      containers:\n        - name: scheduler\n          image: registry.example.com/airflow:2.9.3\n          ports:\n            - name: http\n              containerPort: 8080\n          # 1) Startup: give the slow scheduler up to 5 minutes to boot\n          #    (failureThreshold x periodSeconds = 30 x 10s = 300s)\n          startupProbe:\n            httpGet:\n              path: /started\n              port: http\n            periodSeconds: 10\n            failureThreshold: 30\n          # 2) Readiness: gate traffic; checks the metadata DB pool\n          readinessProbe:\n            httpGet:\n              path: /ready\n              port: http\n            periodSeconds: 10\n            timeoutSeconds: 3\n            failureThreshold: 3\n          # 3) Liveness: cheap, local, no dependency checks -> restart only if wedged\n          livenessProbe:\n            httpGet:\n              path: /healthz\n              port: http\n            periodSeconds: 15\n            timeoutSeconds: 3\n            failureThreshold: 3\n          resources:\n            requests:\n              cpu: \"500m\"\n              memory: \"1Gi\"\n            limits:\n              memory: \"2Gi\"\n---\n# Argo Rollouts: canary with automated analysis-based rollback\napiVersion: argoproj.io/v1alpha1\nkind: Rollout\nmetadata:\n  name: orders-api\nspec:\n  replicas: 4\n  strategy:\n    canary:\n      steps:\n        - setWeight: 20        # send 20% of traffic to the new version\n        - pause: {duration: 60s}\n        - analysis:            # query Prometheus; abort+rollback if it fails\n            templates:\n              - templateName: error-rate\n        - setWeight: 60\n        - pause: {duration: 60s}\n      abortScaleDownDelaySeconds: 30\n  selector:\n    matchLabels: {app: orders-api}\n  template:\n    metadata:\n      labels: {app: orders-api}\n    spec:\n      containers:\n        - name: api\n          image: registry.example.com/orders-api:1.8.0\n---\napiVersion: argoproj.io/v1alpha1\nkind: AnalysisTemplate\nmetadata:\n  name: error-rate\nspec:\n  metrics:\n    - name: error-rate\n      interval: 30s\n      count: 3\n      # roll back automatically if 5xx rate exceeds 1%\n      successCondition: result < 0.01\n      failureLimit: 1\n      provider:\n        prometheus:\n          address: http://prometheus.monitoring:9090\n          query: |\n            sum(rate(http_requests_total{app=\"orders-api\",status=~\"5..\"}[2m]))\n            /\n            sum(rate(http_requests_total{app=\"orders-api\"}[2m]))\n",
+        "language": "yaml",
+        "breakdown": "The Deployment sets progressDeadlineSeconds so a stuck rollout fails after 10 minutes and maxUnavailable: 0 so it never drops below the ready count. The startupProbe polls /started every 10s up to 30 times, granting a 5-minute boot budget before liveness/readiness activate - this is what stops slow schedulers from crash-looping. The readinessProbe hits /ready (which checks the DB pool) and only a passing result adds the pod to Service endpoints. The livenessProbe hits a cheap, dependency-free /healthz so it restarts only a genuinely wedged process. The Argo Rollout ships orders-api as a canary: 20% traffic, then an AnalysisTemplate queries Prometheus for the 5xx error rate; successCondition result < 0.01 means the rollout aborts and rolls back automatically if errors exceed 1%.",
+        "expectedOutput": "deployment.apps/airflow-scheduler configured\nrollout.argoproj.io/orders-api configured\nanalysistemplate.argoproj.io/error-rate configured\n# During rollout, if the analysis fails:\n#   Rollout 'orders-api' aborted: metric 'error-rate' assessed Failed\n#   rolling back to stable ReplicaSet orders-api-6c9f (revision 7)",
+        "commonIssues": "Putting the DB check in livenessProbe instead of readinessProbe, so a DB blip restarts every pod. Setting initialDelaySeconds/startup budget too short for the real boot time, causing startup crash loops. Forgetting maxUnavailable: 0 so the rollout drops capacity. AnalysisTemplate query returning no data (NaN) which some setups treat as inconclusive rather than failing - handle empty results explicitly.",
+        "optimizationTips": "Prefer a startupProbe over a large livenessProbe initialDelaySeconds so steady-state checks stay fast. Keep /healthz free of downstream calls. Add p99 latency and saturation metrics to the analysis, not just error rate. Use maxSurge to speed rollout without exceeding cost or quota, and set abortScaleDownDelaySeconds so an aborted canary lingers briefly for debugging."
+      },
+      {
+        "title": "Watching rollout status and rolling back with kubectl",
+        "overview": "The everyday operator loop: apply a new image, watch the rollout, and if it stalls or a regression appears, inspect history and roll back to the previous known-good revision in seconds.",
+        "code": "# Trigger a new rollout by updating the image\n$ kubectl set image deploy/orders-api api=registry.example.com/orders-api:1.9.0\ndeployment.apps/orders-api image updated\n\n# Watch the rollout progress in real time\n$ kubectl rollout status deploy/orders-api --timeout=120s\nWaiting for deployment \"orders-api\" rollout to finish: 1 out of 4 new replicas have been updated...\nWaiting for deployment \"orders-api\" rollout to finish: 2 out of 4 new replicas have been updated...\nWaiting for deployment \"orders-api\" rollout to finish: 1 old replicas are pending termination...\nerror: deployment \"orders-api\" exceeded its progress deadline\n\n# The new pods are crash-looping - confirm what happened\n$ kubectl get pods -l app=orders-api\nNAME                          READY   STATUS             RESTARTS   AGE\norders-api-7d5b8c9f4-2xk9q    0/1     CrashLoopBackOff   4          2m\norders-api-6c9f0a1b2-abcde    1/1     Running            0          3h\n\n# Inspect the revision history\n$ kubectl rollout history deploy/orders-api\ndeployment.apps/orders-api\nREVISION  CHANGE-CAUSE\n6         kubectl set image deploy/orders-api api=...:1.8.0\n7         kubectl set image deploy/orders-api api=...:1.9.0\n\n# Roll back to the previous good revision (fast - restores old ReplicaSet)\n$ kubectl rollout undo deploy/orders-api\ndeployment.apps/orders-api rolled back\n\n# Confirm the rollback completed and traffic is healthy again\n$ kubectl rollout status deploy/orders-api\ndeployment \"orders-api\" successfully rolled out\n",
+        "language": "bash",
+        "breakdown": "'kubectl set image' updates the container image, which triggers a new ReplicaSet and a rolling update. 'kubectl rollout status' streams progress and, because progressDeadlineSeconds is set, exits with an error when the rollout can't make progress - here the new pods CrashLoopBackOff and it exceeds the deadline. 'kubectl get pods' confirms the new pods are unhealthy while an old pod still serves. 'kubectl rollout history' lists revisions; 'kubectl rollout undo' restores the previous ReplicaSet (revision 6) in seconds without rebuilding an image, and a final 'rollout status' confirms the fleet is healthy again. Add '--to-revision=N' to target a specific revision.",
+        "expectedOutput": "deployment.apps/orders-api rolled back\ndeployment \"orders-api\" successfully rolled out",
+        "commonIssues": "Not setting progressDeadlineSeconds, so a bad rollout hangs forever instead of erroring. Losing rollback history because revisionHistoryLimit is too low. Assuming 'undo' fixes bad data already written by the new version - rollback restores code, not side effects. Rolling back to a revision whose config (e.g. a ConfigMap) has since changed, restoring an inconsistent state.",
+        "optimizationTips": "Set a meaningful CHANGE-CAUSE (via annotations or --record equivalents) so history is readable. Automate 'rollout status' in CI/CD to fail the pipeline on a bad deploy. Keep revisionHistoryLimit high enough to roll back several revisions. Prefer Argo Rollouts for automated analysis-based rollback so you don't rely on a human watching 'rollout status'."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A data platform team runs an orders analytics API and an Airflow stack that feed executive dashboards. Deploys are risky: the Airflow scheduler boots slowly and keeps getting killed mid-startup by an aggressive liveness probe, and a recent API release with a subtle bug went fully live and corrupted metrics for two hours before anyone noticed and manually reverted it. The team wants deploys that gate traffic correctly, tolerate slow boots, and roll back automatically on a regression.",
+    "inputData": "Kubernetes manifests for the orders-api Deployment (soon an Argo Rollout) and the airflow-scheduler Deployment, a Prometheus instance scraping /metrics for the golden signals, an SLO of 99.9% successful API requests with the corresponding error budget, and container images tagged per release (orders-api:1.8.0 stable, 1.9.0 candidate).",
+    "architecture": "CI builds and pushes an image -> Argo CD/kubectl applies the Rollout -> new ReplicaSet scales up under maxSurge -> startupProbe protects the slow scheduler boot -> readinessProbe gates traffic into the Service -> livenessProbe monitors steady state -> Prometheus scrapes per-version golden signals -> Argo Rollouts AnalysisTemplate queries Prometheus at each canary step -> promote on pass / auto-rollback on fail -> DORA metrics and error budget updated.",
+    "processingSteps": [
+      "1. Fix the scheduler crash loop by adding a startupProbe (30 x 10s = 5-minute budget) so liveness no longer kills it mid-boot, and move the DB-pool check out of liveness into the readinessProbe.",
+      "2. Convert orders-api from a Deployment to an Argo Rollout with a canary strategy: 20% traffic, pause, analysis, then ramp to 60% and 100%.",
+      "3. Define an AnalysisTemplate that queries Prometheus for the new version's 5xx error rate with successCondition result < 0.01 and a failureLimit of 1.",
+      "4. Deploy candidate orders-api:1.9.0; the canary takes 20% of traffic and the analysis runs three checks 30s apart against Prometheus.",
+      "5. The buggy 1.9.0 pushes the 5xx rate to 3%; analysis is assessed Failed, the Rollout aborts and automatically shifts all traffic back to the stable 1.8.0 ReplicaSet, and the incident is contained to 20% of traffic for about two minutes."
+    ],
+    "output": "A deployment pipeline where the Airflow scheduler boots reliably (no more startup crash loops), traffic only reaches ready pods, and a bad API release is caught in the canary and rolled back automatically before it can corrupt dashboards - reducing a two-hour manual incident to a two-minute, self-healed blip affecting a fraction of traffic.",
+    "monitoring": "Prometheus tracks per-version latency, traffic, errors, and saturation; Grafana dashboards show the canary vs stable comparison; Airflow /health and dbt run_results/freshness feed pipeline health; DORA metrics (deployment frequency, lead time, change failure rate, MTTR) trend over time and the error budget burn rate is alerted on.",
+    "errorHandling": "Failed analysis triggers automatic rollback to the last good ReplicaSet; a stalled rollout hits progressDeadlineSeconds and fails the CI/CD step; readiness gating drains unhealthy pods from traffic; and if the error budget is exhausted, a policy freezes further risky deploys until reliability is restored.",
+    "finalResult": "Change failure rate drops because regressions are caught in canary, MTTR falls from hours to minutes because rollback is automatic, the scheduler stops crash-looping, and dashboards stay trustworthy because a bad release never reaches 100% of traffic - all without a human watching the deploy in real time."
+  },
+  "industryUseCases": [
+    {
+      "company": "A ride-sharing company's real-time pricing platform",
+      "problem": "Pricing services deploy dozens of times a day, and a bad release directly affects fares; manual dashboard-watching couldn't catch regressions fast enough, and slow-booting model servers crash-looped under an aggressive liveness probe.",
+      "solution": "Startup probes protect the model-server boot, readiness probes gate traffic until models load, and Argo Rollouts canaries with Prometheus analysis on error rate and latency automatically roll back any release that breaches thresholds before it reaches most users.",
+      "benefits": "Regressions are contained to a small traffic slice and reverted in minutes, model servers stop crash-looping, and the team ships far more frequently with a lower change failure rate."
+    },
+    {
+      "company": "A fintech data platform running Airflow and dbt",
+      "problem": "The Airflow scheduler and webserver were unstable during deploys - a metadata-DB blip restarted every pod because the DB check was in the liveness probe - and dbt regressions slipped into production because health was only judged by 'container running'.",
+      "solution": "The DB check was moved to readiness, a startup probe was added for the scheduler, and dbt health was expressed via run_results.json and source freshness checks gating promotion, with the Airflow /health endpoint feeding readiness rather than liveness.",
+      "benefits": "No more self-inflicted crash loops during DB blips, reliable scheduler startup, and dbt regressions caught before promotion, improving both platform stability and data trust."
+    },
+    {
+      "company": "An e-commerce analytics team serving executive dashboards",
+      "problem": "A subtle API bug reached 100% of traffic and corrupted reported metrics for hours; leadership lost trust in the dashboards and the team had no objective way to decide when it was safe to deploy.",
+      "solution": "They adopted an SLO with an error budget, instrumented the four golden signals in Prometheus, and used blue-green deployments with analysis-gated cutover so the new version is validated on real traffic before the Service selector flips, with instant switch-back on failure.",
+      "benefits": "Bad releases are caught before full cutover, deploy decisions are governed objectively by the error budget, and dashboard trust is restored because regressions never reach all users."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Deployment observability scales by keeping probes cheap and local so per-pod overhead stays flat as replicas grow, by tuning periodSeconds to detect failures quickly without hammering the app, and by delegating deploy-safety judgment to automated canary analysis so hundreds of services can deploy safely without a proportional increase in human oversight.",
+    "faultTolerance": "Readiness probes drain failing pods from Service endpoints without killing them, liveness probes restart genuinely wedged processes, startup probes prevent slow-boot crash loops, and analysis-based rollback with retained revision history means any bad deploy self-reverts to a known-good ReplicaSet rather than requiring a manual rebuild.",
+    "highAvailability": "maxUnavailable: 0 with a suitable maxSurge keeps ready capacity constant during rollouts, readiness gating ensures the load balancer never routes to a not-ready pod, and PodDisruptionBudgets plus multi-replica, multi-zone spread keep the service available even while a rollout or node drain is in progress.",
+    "disasterRecovery": "Revision history and pinned image tags are the recovery source of truth: 'kubectl rollout undo --to-revision' or a blue-green switch-back restores the last good version in seconds; GitOps (Argo CD) means the entire desired state is reconstructable from git, and blue-green stacks provide an immediate fallback environment.",
+    "performanceOptimization": "Point probes at lightweight endpoints that avoid downstream fan-out (especially liveness), set timeoutSeconds so a momentarily slow app isn't falsely failed, prefer a startup probe over a huge liveness initialDelay so steady-state detection stays fast, and keep analysis Prometheus queries efficient so canary steps aren't delayed.",
+    "costOptimization": "Catching regressions in a small canary avoids the far larger cost of a full-fleet outage and data reprocessing, right-sizing maxSurge prevents temporarily doubling expensive replica counts during rollout, and avoiding over-frequent or heavy probes prevents wasted CPU across large fleets.",
+    "securityConsiderations": "Expose health and metrics on a dedicated port/path protected by NetworkPolicy or auth so only the kubelet and Prometheus can reach them, avoid returning sensitive dependency details or secrets in health responses, and ensure rollback restores a vetted image rather than an unscanned older tag.",
+    "monitoringAndObservability": "Instrument the four golden signals per version in Prometheus, expose application health endpoints (Airflow /health) and batch artifacts (dbt run_results, source freshness), visualize canary-vs-stable in Grafana, and track DORA metrics (deployment frequency, lead time, change failure rate, MTTR) plus error-budget burn to gauge and gate delivery health.",
+    "dataQualityValidation": "Gate promotion on data-quality signals as well as service metrics: dbt tests and source freshness must pass, row-count and schema checks run against the new version's output, and for data services these artifact-based checks complement Kubernetes probes since batch jobs have no long-running process to probe.",
+    "loggingAndAlerting": "Emit structured logs and rollout events (Argo Rollouts records analysis results and abort reasons), alert on CrashLoopBackOff, exceeded progress deadlines, failed analysis/rollback, and error-budget burn rate, and page only on actionable, deploy-affecting conditions to avoid alert fatigue."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Separate probe roles:** keep liveness cheap, local, and dependency-free (restart only a wedged process); put dependency checks in readiness (gate traffic); use a startup probe for slow-booting apps.",
+      "**Bound every rollout:** set progressDeadlineSeconds and maxUnavailable/maxSurge deliberately, and check 'kubectl rollout status' in CI/CD so a bad deploy fails the pipeline instead of hanging.",
+      "**Automate rollback:** use Argo Rollouts/Flagger analysis (or blue-green switch-back) so releases revert automatically on failing golden-signal metrics rather than relying on a human watching dashboards.",
+      "**Gate deploys with an error budget:** define an SLO, track burn rate, and freeze risky deploys when the budget is exhausted so reliability decisions are objective."
+    ],
+    "engineeringStandards": [
+      "Every long-running service exposes distinct /healthz (liveness), /ready (readiness), and /started (startup) endpoints with clearly defined semantics.",
+      "Every service instruments the four golden signals (latency, traffic, errors, saturation) in Prometheus, labeled by version for canary analysis.",
+      "Deploys are progressive (canary or blue-green) with automated analysis for any business-critical, continuously-serving service."
+    ],
+    "designRecommendations": [
+      "Prefer a startupProbe over inflating livenessProbe.initialDelaySeconds so steady-state failure detection stays fast.",
+      "Design health endpoints to reflect the service's real notion of ready (connection pools, model load, scheduler heartbeat), not just 'process up'.",
+      "Use blue-green when instant switch-back matters and canary when gradual traffic exposure with analysis is preferred."
+    ],
+    "namingConventions": [
+      "Use conventional health paths: /healthz or /livez for liveness, /ready or /readyz for readiness, /started for startup.",
+      "Name metrics consistently (http_requests_total, request_duration_seconds) with a version/rollout label so analysis queries are portable.",
+      "Name Argo resources by role (orders-api-rollout, error-rate-analysistemplate) and tag images with immutable, semantic release versions - never :latest."
+    ],
+    "documentationStandards": [
+      "Document each probe's endpoint, semantics, and tuning (why the startup budget is N seconds) so operators understand rollout behavior.",
+      "Document the SLO, error budget, and the deploy-freeze policy tied to budget exhaustion.",
+      "Document the rollback procedure (kubectl rollout undo / Argo abort) and how to inspect revision history."
+    ],
+    "testingStrategies": [
+      "Test probe behavior in staging: simulate a dependency outage to confirm readiness (not liveness) reacts, and simulate a slow boot to confirm the startup probe protects it.",
+      "Run a canary with intentionally regressed metrics in a test environment to verify analysis-based rollback actually aborts and reverts.",
+      "Validate progressDeadlineSeconds by deploying a deliberately broken image and confirming the rollout fails and can be rolled back within the target MTTR."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Putting a database or downstream dependency check inside the liveness probe.",
+      "whyItHappens": "It feels natural to have one 'is everything healthy?' check, and readiness vs liveness semantics are easy to conflate.",
+      "impact": "A brief dependency outage fails liveness on every pod simultaneously, the kubelet restarts them all, and a transient blip becomes a fleet-wide crash loop and a real outage.",
+      "correctApproach": "Keep liveness cheap and local (only 'is my process wedged?'); put dependency checks in the readiness probe so a downstream issue drains traffic without restarting healthy pods."
+    },
+    {
+      "mistake": "Giving a slow-starting app too short a startup/initialDelay budget (or no startup probe at all).",
+      "whyItHappens": "Defaults are short and engineers underestimate real boot time for schedulers, Spark drivers, and model servers.",
+      "impact": "Liveness fires before the app finishes booting, the kubelet kills it mid-startup, and it never gets a chance to become healthy - a permanent startup crash loop.",
+      "correctApproach": "Add a startupProbe with failureThreshold x periodSeconds comfortably exceeding the real boot time, and let liveness/readiness begin only after it passes."
+    },
+    {
+      "mistake": "Deploying to 100% of traffic at once with no canary, analysis, or bounded rollout.",
+      "whyItHappens": "A plain rolling update is the default and progressive delivery seems like extra setup that isn't worth it until an incident happens.",
+      "impact": "A regression reaches all users immediately and is only caught when someone notices, turning a small bug into a long, high-blast-radius incident with a slow manual rollback.",
+      "correctApproach": "Use canary or blue-green with automated metric analysis and set progressDeadlineSeconds, so a bad release is limited to a small traffic slice and rolled back automatically."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Consequence of failure",
+      "optionA": "Liveness probe",
+      "optionB": "Readiness probe",
+      "explanation": "A liveness probe answers 'should this container be restarted?' - sustained failure makes the kubelet kill and restart the container, so it exists to recover from unrecoverable in-process states like deadlocks. A readiness probe answers 'should this pod receive traffic?' - failure removes the pod's IP from the Service endpoints without killing it, so it exists to gate and drain traffic while a pod warms up or a dependency is briefly unavailable. The critical difference is blast radius: a misused liveness probe (e.g. checking a shared database) restarts every pod at once during a dependency blip, while the equivalent readiness failure merely drains traffic and lets pods recover. Rule of thumb: liveness = cheap and local; readiness = can include dependencies."
+    },
+    {
+      "feature": "Rollback trigger and speed",
+      "optionA": "Manual kubectl rollout undo",
+      "optionB": "Automated analysis-based rollback (Argo Rollouts)",
+      "explanation": "Manual rollout undo relies on a human noticing a regression - via dashboards or alerts - then running 'kubectl rollout undo' to restore the previous ReplicaSet; it's fast to execute (seconds, no rebuild) but slow to trigger because detection depends on a person, so MTTR is dominated by how long the regression goes unnoticed. Automated analysis-based rollback wires Prometheus metrics directly into the deploy: at each canary/blue-green step an AnalysisTemplate evaluates golden signals and, on breach, aborts and reverts automatically with no human in the path, shrinking both blast radius (only the canary slice was exposed) and MTTR (minutes, machine-driven). Manual undo is fine for low-stakes services; automated rollback is the standard for business-critical, high-frequency deploys."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is the difference between a liveness probe and a readiness probe in Kubernetes?",
+        "answer": "A liveness probe checks whether the container is still working; if it fails repeatedly, Kubernetes restarts the container. A readiness probe checks whether the pod can serve requests right now; if it fails, Kubernetes removes the pod from the Service's endpoints so it stops receiving traffic, but does not restart it. So liveness recovers a broken process by restarting it, while readiness gates traffic without killing the pod.",
+        "explanation": "Emphasize the different consequences (restart vs remove from traffic) and that liveness should be cheap/local while readiness can check dependencies. Mention the crash-loop risk of putting dependency checks in liveness."
+      },
+      {
+        "question": "What is a startup probe and when do you need one?",
+        "answer": "A startup probe runs only during a container's initialization and defers the liveness and readiness probes until it succeeds. You need it for slow-starting apps - like an Airflow scheduler, a Spark driver, or a large model server - because an aggressive liveness probe would otherwise kill the container mid-boot before it can become healthy, causing a startup crash loop. Its budget is failureThreshold times periodSeconds.",
+        "explanation": "Show you understand that the startup probe protects long boots and that its total budget = failureThreshold x periodSeconds. Contrast it with just inflating liveness initialDelaySeconds, which slows steady-state detection."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "What are the four golden signals and how are they used during a deployment?",
+        "answer": "The four golden signals from Google SRE are latency (how long requests take), traffic (how much demand), errors (rate of failed requests), and saturation (how full the system's resources are). During a deployment they are scraped per version in Prometheus and used by progressive-delivery analysis: a canary is promoted only if its latency, error rate, and saturation stay within thresholds, and it is rolled back automatically if they breach - turning the signals into the trigger for automated rollback.",
+        "explanation": "List all four precisely, then connect them to canary analysis. Bonus: mention labeling metrics by version so stable and canary can be compared."
+      },
+      {
+        "question": "How does kubectl rollout undo work, and what are its limits?",
+        "answer": "Kubernetes keeps revision history of a Deployment (each ReplicaSet is a revision). 'kubectl rollout undo' switches back to the previous ReplicaSet - or a specific one with --to-revision - restoring the old pods in seconds without rebuilding any image. Its limits: it restores code/config, not side effects, so bad data already written by the new version isn't undone; history is bounded by revisionHistoryLimit; and if referenced config like a ConfigMap changed independently, the restored state may be inconsistent.",
+        "explanation": "Show you understand revisions/ReplicaSets and the speed benefit, then demonstrate maturity by naming the limits (side effects, history limit, config drift)."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "Explain how analysis-based automated rollback works with Argo Rollouts, end to end.",
+        "answer": "Argo Rollouts replaces the Deployment with a Rollout that defines a canary or blue-green strategy with steps. At a step, it pauses and runs an AnalysisTemplate that queries a provider like Prometheus - e.g. the new version's 5xx rate - with a successCondition and failureLimit. It runs the query several times at an interval; if results stay within the condition, the rollout promotes to the next step and eventually scales down the old ReplicaSet. If the condition is breached beyond failureLimit, the analysis is assessed Failed, the Rollout aborts, and traffic shifts back to the stable ReplicaSet automatically - no human in the path. This closes the loop between observability and deployment, minimizing blast radius and MTTR.",
+        "explanation": "Cover the Rollout/steps/AnalysisTemplate/provider chain, the successCondition/failureLimit mechanics, and the abort-to-stable behavior. Mention handling empty/NaN query results so a missing metric doesn't silently pass."
+      },
+      {
+        "question": "How do SLOs and error budgets drive deployment decisions?",
+        "answer": "An SLO sets a target reliability, e.g. 99.9% successful requests over a window; the error budget is the allowed shortfall (0.1%). Every failure - including bad deploys - consumes budget. When budget remains, the team can deploy freely and take risks; when the burn rate is high or the budget is exhausted, a policy freezes risky deploys and shifts effort to reliability work until the budget recovers. This makes 'is it safe to ship?' an objective, measurable decision rather than a judgment call, and aligns engineering incentives between shipping fast and staying reliable.",
+        "explanation": "Define SLO and error budget precisely, then explain the deploy-freeze policy and burn-rate alerting. Tie it back to balancing velocity and reliability."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "After every metadata-database restart, all your Airflow scheduler pods restart simultaneously and enter CrashLoopBackOff, causing a wider outage than the DB blip itself. What's happening and how do you fix it?",
+        "thinkingProcess": "Simultaneous restarts of all pods on a shared-dependency event is the signature of a dependency check inside the liveness probe: when the DB is briefly unavailable, liveness fails on every pod at once, the kubelet restarts them all, they come up and immediately fail again. The fix is to move dependency awareness to readiness (which drains traffic without restarting) and keep liveness cheap and local. If the scheduler also boots slowly, a startup probe prevents the restart storm from being fatal during recovery.",
+        "expectedAnswer": "The liveness probe is checking the metadata DB, so a DB blip restarts every pod at once. Move the DB/dependency check into the readiness probe so a DB outage only drains traffic (pods stay up and recover when the DB returns), and reduce the liveness probe to a cheap, local /healthz that only detects a wedged process. Add a startupProbe so slow scheduler boots aren't killed. Optionally tune failureThreshold so a brief blip doesn't immediately act. After this, a DB restart no longer causes a self-inflicted crash loop."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a safe deployment and observability pipeline for a business-critical analytics API and an Airflow platform that together deploy many times a day, where a bad release must never reach all users and slow-booting components must not crash-loop.",
+        "designApproach": "Give every long-running service distinct liveness (/healthz, cheap/local), readiness (/ready, checks dependencies), and startup (/started, generous budget) probes. Instrument the four golden signals in Prometheus, labeled by version. Replace plain Deployments with Argo Rollouts using a canary strategy (20% -> analysis -> 60% -> 100%) whose AnalysisTemplate queries Prometheus for error rate and p99 latency, aborting and rolling back automatically on breach. Set progressDeadlineSeconds and maxUnavailable: 0. Define an SLO with an error budget and a deploy-freeze policy on exhaustion. For Airflow, feed /health into readiness (not liveness) and add startup probes; for dbt/batch jobs, gate promotion on run_results and source freshness rather than probes. Manage desired state via GitOps so rollback and DR are reconstructable from git.",
+        "tradeOffs": "Canary + analysis adds moving parts (Rollouts, AnalysisTemplates, reliable metrics) versus a simple rolling update, but yields small blast radius and automated rollback. Strict SLO/error-budget gating adds process overhead but makes deploy decisions objective. Blue-green gives instant switch-back at the cost of running two full stacks; canary is cheaper but exposes real users to the new version incrementally. Probes must be tuned carefully or they cause false failures.",
+        "scalingStrategy": "Keep probes cheap so per-pod cost stays flat as replicas grow; standardize probe endpoints, metric names, and Rollout templates across services so new services inherit the pattern; delegate deploy-safety to automated analysis so human oversight doesn't scale with service count; and use multi-zone, multi-replica deployments with PodDisruptionBudgets and maxUnavailable: 0 to keep availability constant during rollouts as traffic grows."
+      }
+    ],
+    "followUpQuestions": [
+      "When would you choose blue-green over canary deployments, and what does each cost?",
+      "How do you handle an AnalysisTemplate query that returns no data or NaN so a missing metric doesn't silently pass?",
+      "How do you express 'health' for a batch job like a dbt run or a Spark batch that has no long-running process to probe?",
+      "What are safe defaults for periodSeconds, timeoutSeconds, and failureThreshold, and how do they affect detection speed?",
+      "How would you roll back a deploy that already wrote bad data, given that rollout undo only restores code, not side effects?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Observability for deployments is exposing health signals - Kubernetes liveness (restart), readiness (gate traffic), and startup (protect slow boots) probes plus golden-signal/DORA metrics and SLOs - and wiring them into automated rollout control and rollback (progressDeadlineSeconds, kubectl rollout undo, Argo Rollouts analysis) so bad deploys self-correct.",
+    "keyConcepts": [
+      "Liveness restarts a wedged container; readiness gates traffic; startup defers both during slow boots - never put dependency checks in liveness.",
+      "Probe mechanisms: httpGet, tcpSocket, exec; tuning: initialDelaySeconds, periodSeconds, timeoutSeconds, failureThreshold; startup budget = failureThreshold x periodSeconds.",
+      "Bound rollouts with progressDeadlineSeconds and maxUnavailable/maxSurge; check 'kubectl rollout status' in CI/CD.",
+      "Automate rollback with kubectl rollout undo, Argo Rollouts analysis-based abort, or blue-green switch-back.",
+      "Drive deploy decisions with the four golden signals, DORA metrics, and an SLO/error budget."
+    ],
+    "formulas": [
+      "Startup budget = failureThreshold x periodSeconds",
+      "Error budget = 1 - SLO (e.g. 99.9% SLO -> 0.1% budget)",
+      "Change failure rate = failed deployments / total deployments",
+      "MTTR = total downtime / number of incidents"
+    ],
+    "commands": [
+      "kubectl rollout status deploy/orders-api --timeout=120s   # watch a rollout, fail on stall",
+      "kubectl rollout history deploy/orders-api   # list revisions",
+      "kubectl rollout undo deploy/orders-api   # roll back to previous revision",
+      "kubectl rollout undo deploy/orders-api --to-revision=6   # roll back to a specific revision",
+      "kubectl set image deploy/orders-api api=registry/orders-api:1.9.0   # trigger a new rollout",
+      "kubectl describe pod <pod>   # inspect probe failures / CrashLoopBackOff events",
+      "kubectl get endpointslices -l kubernetes.io/service-name=orders-api   # see which pods readiness gated in",
+      "kubectl argo rollouts get rollout orders-api --watch   # watch canary steps and analysis results",
+      "kubectl argo rollouts abort orders-api   # manually abort a bad rollout and revert to stable"
+    ],
+    "interviewPoints": [
+      "Liveness = restart, readiness = gate traffic, startup = protect slow boots; the classic bug is a dependency check in liveness.",
+      "progressDeadlineSeconds bounds a stuck rollout so it fails instead of hanging.",
+      "Argo Rollouts analysis queries Prometheus and aborts+rolls back automatically on breached golden signals.",
+      "kubectl rollout undo restores the previous ReplicaSet in seconds but doesn't undo side effects like bad data.",
+      "SLOs and error budgets make deploy-safety an objective decision; DORA metrics measure delivery health."
+    ],
+    "quickNotes": [
+      "Prefer a startupProbe over a large liveness initialDelaySeconds so steady-state detection stays fast.",
+      "Set maxUnavailable: 0 with a maxSurge to keep ready capacity constant during rollouts.",
+      "Label metrics by version so canary vs stable can be compared in analysis.",
+      "Handle empty/NaN analysis results explicitly so a missing metric doesn't silently pass.",
+      "For batch jobs (dbt, Spark batch), use artifact/freshness checks - probes assume long-running servers."
+    ]
+  },
+  "keyTakeaways": [
+    "Kubernetes gives you three distinct probes with opposite jobs: liveness restarts a wedged container, readiness gates traffic to only ready pods, and startup protects slow-booting apps - and confusing liveness with readiness (especially by putting dependency checks in liveness) is the number-one cause of self-inflicted crash loops.",
+    "Choose the right probe mechanism (httpGet, tcpSocket, exec) and tune initialDelaySeconds, periodSeconds, and failureThreshold to the service's real behavior; a startup probe's budget is failureThreshold x periodSeconds, and it should comfortably exceed the true boot time.",
+    "Bound and observe rollouts with progressDeadlineSeconds and 'kubectl rollout status', keep revision history so 'kubectl rollout undo' restores the previous version in seconds, and remember rollback undoes code, not side effects like bad data.",
+    "Progressive delivery with Argo Rollouts closes the loop between metrics and deployment: an AnalysisTemplate queries Prometheus for the golden signals and automatically aborts and rolls back a bad canary or blue-green cutover, shrinking blast radius and MTTR without a human in the path.",
+    "Make deploy decisions data-driven: instrument the four golden signals (latency, traffic, errors, saturation), track DORA metrics (deployment frequency, lead time, change failure rate, MTTR), expose data-service health (Airflow /health, dbt run_results and freshness), and let an SLO's error budget decide when it is safe to ship."
+  ]
+}

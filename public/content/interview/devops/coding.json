@@ -1,0 +1,227 @@
+[
+  {
+    "id": "devops-coding-1",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a multi-stage Dockerfile for a Python data job. It must compile any native dependencies in a builder stage and ship a slim final image that runs the job as a non-root user with a proper entrypoint.",
+    "thoughtProcess": "The interviewer wants to see multi-stage builds, layer-cache-friendly ordering, a slim base, non-root execution, and a correct entrypoint. My plan: a builder stage on a full python image that installs build tooling and pip-installs dependencies into an isolated virtual environment (so I can copy just that venv later). Then a final stage on python:3.11-slim that copies only the venv, adds the app code, creates and switches to a non-root user, and uses exec-form ENTRYPOINT so signals reach the process for graceful shutdown. I copy requirements before source to maximize cache reuse, and I keep the final image free of compilers. I'd also mention pinning the base image and using .dockerignore.",
+    "solution": {
+      "code": "# ---- Builder stage: compile deps into a venv ----\nFROM python:3.11 AS builder\n\n# Build tools needed only to compile native wheels\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n        build-essential gcc \\\n    && rm -rf /var/lib/apt/lists/*\n\n# Isolated virtualenv we can transplant to the final stage\nENV VIRTUAL_ENV=/opt/venv\nRUN python -m venv $VIRTUAL_ENV\nENV PATH=\"$VIRTUAL_ENV/bin:$PATH\"\n\n# Install deps first (cache-friendly), then app code\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir --upgrade pip \\\n    && pip install --no-cache-dir -r requirements.txt\n\n# ---- Final stage: slim runtime, no build tools ----\nFROM python:3.11-slim AS runtime\n\n# Copy only the built virtualenv from the builder\nENV VIRTUAL_ENV=/opt/venv\nCOPY --from=builder /opt/venv /opt/venv\nENV PATH=\"$VIRTUAL_ENV/bin:$PATH\" \\\n    PYTHONUNBUFFERED=1 \\\n    PYTHONDONTWRITEBYTECODE=1\n\n# Create a non-root user and own the app dir\nRUN useradd --create-home --uid 10001 appuser\nWORKDIR /app\nCOPY --chown=appuser:appuser src/ ./src/\n\nUSER appuser\n\n# Exec form so SIGTERM reaches Python for graceful shutdown\nENTRYPOINT [\"python\", \"-m\", \"src.job\"]\nCMD [\"--date\", \"today\"]",
+      "language": "dockerfile"
+    },
+    "lineByLine": "The builder stage starts from the full python:3.11 image and installs build-essential/gcc, needed only to compile native wheels. It creates a virtualenv at /opt/venv and puts it on PATH, then copies requirements.txt alone and pip installs into the venv, this ordering means changing app code later does not bust the dependency layer. The runtime stage starts from python:3.11-slim (no compilers) and COPY --from=builder pulls in just the finished venv, so the heavy build tooling is discarded. Environment variables put the venv on PATH and make Python log unbuffered without writing .pyc files. useradd creates a non-root user (uid 10001), the source is copied with that ownership, and USER switches to it so the container does not run as root. ENTRYPOINT in exec form runs the job as PID 1 so SIGTERM is delivered for clean shutdown, and CMD supplies default overridable arguments.",
+    "timeComplexity": "Not applicable in the algorithmic sense; build time is dominated by the pip install step, which is cached across builds when requirements.txt is unchanged, so subsequent code-only rebuilds are near-instant for the dependency layer.",
+    "spaceComplexity": "The final image size is roughly the slim Python base plus the copied virtualenv and app code; build tooling (build-essential, gcc) never ships, so the runtime image is a fraction of a single-stage build that leaves compilers in.",
+    "alternativeApproaches": [
+      {
+        "title": "Distroless final stage",
+        "explanation": "Use a distroless Python base for the runtime stage to further shrink size and attack surface. The tradeoff is no shell for debugging, so you keep a debug variant. You still COPY the venv from the builder.",
+        "code": "FROM gcr.io/distroless/python3-debian12 AS runtime\nCOPY --from=builder /opt/venv /opt/venv\nENV PATH=\"/opt/venv/bin:$PATH\"\nCOPY src/ /app/src/\nWORKDIR /app\nENTRYPOINT [\"python\", \"-m\", \"src.job\"]"
+      },
+      {
+        "title": "BuildKit cache mount for pip",
+        "explanation": "With BuildKit you can mount a persistent pip cache so packages download once across builds without being baked into a layer, speeding builds while keeping the image slim.",
+        "code": "RUN --mount=type=cache,target=/root/.cache/pip \\\n    pip install -r requirements.txt"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why run the container as a non-root user?",
+        "answer": "Running as root inside a container means a container escape or vulnerability could grant root-level access on the host, and it violates least-privilege. Creating a dedicated non-root user (and using USER to switch to it) limits what a compromised process can do, and many hardened clusters enforce runAsNonRoot in their pod security policies, so a root image would be rejected. For data jobs that pull code and dependencies, dropping root is a cheap, important hardening step."
+      },
+      {
+        "question": "Why use exec form for ENTRYPOINT instead of shell form?",
+        "answer": "Exec form (a JSON array) runs the executable directly as PID 1, so signals like SIGTERM from Kubernetes reach your Python process, allowing graceful shutdown, committing offsets, flushing, cleaning up, before SIGKILL. Shell form runs the command via /bin/sh -c, making the shell PID 1, which often does not forward SIGTERM to the child, so cleanup never runs and the process is abruptly killed. For data jobs where clean termination avoids loss or duplicates, exec form is important."
+      }
+    ],
+    "tags": ["docker", "dockerfile", "multi-stage", "non-root", "python", "coding"]
+  },
+  {
+    "id": "devops-coding-2",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a Kubernetes CronJob manifest that runs a nightly ETL container at 02:00, prevents overlapping runs, retries on failure, sets resource requests/limits, and cleans up finished jobs.",
+    "thoughtProcess": "The interviewer is checking that I know CronJob scheduling and the production-hardening knobs. My plan: set schedule to '0 2 * * *'; concurrencyPolicy Forbid so a slow run does not overlap the next; startingDeadlineSeconds to bound catch-up after missed schedules; backoffLimit for retries; activeDeadlineSeconds so a hung job is killed; ttlSecondsAfterFinished plus history limits to auto-clean finished jobs. On the pod: restartPolicy Never (Jobs manage retries), resource requests and limits to size it and get proper QoS, an image pinned by tag, and env from a ConfigMap/Secret. I'd note idempotency of the job itself is the real safeguard against duplicates.",
+    "solution": {
+      "code": "apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: nightly-etl\n  namespace: data-pipelines\nspec:\n  schedule: \"0 2 * * *\"            # every day at 02:00\n  timeZone: \"UTC\"\n  concurrencyPolicy: Forbid          # never overlap runs\n  startingDeadlineSeconds: 600       # skip if >10m late (bounds catch-up)\n  successfulJobsHistoryLimit: 3\n  failedJobsHistoryLimit: 3\n  jobTemplate:\n    spec:\n      backoffLimit: 2                 # retry failed pods up to twice\n      activeDeadlineSeconds: 3600     # kill if it runs over 1 hour\n      ttlSecondsAfterFinished: 86400  # auto-delete job 24h after finish\n      template:\n        spec:\n          restartPolicy: Never        # Job controls retries, not the pod\n          containers:\n            - name: etl\n              image: registry.example.com/nightly-etl:1.4.0\n              args: [\"--date\", \"$(RUN_DATE)\"]\n              envFrom:\n                - configMapRef:\n                    name: etl-config\n                - secretRef:\n                    name: etl-secrets\n              resources:\n                requests:\n                  cpu: \"500m\"\n                  memory: \"1Gi\"\n                limits:\n                  cpu: \"2\"\n                  memory: \"4Gi\"",
+      "language": "yaml"
+    },
+    "lineByLine": "schedule uses standard cron (minute hour ...) for 02:00 daily, with an explicit timeZone. concurrencyPolicy: Forbid stops a new run from starting while the previous is active, preventing overlap-driven duplicates. startingDeadlineSeconds bounds how late a missed run may still start, avoiding a flood of catch-up runs. successfulJobsHistoryLimit/failedJobsHistoryLimit cap retained finished Jobs so the namespace stays clean. In jobTemplate, backoffLimit retries failed pods twice with backoff, activeDeadlineSeconds kills a job exceeding one hour (guarding against hangs), and ttlSecondsAfterFinished auto-deletes the Job a day after completion. restartPolicy: Never means the Job, not the kubelet, manages retries. The container pins an explicit image tag, injects config and secrets via envFrom, and sets requests (guaranteed, used for scheduling) and limits (hard ceiling; memory over limit triggers OOMKill).",
+    "timeComplexity": "Not algorithmic; the manifest's effect is O(1) scheduling overhead. Job runtime is determined by the ETL workload itself, bounded above by activeDeadlineSeconds.",
+    "spaceComplexity": "Cluster footprint is bounded by resource requests/limits per pod and by the history limits and TTL, which cap how many finished Job objects and their pods linger, keeping etcd and namespace clutter under control.",
+    "alternativeApproaches": [
+      {
+        "title": "concurrencyPolicy Replace",
+        "explanation": "If a new run should supersede a still-running one (for example, always process the latest state and abandon a stuck prior run), use Replace instead of Forbid, which terminates the active job and starts fresh.",
+        "code": "spec:\n  concurrencyPolicy: Replace"
+      },
+      {
+        "title": "Suspend for maintenance",
+        "explanation": "Set spec.suspend: true to temporarily pause scheduling without deleting the CronJob, useful during maintenance windows or incident freezes, then set it back to false to resume.",
+        "code": "spec:\n  suspend: true"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why set restartPolicy to Never rather than OnFailure?",
+        "answer": "For Jobs, restartPolicy controls whether the kubelet restarts the container in place (OnFailure) or lets the Job create a fresh pod (Never). Using Never means each attempt is a clean new pod, which gives clearer per-attempt logs and avoids state left over from a crashed container, and the Job's backoffLimit governs retries. OnFailure restarts the same pod in place, which can be faster but muddies debugging. Many teams prefer Never with backoffLimit for clean, observable retries; the key is that a Job never uses Always."
+      },
+      {
+        "question": "Does concurrencyPolicy: Forbid fully guarantee no duplicate data?",
+        "answer": "No. Forbid only prevents two runs of the same CronJob from overlapping in time, but duplicates can still arise from retried pods after a transient failure, catch-up runs, or a manual re-run. The durable guarantee comes from making the ETL itself idempotent, overwriting the target partition for the run date, or upserting by key, so reprocessing the same window yields exactly one correct result regardless of how many times it runs. Forbid reduces one cause of duplication; idempotency eliminates the class entirely."
+      }
+    ],
+    "tags": ["kubernetes", "cronjob", "etl", "scheduling", "yaml", "coding"]
+  },
+  {
+    "id": "devops-coding-3",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a reusable Terraform module that provisions an S3 data bucket (encrypted, versioned, with a lifecycle rule) and a least-privilege IAM policy granting a pipeline read/write access to it. Show the module and how to call it.",
+    "thoughtProcess": "This tests module design, secure-by-default resources, least-privilege IAM, and clean inputs/outputs. My plan: define variables for the bucket name, environment, and expiration days. Create the bucket with server-side encryption, versioning, public access blocked, and a lifecycle rule to expire old objects. Then create an IAM policy scoped to exactly this bucket's ARN and its objects, granting only the needed actions (list/get/put/delete), not wildcard access. Expose outputs (bucket name, ARN, policy ARN) so callers can attach the policy to their pipeline role. I keep the interface minimal and make security the default, not optional.",
+    "solution": {
+      "code": "# ===== modules/data_bucket/variables.tf =====\nvariable \"bucket_name\"      { type = string }\nvariable \"environment\"      { type = string }\nvariable \"expire_days\"      { type = number  default = 90 }\n\n# ===== modules/data_bucket/main.tf =====\nresource \"aws_s3_bucket\" \"this\" {\n  bucket = var.bucket_name\n  tags   = { Environment = var.environment, ManagedBy = \"terraform\" }\n}\n\nresource \"aws_s3_bucket_versioning\" \"this\" {\n  bucket = aws_s3_bucket.this.id\n  versioning_configuration { status = \"Enabled\" }\n}\n\nresource \"aws_s3_bucket_server_side_encryption_configuration\" \"this\" {\n  bucket = aws_s3_bucket.this.id\n  rule {\n    apply_server_side_encryption_by_default { sse_algorithm = \"aws:kms\" }\n  }\n}\n\nresource \"aws_s3_bucket_public_access_block\" \"this\" {\n  bucket                  = aws_s3_bucket.this.id\n  block_public_acls       = true\n  block_public_policy     = true\n  ignore_public_acls      = true\n  restrict_public_buckets = true\n}\n\nresource \"aws_s3_bucket_lifecycle_configuration\" \"this\" {\n  bucket = aws_s3_bucket.this.id\n  rule {\n    id     = \"expire-old-objects\"\n    status = \"Enabled\"\n    expiration { days = var.expire_days }\n  }\n}\n\nresource \"aws_iam_policy\" \"pipeline_access\" {\n  name = \"${var.bucket_name}-pipeline-access\"\n  policy = jsonencode({\n    Version = \"2012-10-17\"\n    Statement = [\n      {\n        Sid      = \"ListBucket\"\n        Effect   = \"Allow\"\n        Action   = [\"s3:ListBucket\"]\n        Resource = [aws_s3_bucket.this.arn]\n      },\n      {\n        Sid      = \"ObjectRW\"\n        Effect   = \"Allow\"\n        Action   = [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\"]\n        Resource = [\"${aws_s3_bucket.this.arn}/*\"]\n      }\n    ]\n  })\n}\n\n# ===== modules/data_bucket/outputs.tf =====\noutput \"bucket_name\" { value = aws_s3_bucket.this.id }\noutput \"bucket_arn\"  { value = aws_s3_bucket.this.arn }\noutput \"policy_arn\"  { value = aws_iam_policy.pipeline_access.arn }\n\n# ===== usage: environments/prod/main.tf =====\nmodule \"raw_bucket\" {\n  source      = \"../../modules/data_bucket\"\n  bucket_name = \"acme-raw-prod\"\n  environment = \"prod\"\n  expire_days = 30\n}\n\nresource \"aws_iam_role_policy_attachment\" \"pipeline\" {\n  role       = aws_iam_role.pipeline.name\n  policy_arn = module.raw_bucket.policy_arn\n}",
+      "language": "hcl"
+    },
+    "lineByLine": "variables.tf defines the module's interface: bucket name, environment, and object expiration (defaulted to 90 days). In main.tf, aws_s3_bucket creates the bucket with tags; versioning is enabled so overwrites and deletes are recoverable; the encryption configuration enforces KMS server-side encryption by default; the public access block turns off all public exposure (secure by default); and the lifecycle configuration expires objects after expire_days to control storage cost. The aws_iam_policy is least-privilege: a ListBucket statement scoped to the bucket ARN, and a separate object statement granting only Get/Put/Delete on objects under that bucket (arn/*), with no wildcards on resources. outputs.tf exposes the bucket name, ARN, and policy ARN so callers can consume them. The usage block instantiates the module for a prod raw bucket and attaches the returned policy ARN to the pipeline's IAM role, wiring least-privilege access cleanly.",
+    "timeComplexity": "Not applicable; terraform apply time scales with the number of resources created (a small constant here) and the provider's API latency, not an algorithmic complexity.",
+    "spaceComplexity": "Not applicable in code terms; the module's state footprint is the handful of resources it manages, and the bucket's storage cost is bounded over time by the lifecycle expiration rule.",
+    "alternativeApproaches": [
+      {
+        "title": "for_each to create multiple zone buckets",
+        "explanation": "Instead of calling the module once per zone, pass a set/map and use for_each on the module to create raw, staging, and curated buckets consistently from one call, reducing duplication.",
+        "code": "module \"buckets\" {\n  for_each    = toset([\"raw\", \"staging\", \"curated\"])\n  source      = \"../../modules/data_bucket\"\n  bucket_name = \"acme-${each.key}-prod\"\n  environment = \"prod\"\n}"
+      },
+      {
+        "title": "Attach policy via role in the module",
+        "explanation": "For tighter encapsulation you could accept a role name as input and create the attachment inside the module, so callers just pass the role. The tradeoff is a less flexible interface; exposing the policy ARN keeps the module reusable across role setups."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why scope the IAM policy to the bucket ARN instead of using a wildcard resource?",
+        "answer": "Least privilege: scoping Resource to this specific bucket's ARN and its objects (arn/*) means the pipeline can only touch this bucket, so a compromised or buggy pipeline cannot read or delete data in other buckets. A wildcard like s3:* on * would grant sweeping access far beyond what the job needs, dramatically widening the blast radius of any credential leak. Narrow, resource-scoped policies are a core security practice and are exactly what auditors and policy-as-code checks look for."
+      },
+      {
+        "question": "Why enable versioning and a public access block by default in the module?",
+        "answer": "Baking these into the module makes secure, recoverable buckets the default rather than something each caller must remember to add. Versioning protects against accidental overwrites and deletes (and supports recovery and some table formats), while the public access block prevents the very common and dangerous misconfiguration of an inadvertently public data bucket. Encoding good defaults in a reusable module means every bucket created through it is consistently safe, which is a major benefit of modularizing infrastructure patterns."
+      }
+    ],
+    "tags": ["terraform", "module", "s3", "iam", "least-privilege", "coding"]
+  },
+  {
+    "id": "devops-coding-4",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a GitHub Actions CI workflow for a data project that, on pull requests, installs dependencies with caching, runs Python linting and pytest, and runs dbt build with tests against a warehouse using secrets. Fail the pipeline if any step fails.",
+    "thoughtProcess": "The interviewer wants a realistic data CI workflow: triggered on pull requests, dependency caching for speed, linting and unit tests, and dbt build with data tests, using secrets rather than hardcoded credentials. My plan: trigger on pull_request; set up Python; cache pip; install requirements; run ruff (lint) and pytest; then run dbt deps and dbt build (which runs models and their tests) against the warehouse, passing credentials via env from GitHub secrets. Each step's failure fails the job by default. I'd note running against a sample/CI dataset, and using state selection to build only changed models would be a further optimization.",
+    "solution": {
+      "code": "name: ci\n\non:\n  pull_request:\n    branches: [ main ]\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n    env:\n      DBT_PROFILES_DIR: ./ci\n      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}\n      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}\n      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}\n    steps:\n      - name: Checkout\n        uses: actions/checkout@v4\n\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: \"3.11\"\n          cache: \"pip\"          # cache pip downloads for speed\n\n      - name: Install dependencies\n        run: |\n          python -m pip install --upgrade pip\n          pip install -r requirements.txt\n\n      - name: Lint (ruff)\n        run: ruff check .\n\n      - name: Unit tests (pytest)\n        run: pytest -q\n\n      - name: dbt deps\n        run: dbt deps\n\n      - name: dbt build (models + data tests)\n        run: dbt build --target ci --fail-fast",
+      "language": "yaml"
+    },
+    "lineByLine": "The on: pull_request trigger runs the workflow for PRs targeting main, so checks gate merges. The job runs on an Ubuntu runner and sets env vars, including warehouse credentials sourced from GitHub secrets (never hardcoded). Checkout pulls the code. setup-python installs Python 3.11 and, with cache: pip, caches pip downloads between runs to speed installs. The install step upgrades pip and installs requirements. Lint runs ruff and, on any violation, exits non-zero, failing the job. Unit tests run pytest. dbt deps installs dbt package dependencies. dbt build compiles and runs the models and executes their data tests in dependency order against the ci target; --fail-fast stops on the first failure. Because every step fails the job on a non-zero exit by default, any lint, test, or dbt failure blocks the pull request.",
+    "timeComplexity": "Not algorithmic; wall-clock time is dominated by dependency install (mitigated by caching) and the dbt build, which scales with the number of models/tests executed, reduced if you scope to changed models.",
+    "spaceComplexity": "Not applicable; runner resources are ephemeral. The main persistent artifact is the pip cache, which trades a little storage for faster subsequent runs.",
+    "alternativeApproaches": [
+      {
+        "title": "Build only changed models with state selection",
+        "explanation": "Compare against a stored production manifest and build only modified models plus their downstream dependents, cutting CI time on large projects while still catching downstream breakage.",
+        "code": "- name: dbt build (changed + downstream)\n  run: dbt build --select state:modified+ --state ./prod-manifest --target ci"
+      },
+      {
+        "title": "Parallelize lint and tests as separate jobs",
+        "explanation": "Split linting, unit tests, and dbt into separate jobs (with a shared setup) so they run concurrently, reducing total wall-clock time to roughly the slowest job instead of the sum of all steps."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why does dbt build cover more than dbt run in CI?",
+        "answer": "dbt run only executes the models (materializes them), whereas dbt build runs models, tests, snapshots, and seeds together in dependency order, so it both builds a model and immediately runs its data tests (uniqueness, not-null, relationships, custom assertions). In CI you want dbt build because it validates not just that transformations execute but that the resulting data meets its declared quality expectations, catching data-shape and integrity problems that dbt run alone would miss. It is the more complete correctness gate for a pull request."
+      },
+      {
+        "question": "Why inject warehouse credentials via GitHub secrets instead of the repo?",
+        "answer": "Committing credentials to the repository exposes them to anyone with read access and bakes them into git history permanently, a serious leak risk. GitHub secrets store them encrypted and inject them only into the workflow environment at run time, never printing them in logs. This keeps credentials out of source control and out of the built artifacts, following the principle that secrets are provided at run time from a secure store. For stronger posture, teams use short-lived credentials via OIDC federation rather than long-lived passwords even in secrets."
+      }
+    ],
+    "tags": ["ci-cd", "github-actions", "dbt", "pytest", "secrets", "coding"]
+  },
+  {
+    "id": "devops-coding-5",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Write a container entrypoint/healthcheck shell script for a data service that waits for a dependency (a database) to be reachable before starting the app, handles SIGTERM for graceful shutdown, and exits non-zero on failure.",
+    "thoughtProcess": "This checks shell scripting for container lifecycle: dependency readiness gating, signal handling for graceful shutdown, and proper exit codes. My plan: use set -e so failures propagate; write a wait loop that polls the database host/port with a timeout so the app does not start before its dependency is up (avoiding crash loops); trap SIGTERM to forward it to the child process for graceful shutdown; and exec the app so it becomes PID 1 and receives signals directly. I'll also include a separate lightweight healthcheck command usable by Docker/K8s probes. Exit non-zero if the dependency never comes up so the orchestrator can react.",
+    "solution": {
+      "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nDB_HOST=\"${DB_HOST:-postgres}\"\nDB_PORT=\"${DB_PORT:-5432}\"\nWAIT_TIMEOUT=\"${WAIT_TIMEOUT:-60}\"\n\n# --- healthcheck mode: used by Docker/K8s probes ---\nif [[ \"${1:-}\" == \"healthcheck\" ]]; then\n  # succeed only if the app's health endpoint responds\n  curl -fsS \"http://localhost:8080/health\" >/dev/null || exit 1\n  exit 0\nfi\n\n# --- wait for the database dependency to be reachable ---\necho \"Waiting up to ${WAIT_TIMEOUT}s for ${DB_HOST}:${DB_PORT}...\"\nelapsed=0\nuntil (echo > \"/dev/tcp/${DB_HOST}/${DB_PORT}\") 2>/dev/null; do\n  elapsed=$((elapsed + 2))\n  if (( elapsed >= WAIT_TIMEOUT )); then\n    echo \"ERROR: ${DB_HOST}:${DB_PORT} not reachable after ${WAIT_TIMEOUT}s\" >&2\n    exit 1\n  fi\n  sleep 2\ndone\necho \"Dependency is up. Starting app.\"\n\n# --- graceful shutdown: forward SIGTERM to the child ---\nchild_pid=\"\"\nterm_handler() {\n  echo \"SIGTERM received, forwarding to app (pid ${child_pid})...\"\n  [[ -n \"${child_pid}\" ]] && kill -TERM \"${child_pid}\" 2>/dev/null\n  wait \"${child_pid}\"\n  exit $?\n}\ntrap term_handler SIGTERM\n\n# start the app in the background so the trap stays responsive\npython -m src.job \"$@\" &\nchild_pid=$!\nwait \"${child_pid}\"",
+      "language": "bash"
+    },
+    "lineByLine": "set -euo pipefail makes the script fail fast on errors, unset variables, and broken pipes. DB_HOST/DB_PORT/WAIT_TIMEOUT read from env with sensible defaults. The healthcheck branch lets the same script serve as a probe: it curls the app's /health endpoint and exits non-zero if it fails, which Docker HEALTHCHECK or a Kubernetes exec probe can call. The wait loop uses bash's /dev/tcp to test whether the database port is open, retrying every 2 seconds and exiting 1 (with a stderr message) if the dependency is not reachable within the timeout, so the container fails clearly instead of crash-looping against a missing dependency. For graceful shutdown, term_handler forwards SIGTERM to the child app and waits for it to exit, so the app can clean up before termination. The app is started in the background and its PID captured, then wait blocks on it; running it backgrounded (rather than exec) keeps the trap active so SIGTERM is caught and forwarded.",
+    "timeComplexity": "The dependency wait is O(WAIT_TIMEOUT) in the worst case (polling until timeout); once the app starts, the script simply waits on it. Not an algorithmic concern.",
+    "spaceComplexity": "Constant; the script holds only a few variables and one child process handle, with negligible memory footprint beyond the app it launches.",
+    "alternativeApproaches": [
+      {
+        "title": "exec the app directly (no manual trap)",
+        "explanation": "If you do not need to run pre-shutdown logic in the script, exec the app so it fully replaces the shell as PID 1 and receives SIGTERM directly. This is simpler but gives up the ability to run script-level cleanup on shutdown.",
+        "code": "# after the wait loop:\nexec python -m src.job \"$@\""
+      },
+      {
+        "title": "Use an init like tini for signal handling",
+        "explanation": "Add tini as the container entrypoint (ENTRYPOINT [\"/tini\", \"--\"]) so a proper init reaps zombies and forwards signals, letting you run the app without hand-rolling signal forwarding in bash."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why wait for the database before starting the app instead of letting it crash and retry?",
+        "answer": "Letting the app crash-loop against a not-yet-ready dependency produces noisy restarts, misleading error logs, and wasted scheduling churn, and it can trip liveness probes or backoff limits. Gating startup with a bounded wait lets the app start cleanly once the dependency is reachable, and exiting non-zero after a timeout signals a genuine problem to the orchestrator. That said, a robust app should also handle the dependency dropping at runtime with reconnect logic; the startup wait handles the common ordering race at boot without relying on crash-retry."
+      },
+      {
+        "question": "Why run the app in the background with wait instead of just calling it directly?",
+        "answer": "If you call the app directly (not backgrounded), the shell blocks in the foreground and cannot run its SIGTERM trap until that command returns, so signals may not be handled promptly. Starting the app in the background, capturing its PID, and using wait keeps the shell responsive to the trap, so when SIGTERM arrives the handler runs and forwards it to the child for graceful shutdown. Alternatively, exec-ing the app hands PID 1 directly to it, which also receives signals, but then the script cannot perform its own cleanup, which is the tradeoff."
+      }
+    ],
+    "tags": ["docker", "entrypoint", "healthcheck", "bash", "graceful-shutdown", "coding"]
+  },
+  {
+    "id": "devops-coding-6",
+    "tech": "devops",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a Kubernetes Job manifest to run a one-off PySpark data backfill, correctly sizing memory (accounting for Spark overhead beyond the JVM heap), mounting credentials from a Secret, setting a deadline, and running as non-root.",
+    "thoughtProcess": "This combines Job semantics with the classic Spark-on-Kubernetes memory gotcha. The interviewer wants me to show I know a Job is right for a one-off backfill (not a Deployment), that container memory must exceed the JVM heap to cover Spark overhead and PySpark workers (otherwise OOMKilled), and standard hardening: secrets via env/volume, an activeDeadlineSeconds, backoffLimit, non-root securityContext. My plan: single-container Job (assume the driver requests executors via the k8s API or a simple local/client run for the backfill), set memory limit above the heap by a healthy overhead margin, inject AWS creds from a Secret, set restartPolicy Never, and add securityContext runAsNonRoot. I'll comment the memory math explicitly.",
+    "solution": {
+      "code": "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: spark-backfill-2024q1\n  namespace: data-pipelines\nspec:\n  backoffLimit: 1                    # one-off: retry at most once\n  activeDeadlineSeconds: 7200        # hard cap: 2 hours\n  ttlSecondsAfterFinished: 172800    # clean up after 48h\n  template:\n    spec:\n      restartPolicy: Never\n      securityContext:\n        runAsNonRoot: true\n        runAsUser: 10001\n        fsGroup: 10001\n      containers:\n        - name: spark-backfill\n          image: registry.example.com/spark-job:3.5.1\n          args:\n            - \"--start\"\n            - \"2024-01-01\"\n            - \"--end\"\n            - \"2024-03-31\"\n          env:\n            # JVM heap is 6g; container limit is 8Gi to leave ~2Gi for\n            # off-heap shuffle buffers + PySpark Python worker memory,\n            # otherwise the container is OOMKilled even with a healthy heap.\n            - name: SPARK_DRIVER_MEMORY\n              value: \"6g\"\n            - name: SPARK_EXECUTOR_MEMORY_OVERHEAD\n              value: \"1536m\"\n            - name: AWS_ACCESS_KEY_ID\n              valueFrom:\n                secretKeyRef: { name: aws-creds, key: access_key_id }\n            - name: AWS_SECRET_ACCESS_KEY\n              valueFrom:\n                secretKeyRef: { name: aws-creds, key: secret_access_key }\n          resources:\n            requests:\n              cpu: \"2\"\n              memory: \"8Gi\"\n            limits:\n              cpu: \"4\"\n              memory: \"8Gi\"          # == request => Guaranteed QoS",
+      "language": "yaml"
+    },
+    "lineByLine": "kind: Job (not Deployment) is correct for a one-off backfill that runs to completion. backoffLimit: 1 limits retries for this one-shot task, activeDeadlineSeconds caps total runtime at 2 hours to kill a hung backfill, and ttlSecondsAfterFinished auto-deletes the Job after 48 hours. restartPolicy: Never means each attempt is a fresh pod managed by the Job. The pod securityContext enforces non-root (runAsNonRoot, a fixed uid, and fsGroup for mounted file ownership). The container pins the Spark image by version and passes the backfill date range as args. In env, SPARK_DRIVER_MEMORY sets the JVM heap to 6g while the container memory limit is 8Gi, the extra ~2Gi is deliberate headroom for Spark's off-heap/shuffle buffers and PySpark Python worker processes, which live outside the JVM heap but still count against the container's cgroup; under-sizing this is the classic cause of OOMKilled Spark pods. AWS credentials are injected from a Secret via secretKeyRef rather than baked into the image. resources set requests equal to limits for memory so the pod gets Guaranteed QoS, minimizing eviction risk for the long-running backfill.",
+    "timeComplexity": "Not algorithmic; runtime is the backfill's own processing time over the date range, bounded above by activeDeadlineSeconds. Retries add at most one extra attempt via backoffLimit.",
+    "spaceComplexity": "Memory footprint is bounded by the 8Gi container limit (heap plus overhead); cluster clutter is bounded by ttlSecondsAfterFinished cleaning up the finished Job and its pod.",
+    "alternativeApproaches": [
+      {
+        "title": "Use the Spark Operator (SparkApplication)",
+        "explanation": "For a real distributed Spark job with separate driver/executor pods, declare a SparkApplication custom resource so the operator manages the driver and executor pods, dynamic allocation, and lifecycle, rather than a single Job pod.",
+        "code": "apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata: { name: spark-backfill }\nspec:\n  type: Python\n  mode: cluster\n  mainApplicationFile: local:///app/job.py"
+      },
+      {
+        "title": "Workload identity instead of static keys",
+        "explanation": "Rather than mounting AWS static keys from a Secret, map the pod's service account to an IAM role (IRSA) so it receives temporary, auto-rotating credentials scoped to just the needed S3 paths, removing static keys entirely.",
+        "code": "spec:\n  template:\n    spec:\n      serviceAccountName: spark-backfill-sa  # annotated with the IAM role"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is the container memory limit higher than the Spark JVM heap?",
+        "answer": "The container's cgroup memory limit governs total process memory, not just the JVM heap. Spark uses significant memory beyond the heap: off-heap and shuffle buffers, plus, for PySpark, separate Python worker processes, all of which count against the container limit. If you size the limit to only the heap (say 6Gi for a 6g heap), a shuffle or Python payload pushes total usage over the limit and the kernel OOM-kills the container even though the heap looked fine. Setting the limit above the heap (here 8Gi) with explicit memory overhead leaves room for these non-heap consumers, preventing the classic OOMKilled failure."
+      },
+      {
+        "question": "Why prefer workload identity (IRSA) over mounting static AWS keys from a Secret?",
+        "answer": "Static keys in a Secret are long-lived: if leaked, they work until manually rotated, and they must be stored, distributed, and rotated by hand. Workload identity maps the pod's service account to an IAM role, so the pod automatically receives temporary, frequently-rotated credentials scoped to exactly the resources it needs, with no static secret anywhere in the image or manifest. This eliminates the biggest source of leaked cloud credentials and enforces least privilege per workload, which is why it is the recommended approach for Spark jobs on Kubernetes over embedding access keys."
+      }
+    ],
+    "tags": ["kubernetes", "job", "spark", "memory", "secrets", "coding"]
+  }
+]

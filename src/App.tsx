@@ -5,10 +5,11 @@ import { LearnTab } from './domains/data-engineering/components/LearnTab';
 import { InterviewPrepTab } from './domains/data-engineering/components/InterviewPrepTab';
 import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
 import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
+import { ProjectsTab } from './domains/data-engineering/components/ProjectsTab';
 import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
 import type { Topic, Category, Domain } from './core/types/types';
-import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft } from 'lucide-react';
+import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft, Rocket } from 'lucide-react';
 import { PathSelection } from './domains/data-engineering/components/PathSelection';
 import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab';
 import { FrontendPlaygroundTab } from './domains/frontend/components/FrontendPlaygroundTab';
@@ -24,7 +25,7 @@ export default function App() {
   const [selectedTech, setSelectedTech] = useState<Category | null>(null);
   const [frontendTopics, setFrontendTopics] = useState<Topic[]>([]);
   const [backendTopics, setBackendTopics] = useState<Topic[]>([]);
-  const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'playground' | 'gemini'>('learn');
+  const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'projects' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -92,6 +93,7 @@ export default function App() {
       domain={currentDomain}
       onSelectTech={async (tech) => {
         setSelectedTech(tech);
+        setActiveTab('learn');
         if (currentDomain === 'frontend') {
           const manifest = await loadFrontendManifest(tech);
           const topics = manifest ? manifestToTopics(manifest) : [];
@@ -214,6 +216,7 @@ export default function App() {
                   {activeTab === 'learn' && <><BookOpen size={16} /> Learn</>}
                   {activeTab === 'interview' && <><GraduationCap size={16} /> Interview Prep</>}
                   {activeTab === 'practice' && <><CheckSquare size={16} /> Coding Practice</>}
+                  {activeTab === 'projects' && <><Rocket size={16} /> Projects</>}
                   {activeTab === 'playground' && <><Terminal size={16} /> Playground</>}
                   {activeTab === 'gemini' && <><Sparkles size={16} color="#a855f7" /> Ask Gemini</>}
                 </div>
@@ -250,6 +253,7 @@ export default function App() {
                     { id: 'learn', label: 'Learn', icon: BookOpen },
                     { id: 'interview', label: 'Interview Prep', icon: GraduationCap },
                     { id: 'practice', label: 'Coding Practice', icon: CheckSquare },
+                    ...(!isFrontend && !isBackend ? [{ id: 'projects', label: 'Projects', icon: Rocket }] : []),
                     { id: 'playground', label: 'Playground', icon: Terminal },
                     { id: 'gemini', label: 'Ask Gemini', icon: Sparkles, color: '#a855f7' }
                   ].map((item) => (
@@ -316,10 +320,11 @@ export default function App() {
                 flex: 1,
                 paddingRight: '12px'
               }}>
-                {activeTab === 'playground' ? 'Interactive Playground' : 
+                {activeTab === 'playground' ? 'Interactive Playground' :
                  activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
                  activeTab === 'interview' ? 'Interview Preparation' :
                  activeTab === 'practice' ? 'Coding Practice' :
+                 activeTab === 'projects' ? 'Projects' :
                  'Ask Gemini'}
               </h1>
 
@@ -392,6 +397,16 @@ export default function App() {
                   <CheckSquare size={15} />
                   Coding Practice
                 </button>
+                {!isFrontend && !isBackend && (
+                  <button
+                    className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('projects')}
+                    style={{ borderRadius: '8px', padding: '6px 14px' }}
+                  >
+                    <Rocket size={15} />
+                    Projects
+                  </button>
+                )}
                 <button
                   className={`tab-btn ${activeTab === 'playground' ? 'active' : ''}`}
                   onClick={() => setActiveTab('playground')}
@@ -451,10 +466,11 @@ export default function App() {
               WebkitTextFillColor: 'transparent',
               letterSpacing: '-0.5px'
             }}>
-              {activeTab === 'playground' ? 'Interactive Playground' : 
+              {activeTab === 'playground' ? 'Interactive Playground' :
                activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
                activeTab === 'interview' ? 'Interview Preparation' :
                activeTab === 'practice' ? 'Coding Practice' :
+               activeTab === 'projects' ? 'Build-Along Projects' :
                'Ask Gemini'}
             </h1>
             <span style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-inner)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
@@ -470,6 +486,7 @@ export default function App() {
                 </>
               ) : activeTab === 'interview' ? 'Q&A Flashcards' :
                  activeTab === 'practice' ? 'Interactive Challenges' :
+                 activeTab === 'projects' ? 'Portfolio-Ready Builds' :
                  'AI Assistant'}
             </span>
           </div>
@@ -529,6 +546,10 @@ export default function App() {
                 theme={theme}
               />
             )
+          )}
+
+          {activeTab === 'projects' && !isFrontend && !isBackend && (
+            <ProjectsTab />
           )}
 
           {activeTab === 'playground' && (

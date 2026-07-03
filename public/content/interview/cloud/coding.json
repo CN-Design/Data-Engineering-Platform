@@ -1,0 +1,224 @@
+[
+  {
+    "id": "cloud-coding-1",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Using boto3, write a function that lists all object keys under a given S3 prefix, correctly handling pagination for buckets with more than 1000 objects. It should return the full list of keys.",
+    "thoughtProcess": "The classic trap here is that S3's ListObjectsV2 returns at most 1000 keys per call and truncates the rest, so a naive list_objects_v2 call silently misses most keys in a large prefix. The interviewer is checking that I know to paginate. The cleanest way in boto3 is a paginator, which transparently follows the continuation token; the manual alternative is looping on IsTruncated and NextContinuationToken. I would also guard against 'Contents' being absent when a prefix has no objects, and I would prefer yielding/collecting keys rather than building giant intermediate structures. I would mention that listing is billed per request and is slow for millions of tiny objects, which is a data-layout smell.",
+    "solution": {
+      "code": "import boto3\n\ndef list_keys(bucket: str, prefix: str = \"\") -> list[str]:\n    s3 = boto3.client(\"s3\")\n    paginator = s3.get_paginator(\"list_objects_v2\")\n    keys: list[str] = []\n    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):\n        # 'Contents' is absent when a page matches no objects\n        for obj in page.get(\"Contents\", []):\n            keys.append(obj[\"Key\"])\n    return keys\n\n\nif __name__ == \"__main__\":\n    for k in list_keys(\"my-data-lake\", \"raw/events/2026/07/\"):\n        print(k)",
+      "language": "python"
+    },
+    "lineByLine": "boto3.client('s3') creates the S3 client using the ambient credentials (ideally an assumed role, not static keys). get_paginator('list_objects_v2') returns a paginator that transparently handles the continuation token. paginate(Bucket, Prefix) yields pages, each with up to 1000 objects. page.get('Contents', []) safely returns an empty list when a page has no matching objects, avoiding a KeyError on empty prefixes. We append each object's Key to the result. The __main__ block demonstrates listing under a date prefix.",
+    "timeComplexity": "O(N) in the number of keys returned, spread across ceil(N/1000) list requests, since each request returns up to 1000 keys. Latency is dominated by the number of round trips, so many tiny objects mean many slow, billable list calls.",
+    "spaceComplexity": "O(N) because we accumulate every key into a list. For very large prefixes prefer a generator that yields keys one page at a time so memory stays O(page size) instead of O(N).",
+    "alternativeApproaches": [
+      {
+        "title": "Manual continuation-token loop",
+        "explanation": "Instead of a paginator, call list_objects_v2 directly and loop while IsTruncated is true, passing NextContinuationToken. This is more verbose and error-prone but shows you understand the underlying pagination mechanism the paginator abstracts.",
+        "code": "def list_keys_manual(bucket, prefix=\"\"):\n    s3 = boto3.client(\"s3\")\n    keys, token = [], None\n    while True:\n        kwargs = {\"Bucket\": bucket, \"Prefix\": prefix}\n        if token:\n            kwargs[\"ContinuationToken\"] = token\n        resp = s3.list_objects_v2(**kwargs)\n        keys += [o[\"Key\"] for o in resp.get(\"Contents\", [])]\n        if not resp.get(\"IsTruncated\"):\n            return keys\n        token = resp[\"NextContinuationToken\"]"
+      },
+      {
+        "title": "Generator for streaming",
+        "explanation": "Yield keys page by page instead of returning a full list, so callers can process huge prefixes without holding every key in memory. This keeps space at O(page size) and lets processing overlap with fetching."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why does the naive list_objects_v2 call miss objects?",
+        "answer": "ListObjectsV2 returns at most 1000 keys per response and sets IsTruncated to true with a NextContinuationToken when more exist. A single call without following the token silently returns only the first page, so on any prefix with more than 1000 objects you miss the rest. This is a very common bug. Using a paginator (or looping on the continuation token) ensures you retrieve every page and thus every key."
+      },
+      {
+        "question": "How would you make this efficient for millions of objects?",
+        "answer": "Prefer a generator that yields keys page by page so memory stays bounded, narrow the Prefix as much as possible to reduce keys scanned, and consider using S3 Inventory (a scheduled report of all objects) instead of live listing when you repeatedly need a full catalog, since Inventory avoids millions of expensive list requests. If listing is chronically slow, it usually signals a small-files problem that compaction would fix, which is often the real answer."
+      }
+    ],
+    "tags": ["boto3", "s3", "pagination", "list-objects", "python", "beginner"]
+  },
+  {
+    "id": "cloud-coding-2",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a boto3 function to copy all objects from one S3 prefix to another (possibly in a different bucket), preserving the sub-path structure and skipping objects that already exist at the destination with the same size. Use server-side copy, not download-and-reupload.",
+    "thoughtProcess": "Key points the interviewer wants: use copy_object/copy (server-side) so bytes never transit the client, which is faster and avoids egress; paginate the source listing; correctly rewrite each key from the source prefix to the destination prefix; and add an idempotency check so re-runs skip unchanged objects. For the skip check I can HEAD the destination and compare size (a cheap heuristic; ETag comparison is more precise but ETag is not a plain MD5 for multipart objects, so size is a pragmatic choice). I would use boto3's managed copy() which transparently uses multipart for large objects. I would also note this is single-threaded; a real bulk copy should parallelize or use S3 Batch Operations / aws s3 sync.",
+    "solution": {
+      "code": "import boto3\nfrom botocore.exceptions import ClientError\n\ndef sync_prefix(src_bucket, src_prefix, dst_bucket, dst_prefix):\n    s3 = boto3.client(\"s3\")\n    paginator = s3.get_paginator(\"list_objects_v2\")\n    copied, skipped = 0, 0\n    for page in paginator.paginate(Bucket=src_bucket, Prefix=src_prefix):\n        for obj in page.get(\"Contents\", []):\n            key = obj[\"Key\"]\n            rel = key[len(src_prefix):].lstrip(\"/\")\n            dst_key = f\"{dst_prefix.rstrip('/')}/{rel}\"\n            if _same_size(s3, dst_bucket, dst_key, obj[\"Size\"]):\n                skipped += 1\n                continue\n            s3.copy({\"Bucket\": src_bucket, \"Key\": key}, dst_bucket, dst_key)\n            copied += 1\n    return {\"copied\": copied, \"skipped\": skipped}\n\ndef _same_size(s3, bucket, key, size):\n    try:\n        head = s3.head_object(Bucket=bucket, Key=key)\n        return head[\"ContentLength\"] == size\n    except ClientError as e:\n        if e.response[\"Error\"][\"Code\"] in (\"404\", \"NoSuchKey\"):\n            return False\n        raise",
+      "language": "python"
+    },
+    "lineByLine": "We paginate the source prefix to get every object. For each object, rel strips the source prefix off the key to get the relative sub-path, and dst_key re-anchors it under the destination prefix, preserving structure. _same_size does a HEAD on the destination: if it exists with identical size we skip (idempotency), and a 404 means it does not exist so we copy. s3.copy performs a server-side copy (managed, using multipart for large objects) so bytes move within S3, never through the client. We tally copied vs skipped. Unexpected ClientErrors are re-raised rather than swallowed.",
+    "timeComplexity": "O(N) copies plus O(N) HEAD requests for N source objects, serialized. Wall-clock is dominated by per-object request latency; parallelizing across a thread pool or using S3 Batch Operations reduces it substantially.",
+    "spaceComplexity": "O(1) additional memory beyond a single page of listing results, since we stream page by page and never hold object bodies (server-side copy) or all keys at once.",
+    "alternativeApproaches": [
+      {
+        "title": "aws s3 sync / S3 Batch Operations",
+        "explanation": "For real bulk copies, aws s3 sync handles diffing and parallelism out of the box, and S3 Batch Operations can copy billions of objects driven by an inventory manifest with retries and reporting, far outperforming a hand-rolled single-threaded loop.",
+        "code": "aws s3 sync s3://src-bucket/src-prefix/ s3://dst-bucket/dst-prefix/"
+      },
+      {
+        "title": "Parallel copy with a thread pool",
+        "explanation": "Because each copy is an independent I/O-bound request, a ThreadPoolExecutor issuing many copy() calls concurrently dramatically cuts wall-clock time compared to the serial loop, while keeping the same server-side-copy and skip logic."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why compare size instead of ETag for the skip check?",
+        "answer": "ETag equals the MD5 of the object only for single-part uploads; for multipart uploads it is a hash of the part hashes with a part-count suffix, so it depends on the part size used and is not a stable content hash you can reliably reproduce on the source. Comparing ContentLength is a cheap, robust heuristic that catches missing or differently-sized objects. For stronger guarantees you can store and compare a content hash in object metadata, but size plus existence is the pragmatic default for a sync."
+      },
+      {
+        "question": "How does server-side copy avoid egress cost and improve speed?",
+        "answer": "copy/copy_object tells S3 to duplicate the object internally, so the data never leaves S3 to travel to your client and back. Within the same region there is no data-transfer charge and it is fast because it uses S3's internal bandwidth. Download-then-reupload would pull every byte to the client (egress cost and latency) and push it back (request cost), which is far slower and more expensive. For cross-region copies you still pay cross-region transfer, but you avoid routing bytes through the client."
+      }
+    ],
+    "tags": ["boto3", "s3", "copy", "sync", "idempotency", "python", "intermediate"]
+  },
+  {
+    "id": "cloud-coding-3",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a least-privilege IAM policy (JSON) for an ETL job that reads from an S3 raw bucket, writes to a curated bucket, and must decrypt/encrypt using a specific KMS key. It must also require that all uploads are encrypted with that key. Deny anything broader.",
+    "thoughtProcess": "The interviewer wants a policy that grants exactly what the job needs and nothing more, scoped to specific resources with conditions. I need: read (GetObject) plus ListBucket on the raw bucket, write (PutObject) plus ListBucket on the curated bucket, and the KMS actions the object encryption requires (Decrypt for reading, GenerateDataKey and Decrypt for writing SSE-KMS objects). ListBucket is on the bucket ARN itself while object actions are on bucket-ARN/*, a distinction candidates often get wrong. I should scope object read/write to the relevant prefixes if possible. The tightening touch is a condition on PutObject requiring s3:x-amz-server-side-encryption to be aws:kms and the specific key, so unencrypted or wrong-key uploads are rejected. KMS actions must reference the exact key ARN, not a wildcard.",
+    "solution": {
+      "code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Sid\": \"ReadRawBucket\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\"],\n      \"Resource\": \"arn:aws:s3:::acme-raw/incoming/*\"\n    },\n    {\n      \"Sid\": \"ListRawAndCurated\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:ListBucket\"],\n      \"Resource\": [\"arn:aws:s3:::acme-raw\", \"arn:aws:s3:::acme-curated\"],\n      \"Condition\": {\n        \"StringLike\": {\"s3:prefix\": [\"incoming/*\", \"curated/*\"]}\n      }\n    },\n    {\n      \"Sid\": \"WriteCuratedEncrypted\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:PutObject\"],\n      \"Resource\": \"arn:aws:s3:::acme-curated/curated/*\",\n      \"Condition\": {\n        \"StringEquals\": {\n          \"s3:x-amz-server-side-encryption\": \"aws:kms\",\n          \"s3:x-amz-server-side-encryption-aws-kms-key-id\": \"arn:aws:kms:us-east-1:111122223333:key/abcd-1234\"\n        }\n      }\n    },\n    {\n      \"Sid\": \"UseKmsKey\",\n      \"Effect\": \"Allow\",\n      \"Action\": [\"kms:Decrypt\", \"kms:GenerateDataKey\"],\n      \"Resource\": \"arn:aws:kms:us-east-1:111122223333:key/abcd-1234\"\n    },\n    {\n      \"Sid\": \"DenyUnencryptedUploads\",\n      \"Effect\": \"Deny\",\n      \"Action\": [\"s3:PutObject\"],\n      \"Resource\": \"arn:aws:s3:::acme-curated/*\",\n      \"Condition\": {\n        \"StringNotEquals\": {\"s3:x-amz-server-side-encryption\": \"aws:kms\"}\n      }\n    }\n  ]\n}",
+      "language": "json"
+    },
+    "lineByLine": "ReadRawBucket allows GetObject only on the raw bucket's incoming prefix objects. ListRawAndCurated allows ListBucket on the bucket ARNs (not the /* object ARNs, which is the correct target for listing), constrained by an s3:prefix condition so listing is limited to the relevant prefixes. WriteCuratedEncrypted allows PutObject only under the curated prefix and only when the request specifies SSE-KMS with the exact key, so wrong-key or unencrypted writes are refused. UseKmsKey grants exactly Decrypt (to read encrypted raw objects and to write, since SSE-KMS needs it) and GenerateDataKey (required to encrypt new objects) on the single key ARN. DenyUnencryptedUploads is an explicit deny backstop: any PutObject to the curated bucket not using aws:kms is rejected regardless of other allows, since explicit deny always wins.",
+    "timeComplexity": "Not applicable; this is a declarative policy. IAM evaluation is effectively constant per request against the applicable statements.",
+    "spaceComplexity": "Not applicable; the policy is a small static document.",
+    "alternativeApproaches": [
+      {
+        "title": "Enforce encryption via bucket policy instead of identity policy",
+        "explanation": "Rather than relying on each identity policy to require encryption, attach a resource-based bucket policy on acme-curated that denies any PutObject lacking SSE-KMS with the required key. This enforces the rule for every principal writing to the bucket, not just this role, which is more robust.",
+        "code": "{\n  \"Effect\": \"Deny\",\n  \"Principal\": \"*\",\n  \"Action\": \"s3:PutObject\",\n  \"Resource\": \"arn:aws:s3:::acme-curated/*\",\n  \"Condition\": {\"StringNotEquals\": {\"s3:x-amz-server-side-encryption-aws-kms-key-id\": \"arn:aws:kms:us-east-1:111122223333:key/abcd-1234\"}}\n}"
+      },
+      {
+        "title": "ABAC with tags",
+        "explanation": "Instead of hardcoding bucket ARNs, use conditions on resource tags (for example aws:ResourceTag/project matching the principal's tag) so one reusable policy grants access to any correctly tagged bucket, scaling access control without editing the policy per bucket."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is ListBucket scoped to the bucket ARN while GetObject uses bucket-ARN/*?",
+        "answer": "s3:ListBucket is a bucket-level operation that acts on the bucket container, so its Resource must be the bucket ARN (arn:aws:s3:::acme-raw). Object-level actions like GetObject and PutObject act on objects, so their Resource must be the object ARN pattern (arn:aws:s3:::acme-raw/prefix/*). Mixing these up, for example putting ListBucket on the /* ARN, silently fails to grant listing. Using the s3:prefix condition on ListBucket further restricts which keys can be listed, tightening least privilege."
+      },
+      {
+        "question": "Why include both an allow with an encryption condition and an explicit deny?",
+        "answer": "The conditional allow grants PutObject only when the correct SSE-KMS key is specified, which handles the happy path. The explicit deny is defense in depth: because an explicit deny overrides any allow, it guarantees that no other policy attached to the principal (now or later) can accidentally permit an unencrypted upload to that bucket. This protects against policy drift and broad grants inherited elsewhere, ensuring the encryption requirement cannot be bypassed regardless of future changes."
+      }
+    ],
+    "tags": ["iam", "policy", "least-privilege", "kms", "s3", "json", "intermediate"]
+  },
+  {
+    "id": "cloud-coding-4",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write an S3 lifecycle configuration (JSON) for a logs prefix that transitions objects to Standard-IA after 30 days, to Glacier after 90 days, expires them after 400 days, expires noncurrent versions after 30 days, and aborts incomplete multipart uploads after 7 days.",
+    "thoughtProcess": "This tests knowledge of the full lifecycle: transitions, expiration, version cleanup, and multipart cleanup, which many people forget. I need a single rule (or a few) filtered to the logs/ prefix. Transitions use Days with StorageClass STANDARD_IA then GLACIER. Expiration uses Days for current versions. NoncurrentVersionExpiration handles old versions in a versioned bucket, which is essential or storage silently grows. AbortIncompleteMultipartUpload cleans orphaned upload parts that are billed but invisible. I must ensure the transition day ordering is valid (IA at 30 before Glacier at 90 before expiration at 400) and that the filter scopes to the prefix, not the whole bucket. Status must be Enabled.",
+    "solution": {
+      "code": "{\n  \"Rules\": [\n    {\n      \"ID\": \"logs-tiering-and-expiry\",\n      \"Status\": \"Enabled\",\n      \"Filter\": { \"Prefix\": \"logs/\" },\n      \"Transitions\": [\n        { \"Days\": 30, \"StorageClass\": \"STANDARD_IA\" },\n        { \"Days\": 90, \"StorageClass\": \"GLACIER\" }\n      ],\n      \"Expiration\": { \"Days\": 400 },\n      \"NoncurrentVersionExpiration\": { \"NoncurrentDays\": 30 },\n      \"AbortIncompleteMultipartUpload\": { \"DaysAfterInitiation\": 7 }\n    }\n  ]\n}",
+      "language": "json"
+    },
+    "lineByLine": "The single rule is Enabled and Filter scopes it to keys under logs/ so it does not touch the rest of the bucket. Transitions moves current objects to STANDARD_IA at 30 days (cheaper storage for infrequently read logs) and to GLACIER at 90 days (archive), and the day thresholds must increase in that order. Expiration deletes current objects at 400 days to satisfy retention. NoncurrentVersionExpiration removes older versions 30 days after they become noncurrent, which is critical in a versioned bucket or old versions accumulate cost silently. AbortIncompleteMultipartUpload deletes orphaned multipart upload parts 7 days after initiation, stopping billing for parts that never completed into objects.",
+    "timeComplexity": "Not applicable; the provider evaluates rules asynchronously (typically once per day) against objects, so there is no client-side algorithmic cost.",
+    "spaceComplexity": "Not applicable; the configuration is a small static document and the actions reduce, rather than add to, storage over time.",
+    "alternativeApproaches": [
+      {
+        "title": "Separate rules per concern",
+        "explanation": "Instead of one combined rule, split tiering, expiration, version cleanup, and multipart abort into distinct rules (each with the same prefix filter). This can be easier to reason about and to enable/disable independently, at the cost of more verbosity.",
+        "code": "{\n  \"Rules\": [\n    {\"ID\": \"abort-mpu\", \"Status\": \"Enabled\", \"Filter\": {\"Prefix\": \"logs/\"}, \"AbortIncompleteMultipartUpload\": {\"DaysAfterInitiation\": 7}},\n    {\"ID\": \"tier\", \"Status\": \"Enabled\", \"Filter\": {\"Prefix\": \"logs/\"}, \"Transitions\": [{\"Days\": 30, \"StorageClass\": \"STANDARD_IA\"}, {\"Days\": 90, \"StorageClass\": \"GLACIER\"}]}\n  ]\n}"
+      },
+      {
+        "title": "Tag-based filter",
+        "explanation": "Use Filter with a Tag (or an And of Prefix and Tag) so tiering is driven by object tags your pipeline sets (for example retention=short) rather than only by path, giving finer control over which objects age out."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is NoncurrentVersionExpiration important, and what happens without it?",
+        "answer": "In a versioning-enabled bucket, overwriting or deleting an object does not free space: prior versions become noncurrent and a delete just adds a delete marker, so all old versions keep incurring storage cost invisibly in normal listings. Without a NoncurrentVersionExpiration rule, storage grows indefinitely even though users believe data was replaced or deleted. The rule expires noncurrent versions after a set number of days, reclaiming that hidden cost while still giving a recovery window."
+      },
+      {
+        "question": "What is the risk of transitioning small log files to Glacier?",
+        "answer": "Archive tiers like Glacier impose a minimum billable object size (padding small objects up, often to 128 KB) and a minimum storage duration (deleting or transitioning early triggers charges), plus per-object transition request costs and retrieval fees with latency. If the logs are many tiny files, transitioning them can cost more than leaving them in a cheaper hot arrangement, and retrieval becomes slow. The fix is to compact logs into larger objects before they age into archive tiers so the economics and retrieval work in your favor."
+      }
+    ],
+    "tags": ["s3", "lifecycle", "storage-classes", "glacier", "versioning", "json", "intermediate"]
+  },
+  {
+    "id": "cloud-coding-5",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Given a cloud Cost and Usage table cost_usage(usage_date DATE, service STRING, resource_id STRING, tag_team STRING, tag_env STRING, unblended_cost DOUBLE), write a SQL query for cost attribution: monthly cost per team and service for the last 3 months, flagging untagged spend and computing each team's share of the total.",
+    "thoughtProcess": "This is a FinOps cost-attribution query. Requirements: aggregate cost by month, team, and service; restrict to the last 3 months; handle untagged rows (null or empty tag_team) by bucketing them as 'UNTAGGED' so unattributed spend is visible rather than silently dropped; and compute each row's percentage of the overall total using a window function. I would use date_trunc to bucket by month, coalesce/nullif to normalize missing tags, a WHERE on the date range, GROUP BY month/team/service, and a SUM window over the whole result to get the share. I would order so the biggest costs surface first. I would note that flagging untagged spend is the key FinOps insight, since unattributable cost is the thing to drive to zero.",
+    "solution": {
+      "code": "SELECT\n    date_trunc('month', usage_date)                         AS month,\n    COALESCE(NULLIF(tag_team, ''), 'UNTAGGED')              AS team,\n    service,\n    ROUND(SUM(unblended_cost), 2)                           AS cost,\n    ROUND(\n        100.0 * SUM(unblended_cost)\n              / SUM(SUM(unblended_cost)) OVER (),\n        2\n    )                                                       AS pct_of_total\nFROM cost_usage\nWHERE usage_date >= date_trunc('month', current_date) - INTERVAL '3' MONTH\nGROUP BY\n    date_trunc('month', usage_date),\n    COALESCE(NULLIF(tag_team, ''), 'UNTAGGED'),\n    service\nORDER BY month DESC, cost DESC;",
+      "language": "sql"
+    },
+    "lineByLine": "date_trunc('month', usage_date) buckets each row into its calendar month. COALESCE(NULLIF(tag_team, ''), 'UNTAGGED') treats both NULL and empty-string team tags as a single 'UNTAGGED' bucket so unattributed spend is explicit rather than lost. SUM(unblended_cost) totals cost per month/team/service group. The window SUM(SUM(unblended_cost)) OVER () computes the grand total across all groups (the inner SUM is the group aggregate, the outer windowed SUM adds them up), and dividing gives each group's percentage share. The WHERE clause limits to the trailing three months from the start of the current month. GROUP BY matches the non-aggregated expressions, and ORDER BY surfaces the newest months and largest costs first.",
+    "timeComplexity": "O(N) to scan and aggregate N cost rows, plus the grouping (hash aggregation) and a single full-partition window pass, so effectively O(N) with the usual aggregation overhead; the date filter prunes to only recent partitions if the table is partitioned by date.",
+    "spaceComplexity": "O(G) for the number of distinct month/team/service groups held during aggregation, which is far smaller than N. The window over the whole result adds negligible extra state.",
+    "alternativeApproaches": [
+      {
+        "title": "Separate untagged report",
+        "explanation": "Instead of bucketing untagged rows inline, run a dedicated query filtering WHERE tag_team IS NULL OR tag_team = '' to produce an untagged-spend report by service and resource_id, making it easy to hunt down and tag the offending resources.",
+        "code": "SELECT service, resource_id, ROUND(SUM(unblended_cost), 2) AS cost\nFROM cost_usage\nWHERE (tag_team IS NULL OR tag_team = '')\n  AND usage_date >= date_trunc('month', current_date) - INTERVAL '3' MONTH\nGROUP BY service, resource_id\nORDER BY cost DESC;"
+      },
+      {
+        "title": "Month-over-month change with LAG",
+        "explanation": "Add a LAG over (partition by team, service order by month) on the monthly cost to compute month-over-month deltas, turning the attribution report into a trend/anomaly view that highlights teams whose spend is growing fastest."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why explicitly bucket untagged spend instead of filtering it out?",
+        "answer": "Unattributable cost is precisely what FinOps needs to surface and drive to zero, because it represents spend no team owns and no one is accountable for. Filtering it out would hide the problem and make the attributed percentages misleading (they would not sum against the true total). Bucketing it as 'UNTAGGED' keeps the totals honest and makes the size of the tagging gap visible, prompting teams to tag the offending resources so future spend is attributable."
+      },
+      {
+        "question": "How does SUM(SUM(x)) OVER () compute the grand total?",
+        "answer": "The inner SUM(unblended_cost) is the normal group aggregate producing one cost value per GROUP BY group. The outer SUM(...) OVER () is a window function with an empty OVER clause, meaning its window is the entire result set of groups, so it sums those per-group totals into the grand total and attaches that same total to every row. Dividing the group cost by this grand total yields the group's percentage share. It is a compact way to get a total-of-totals without a separate subquery or self-join."
+      }
+    ],
+    "tags": ["sql", "cost", "finops", "attribution", "window-functions", "advanced"]
+  },
+  {
+    "id": "cloud-coding-6",
+    "tech": "cloud",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a boto3 function that safely deletes all objects (including versions and delete markers) under a prefix in a versioning-enabled S3 bucket, using batched delete requests and returning the count deleted. Explain why a naive delete leaves data behind.",
+    "thoughtProcess": "The trap: in a versioning-enabled bucket, deleting an object only adds a delete marker; the actual data lives in prior versions that persist and keep costing money. A naive list_objects_v2 + delete misses all noncurrent versions and delete markers. To truly purge, I must enumerate every version and delete marker via list_object_versions (which returns Versions and DeleteMarkers), and delete each by Key plus VersionId. I should batch deletes with delete_objects (up to 1000 keys per call) for efficiency instead of one request per object, paginate the version listing, and handle the two separate lists. I would also mention this is destructive and irreversible once versions are removed, so it should be guarded.",
+    "solution": {
+      "code": "import boto3\n\ndef purge_prefix(bucket: str, prefix: str) -> int:\n    s3 = boto3.client(\"s3\")\n    paginator = s3.get_paginator(\"list_object_versions\")\n    deleted = 0\n    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):\n        objects = []\n        for v in page.get(\"Versions\", []):\n            objects.append({\"Key\": v[\"Key\"], \"VersionId\": v[\"VersionId\"]})\n        for m in page.get(\"DeleteMarkers\", []):\n            objects.append({\"Key\": m[\"Key\"], \"VersionId\": m[\"VersionId\"]})\n        # delete_objects handles up to 1000 keys per request\n        for i in range(0, len(objects), 1000):\n            batch = objects[i:i + 1000]\n            resp = s3.delete_objects(\n                Bucket=bucket,\n                Delete={\"Objects\": batch, \"Quiet\": True},\n            )\n            deleted += len(batch) - len(resp.get(\"Errors\", []))\n            if resp.get(\"Errors\"):\n                raise RuntimeError(f\"Delete errors: {resp['Errors']}\")\n    return deleted",
+      "language": "python"
+    },
+    "lineByLine": "list_object_versions is the key call: unlike list_objects_v2, it returns both Versions (all object versions, current and noncurrent) and DeleteMarkers. We paginate it to cover large prefixes. For each page we build a list of {Key, VersionId} for every version and every delete marker, because deleting by Key alone would only add another delete marker rather than remove data. We then slice that list into batches of up to 1000 and call delete_objects once per batch (far fewer requests than per-object deletes), with Quiet mode to reduce response size. We count successful deletes as batch size minus any errors, and raise if the response reports errors so failures are not silently ignored.",
+    "timeComplexity": "O(V) where V is the total number of versions plus delete markers, using ceil(V/1000) batched delete requests and ceil(V/1000) listing pages, so the request count is roughly V/1000 rather than V, which is the main efficiency win over per-object deletes.",
+    "spaceComplexity": "O(P) where P is the number of versions in a single listing page (bounded, up to ~1000), since we process page by page and only hold one page's worth of {Key, VersionId} entries at a time rather than all V.",
+    "alternativeApproaches": [
+      {
+        "title": "Lifecycle rule for bulk expiration",
+        "explanation": "For very large prefixes, instead of client-side deletion set a lifecycle rule with Expiration and NoncurrentVersionExpiration (and ExpiredObjectDeleteMarker) so S3 removes current objects, all noncurrent versions, and delete markers server-side over time, at no request cost to you.",
+        "code": "{\"Rules\": [{\"ID\": \"purge\", \"Status\": \"Enabled\", \"Filter\": {\"Prefix\": \"tmp/\"}, \"Expiration\": {\"Days\": 1, \"ExpiredObjectDeleteMarker\": true}, \"NoncurrentVersionExpiration\": {\"NoncurrentDays\": 1}}]}"
+      },
+      {
+        "title": "S3 Batch Operations",
+        "explanation": "For billions of versions, drive deletes from an S3 Inventory manifest via S3 Batch Operations, which parallelizes, retries, and reports at massive scale far beyond a single-process boto3 loop."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why does a naive delete leave data behind in a versioned bucket?",
+        "answer": "In a versioning-enabled bucket, a DELETE on a key does not remove the data; it creates a delete marker that becomes the current version and hides the object, while all prior versions remain stored and billed. A naive script using list_objects_v2 (which only shows current, non-deleted objects) and DeleteObject without a VersionId therefore just adds delete markers, leaving every noncurrent version intact and still costing money. True purging requires enumerating all versions and delete markers with list_object_versions and deleting each by its specific VersionId."
+      },
+      {
+        "question": "Why use delete_objects (batch) instead of delete_object per key?",
+        "answer": "delete_object issues one HTTP request per object, so purging a million versions means a million billable, latency-bound requests. delete_objects accepts up to 1000 keys (with version IDs) per request, cutting the request count and cost by up to 1000x and dramatically reducing wall-clock time because far fewer round trips are needed. It also returns per-object results so you can detect partial failures. Batching is the standard way to do bulk deletes efficiently, and for extreme scale you escalate to lifecycle rules or S3 Batch Operations."
+      }
+    ],
+    "tags": ["boto3", "s3", "versioning", "delete", "batch", "python", "advanced"]
+  }
+]

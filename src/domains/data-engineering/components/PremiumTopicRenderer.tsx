@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import type { PremiumTopicData } from '../../../core/types/types';
-import { Book, Server, GitBranch, Activity, CheckCircle2, GitFork, Layers, Database, Search, Inbox, Send, Cpu, CircleDot } from 'lucide-react';
+import { Book, Server, GitBranch, Activity, CheckCircle2, GitFork, Layers, Database, Search, Inbox, Send, Cpu, CircleDot, ChevronUp, ChevronDown, AlertTriangle, Scale } from 'lucide-react';
 import { formatText } from '../../../core/utils/textFormatting';
 
 const ARCH_ACCENT = '#f59e0b';
@@ -159,17 +159,115 @@ const ArchitectureFlow: React.FC<{ flow: string }> = ({ flow }) => {
   );
 };
 
+// Standard section header — keeps every premium section visually consistent
+// and (critically) exposes an <h2> so the auto-TOC can label the section.
+const PremiumSectionHeader: React.FC<{ icon: React.ReactNode; title: string }> = ({ icon, title }) => (
+  <h2 style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--text-primary)', margin: '0 0 20px 0', fontSize: '22px', fontWeight: 600, letterSpacing: '-0.02em' }}>
+    {icon} {title}
+  </h2>
+);
+
+// Expandable "deep dive" sub-topic: title always visible, full explanation on
+// expand. This is how the previously-hidden nested concepts become mini-lessons.
+const DeepDiveItem: React.FC<{ title: string; body: string; sub?: string }> = ({ title, body, sub }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ border: '1px solid var(--border-glass)', borderRadius: '10px', background: 'var(--bg-secondary)', overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '14px 16px', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-primary)', fontFamily: 'inherit', textAlign: 'left' }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: '10px', fontWeight: 600, fontSize: '15px' }}>
+          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
+          {title}
+        </span>
+        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+      </button>
+      {open && (
+        <div style={{ padding: '0 16px 16px 33px' }}>
+          {sub && <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', marginBottom: '6px' }}>{sub}</div>}
+          <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '14.5px', whiteSpace: 'pre-wrap' }}>{formatText(body)}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface PremiumTopicRendererProps {
   data: PremiumTopicData;
 }
 
 export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data }) => {
   const { coreConcept, industryUseCases, comparisonSection } = data;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [sections, setSections] = useState<{ id: string; label: string }[]>([]);
+  const [activeId, setActiveId] = useState<string>('');
+
+  // Build an in-page table of contents from the rendered sections, so the deep
+  // premium content is navigable instead of one long scroll.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const secs = Array.from(root.querySelectorAll('section.premium-section')) as HTMLElement[];
+    secs.forEach((s, i) => { if (!s.id) s.id = `de-sec-${i}`; });
+    setSections(secs.map(s => ({ id: s.id, label: (s.querySelector('h2')?.textContent || 'Section').trim() })));
+
+    // Highlight the section currently in view.
+    const obs = new IntersectionObserver(
+      entries => {
+        const visible = entries.filter(e => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) setActiveId((visible[0].target as HTMLElement).id);
+      },
+      { rootMargin: '-20% 0px -70% 0px', threshold: 0 }
+    );
+    secs.forEach(s => obs.observe(s));
+    return () => obs.disconnect();
+  }, [data]);
+
+  const jumpTo = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
   if (!coreConcept) return null;
 
   return (
-    <div className="premium-content-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '32px', fontFamily: '"Outfit", sans-serif' }}>
-      
+    <div ref={rootRef} className="premium-content-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '32px', fontFamily: '"Outfit", sans-serif' }}>
+
+      {/* In-page section navigation (auto-generated table of contents) */}
+      {sections.length > 1 && (
+        <nav
+          style={{
+            position: 'sticky', top: '8px', zIndex: 20,
+            display: 'flex', gap: '6px', flexWrap: 'nowrap', overflowX: 'auto',
+            padding: '8px', borderRadius: '12px',
+            background: 'color-mix(in srgb, var(--bg-inner) 88%, transparent)',
+            border: '1px solid var(--border-glass)',
+            backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.06)',
+          }}
+          aria-label="Section navigation"
+        >
+          {sections.map(s => {
+            const active = s.id === activeId;
+            return (
+              <button
+                key={s.id}
+                onClick={() => jumpTo(s.id)}
+                style={{
+                  whiteSpace: 'nowrap', cursor: 'pointer', fontFamily: 'inherit',
+                  padding: '6px 12px', borderRadius: '8px', border: 'none',
+                  fontSize: '12.5px', fontWeight: active ? 700 : 500,
+                  color: active ? '#fff' : 'var(--text-muted)',
+                  background: active ? '#3b82f6' : 'transparent',
+                  transition: 'background .15s ease, color .15s ease',
+                }}
+              >
+                {s.label}
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
       {/* Overview Section */}
       <section className="glass-panel premium-section">
         <h2 style={{ 
@@ -246,10 +344,142 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
         </div>
       </section>
 
+      {/* Context & Analogy */}
+      {(coreConcept.historicalContext || coreConcept.realWorldAnalogy) && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<Book size={22} style={{ color: '#3b82f6' }} />} title="Context & Analogy" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
+            {coreConcept.historicalContext && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '18px', borderRadius: '10px', borderTop: '3px solid #3b82f6' }}>
+                <strong style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '8px' }}>Historical Context</strong>
+                <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '14.5px' }}>{formatText(coreConcept.historicalContext)}</p>
+              </div>
+            )}
+            {coreConcept.realWorldAnalogy && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '18px', borderRadius: '10px', borderTop: '3px solid #10b981' }}>
+                <strong style={{ display: 'block', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '8px' }}>Real-World Analogy</strong>
+                <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.7, fontSize: '14.5px' }}>{formatText(coreConcept.realWorldAnalogy)}</p>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* How It Works Internally */}
+      {coreConcept.internalWorking && coreConcept.internalWorking.length > 0 && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<Cpu size={22} style={{ color: '#06b6d4' }} />} title="How It Works Internally" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {coreConcept.internalWorking.map((step, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', background: 'var(--bg-secondary)', padding: '14px 16px', borderRadius: '10px', border: '1px solid var(--border-glass)' }}>
+                <span style={{ flexShrink: 0, width: '26px', height: '26px', borderRadius: '8px', background: 'rgba(6,182,212,0.14)', color: '#06b6d4', fontWeight: 800, fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{i + 1}</span>
+                <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.65, fontSize: '14.5px' }}>{formatText(step)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Key Concepts — Deep Dive (nested sub-topics, expandable) */}
+      {coreConcept.importantConcepts && coreConcept.importantConcepts.length > 0 && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<Layers size={22} style={{ color: '#8b5cf6' }} />} title="Key Concepts — Deep Dive" />
+          <p style={{ margin: '0 0 14px 0', color: 'var(--text-muted)', fontSize: '13px' }}>Expand each concept for a detailed explanation.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {coreConcept.importantConcepts.map((c, i) => (
+              <DeepDiveItem key={i} title={c.concept} body={c.explanation} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Key Terminology */}
+      {coreConcept.keyTerminology && coreConcept.keyTerminology.length > 0 && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<Book size={22} style={{ color: '#3b82f6' }} />} title="Key Terminology" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '14px' }}>
+            {coreConcept.keyTerminology.map((t, i) => (
+              <div key={i} style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '10px', border: '1px solid var(--border-glass)' }}>
+                <strong style={{ color: 'var(--text-primary)', fontSize: '15px' }}>{t.term}</strong>
+                <p style={{ margin: '6px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>{formatText(t.meaning)}</p>
+                {t.importance && <p style={{ margin: '8px 0 0 0', color: 'var(--text-muted)', fontSize: '12.5px', lineHeight: 1.55 }}><strong style={{ color: '#f59e0b' }}>Why it matters:</strong> {formatText(t.importance)}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Variations & Types */}
+      {coreConcept.variationsAndTypes && coreConcept.variationsAndTypes.length > 0 && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<GitFork size={22} style={{ color: '#f59e0b' }} />} title="Variations & Types" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {coreConcept.variationsAndTypes.map((v, i) => (
+              <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', background: 'var(--bg-secondary)', padding: '12px 14px', borderRadius: '10px', border: '1px solid var(--border-glass)' }}>
+                <CircleDot size={16} style={{ color: '#f59e0b', flexShrink: 0, marginTop: '2px' }} />
+                <p style={{ margin: 0, color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '14.5px' }}>{formatText(v)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Advantages, Limitations & Trade-offs */}
+      {(coreConcept.advantages?.length || coreConcept.disadvantages?.length || coreConcept.tradeOffs) && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<Scale size={22} style={{ color: '#10b981' }} />} title="Advantages, Limitations & Trade-offs" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
+            {coreConcept.advantages?.length > 0 && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '10px', borderTop: '3px solid #10b981' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#10b981', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '10px' }}><CheckCircle2 size={15} /> Advantages</strong>
+                <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.7 }}>{coreConcept.advantages.map((a, i) => <li key={i}>{formatText(a)}</li>)}</ul>
+              </div>
+            )}
+            {coreConcept.disadvantages?.length > 0 && (
+              <div style={{ background: 'var(--bg-secondary)', padding: '16px', borderRadius: '10px', borderTop: '3px solid #ef4444' }}>
+                <strong style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#ef4444', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.03em', marginBottom: '10px' }}><AlertTriangle size={15} /> Limitations</strong>
+                <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.7 }}>{coreConcept.disadvantages.map((a, i) => <li key={i}>{formatText(a)}</li>)}</ul>
+              </div>
+            )}
+          </div>
+          {coreConcept.tradeOffs && (coreConcept.tradeOffs.whenToUse || coreConcept.tradeOffs.whenToAvoid) && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', marginTop: '16px' }}>
+              {coreConcept.tradeOffs.whenToUse && (
+                <div style={{ background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.28)', padding: '14px 16px', borderRadius: '10px' }}>
+                  <strong style={{ color: '#10b981', fontSize: '13px' }}>When to use</strong>
+                  <p style={{ margin: '6px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>{formatText(coreConcept.tradeOffs.whenToUse)}</p>
+                </div>
+              )}
+              {coreConcept.tradeOffs.whenToAvoid && (
+                <div style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.28)', padding: '14px 16px', borderRadius: '10px' }}>
+                  <strong style={{ color: '#ef4444', fontSize: '13px' }}>When to avoid</strong>
+                  <p style={{ margin: '6px 0 0 0', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>{formatText(coreConcept.tradeOffs.whenToAvoid)}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Common Misconceptions */}
+      {coreConcept.commonMisconceptions && coreConcept.commonMisconceptions.length > 0 && (
+        <section className="glass-panel premium-section">
+          <PremiumSectionHeader icon={<AlertTriangle size={22} style={{ color: '#ef4444' }} />} title="Common Misconceptions" />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {coreConcept.commonMisconceptions.map((m, i) => (
+              <div key={i} style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-glass)', borderLeft: '3px solid #ef4444', borderRadius: '10px', padding: '14px 16px' }}>
+                <div style={{ color: '#ef4444', fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>Myth: {formatText(m.myth)}</div>
+                <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.65 }}><strong style={{ color: '#10b981' }}>Reality:</strong> {formatText(m.reality)}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Core Components */}
       <section className="glass-panel premium-section">
-        <h2 style={{ 
-          display: 'flex', 
+        <h2 style={{
+          display: 'flex',
           alignItems: 'center', 
           gap: '10px', 
           color: 'var(--text-primary)', 
@@ -341,10 +571,10 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
             alignItems: 'center', 
             gap: '12px', 
             color: 'var(--text-primary)', 
-            margin: '0 0 24px 0',
-            fontSize: '20px',
+            margin: '0 0 20px 0',
+            fontSize: '22px',
             fontWeight: 600,
-            letterSpacing: '-0.01em'
+            letterSpacing: '-0.02em'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '8px', background: 'var(--bg-primary)' }}>
               <Activity size={20} style={{ color: '#10b981' }} /> 
@@ -400,10 +630,10 @@ export const PremiumTopicRenderer: React.FC<PremiumTopicRendererProps> = ({ data
             alignItems: 'center', 
             gap: '12px', 
             color: 'var(--text-primary)', 
-            margin: '0 0 24px 0',
-            fontSize: '20px',
+            margin: '0 0 20px 0',
+            fontSize: '22px',
             fontWeight: 600,
-            letterSpacing: '-0.01em'
+            letterSpacing: '-0.02em'
           }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '36px', height: '36px', borderRadius: '8px', background: 'var(--bg-primary)' }}>
               <GitBranch size={20} style={{ color: '#f59e0b' }} /> 

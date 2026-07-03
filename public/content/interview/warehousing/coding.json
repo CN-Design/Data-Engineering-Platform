@@ -1,0 +1,229 @@
+[
+  {
+    "id": "warehousing-coding-1",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Given a table events(user_id INT, event_type STRING, event_ts TIMESTAMP) partitioned/clustered by event date, write an optimized analytical query that returns, for each user, their total events and their most recent event_type, but only over the last 30 days. Make it pruning-friendly.",
+    "thoughtProcess": "The interviewer wants two things: correct analytics (per-user aggregate plus latest event_type) and warehouse-aware optimization (pruning, no SELECT *, SARGable time filter, minimal shuffle). I would first make the date filter SARGable by comparing the raw event_ts (or the partition column) directly to a constant range, not wrapping it in a function, so partition pruning eliminates all but the last 30 days. Then I need a per-user count and the latest event_type; the latest requires ordering by time per user. I can do it with a single pass using window functions (QUALIFY to keep the latest row while also computing a count), or with a GROUP BY plus a correlated latest lookup. The window approach with QUALIFY is clean and set-based, avoids a self-join, and lets the optimizer prune first and aggregate in parallel. I select only the columns needed so column pruning applies.",
+    "solution": {
+      "code": "SELECT\n    user_id,\n    COUNT(*) OVER (PARTITION BY user_id)              AS total_events,\n    FIRST_VALUE(event_type) OVER (\n        PARTITION BY user_id\n        ORDER BY event_ts DESC\n    )                                                 AS latest_event_type\nFROM events\nWHERE event_ts >= DATEADD(day, -30, CURRENT_TIMESTAMP())   -- SARGable: raw column vs constant\nQUALIFY ROW_NUMBER() OVER (\n    PARTITION BY user_id ORDER BY event_ts DESC\n) = 1;",
+      "language": "sql"
+    },
+    "lineByLine": "The WHERE clause compares the raw event_ts to a constant boundary (DATEADD from CURRENT_TIMESTAMP), which is SARGable so the engine prunes to only the partitions/micro-partitions covering the last 30 days before scanning. COUNT(*) OVER (PARTITION BY user_id) computes each user's total event count across their rows in the window. FIRST_VALUE(event_type) ordered by event_ts DESC picks the most recent event_type per user. QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY event_ts DESC) = 1 keeps exactly one row per user (the latest), so the result is one row per user carrying the count and the latest type. Only the needed columns are referenced, enabling column pruning.",
+    "timeComplexity": "After pruning to 30 days of data (N rows in that window), the query does a shuffle by user_id and a per-partition sort, roughly O(N log N) distributed across workers. Pruning is what keeps N small relative to the full table.",
+    "spaceComplexity": "O(U) for the output where U is the number of distinct users; intermediate memory is proportional to each user's partition being sorted, so a very active user is a potential skew/memory hotspot.",
+    "alternativeApproaches": [
+      {
+        "title": "GROUP BY plus window for latest",
+        "explanation": "Compute the count with a GROUP BY and the latest event_type separately with a ROW_NUMBER window, then join them on user_id. This separates the two concerns but adds a join; the single-pass QUALIFY version avoids that extra shuffle.",
+        "code": "WITH latest AS (\n  SELECT user_id, event_type\n  FROM events\n  WHERE event_ts >= DATEADD(day, -30, CURRENT_TIMESTAMP())\n  QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY event_ts DESC) = 1\n),\ncnt AS (\n  SELECT user_id, COUNT(*) AS total_events\n  FROM events\n  WHERE event_ts >= DATEADD(day, -30, CURRENT_TIMESTAMP())\n  GROUP BY user_id\n)\nSELECT c.user_id, c.total_events, l.event_type AS latest_event_type\nFROM cnt c JOIN latest l USING (user_id);"
+      },
+      {
+        "title": "BigQuery ARRAY_AGG trick",
+        "explanation": "In BigQuery, ARRAY_AGG(event_type ORDER BY event_ts DESC LIMIT 1)[OFFSET(0)] within a GROUP BY gets the latest event_type in one aggregation alongside COUNT(*), avoiding a window and a join entirely.",
+        "code": "SELECT user_id,\n       COUNT(*) AS total_events,\n       ARRAY_AGG(event_type ORDER BY event_ts DESC LIMIT 1)[OFFSET(0)] AS latest_event_type\nFROM events\nWHERE event_ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)\nGROUP BY user_id;"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is the WHERE clause written as a raw comparison instead of DATE(event_ts) >= ...?",
+        "answer": "Because pruning metadata (partition boundaries, micro-partition min/max, zone maps) is stored on the raw event_ts column. Comparing the raw column to a constant boundary lets the optimizer statically determine which partitions/chunks can match and skip the rest before scanning. Wrapping the column in DATE() or another function produces a value the optimizer has no metadata for, so it must evaluate it row by row and falls back to a full scan. Keeping the predicate SARGable, raw column versus constant, is what preserves partition and block pruning and keeps the query cheap."
+      },
+      {
+        "question": "How would you make this robust to ties on event_ts for the latest event?",
+        "answer": "Add a deterministic tiebreaker to the ordering so ROW_NUMBER (and FIRST_VALUE) pick a single unambiguous winner, for example ORDER BY event_ts DESC, event_type ASC or an ingestion sequence id. Without a tiebreaker, when two events share the same maximum timestamp the choice is arbitrary and can vary between runs, making the result non-deterministic. If the business instead wants all events tied at the latest timestamp, switch ROW_NUMBER to RANK and keep all rows where rank = 1, accepting multiple rows per user. The key point is to encode the tie resolution explicitly in the ORDER BY rather than relying on undefined ordering."
+      }
+    ],
+    "tags": ["warehousing", "coding", "sql", "window-function", "qualify", "pruning", "sargable"]
+  },
+  {
+    "id": "warehousing-coding-2",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write DDL to create a large fact table for optimal pruning and joins in (a) Snowflake with a clustering key, (b) BigQuery with partitioning and clustering, and (c) Redshift with distribution and sort keys. The fact is orders(order_id, customer_id, order_ts, amount) queried by date range and joined on customer_id.",
+    "thoughtProcess": "The access pattern is given: filter by date (order_ts) and join on customer_id. So I want date-based pruning and customer_id co-location/clustering. In Snowflake there are no explicit partitions, so I cluster by the date (derived from order_ts) and optionally customer_id; I would cluster on the primary filter first. In BigQuery I partition by the date of order_ts (partitioning must be on a date/timestamp/integer column) and cluster by customer_id for the join and secondary filtering; I would also consider require_partition_filter to force pruning. In Redshift I set DISTKEY(customer_id) so the big join is co-located, and SORTKEY(order_ts) so date-range filters prune via zone maps. I must use each platform's exact syntax and pick the right columns for each mechanism.",
+    "solution": {
+      "code": "-- (a) Snowflake: cluster on date then customer_id\nCREATE OR REPLACE TABLE orders (\n    order_id     NUMBER,\n    customer_id  NUMBER,\n    order_ts     TIMESTAMP_NTZ,\n    amount       NUMBER(18,2)\n)\nCLUSTER BY (TO_DATE(order_ts), customer_id);\n\n-- (b) BigQuery: partition by date, cluster by customer_id\nCREATE TABLE dataset.orders (\n    order_id     INT64,\n    customer_id  INT64,\n    order_ts     TIMESTAMP,\n    amount       NUMERIC\n)\nPARTITION BY DATE(order_ts)\nCLUSTER BY customer_id\nOPTIONS (require_partition_filter = TRUE);\n\n-- (c) Redshift: distribute on join key, sort on filter key\nCREATE TABLE orders (\n    order_id     BIGINT,\n    customer_id  BIGINT,\n    order_ts     TIMESTAMP,\n    amount       DECIMAL(18,2)\n)\nDISTSTYLE KEY\nDISTKEY (customer_id)\nSORTKEY (order_ts);",
+      "language": "sql"
+    },
+    "lineByLine": "In Snowflake, CLUSTER BY (TO_DATE(order_ts), customer_id) directs automatic clustering to co-locate rows by date first (tightening micro-partition date ranges for range-filter pruning) then by customer_id, so both the date filter and customer joins prune better. In BigQuery, PARTITION BY DATE(order_ts) creates date partitions the engine can eliminate for a date-range filter, CLUSTER BY customer_id sorts within partitions so joins/filters on customer_id skip blocks, and require_partition_filter forces every query to include a partition filter, preventing accidental full scans. In Redshift, DISTKEY(customer_id) hashes rows to slices by customer_id so joins on customer_id are local (no redistribution), and SORTKEY(order_ts) orders rows so zone maps let date-range filters skip blocks.",
+    "timeComplexity": "DDL itself is metadata-only. The payoff is at query time: date-filtered queries prune to the relevant partitions/blocks, and customer_id joins avoid shuffles (Redshift) or read fewer blocks (BigQuery/Snowflake), reducing scanned data from the full table to the relevant slice.",
+    "spaceComplexity": "No extra storage from the DDL beyond normal columnar storage and metadata. Snowflake automatic clustering and BigQuery re-clustering consume background compute to maintain order; Redshift needs VACUUM to keep sort order, which is a maintenance (not storage) cost.",
+    "alternativeApproaches": [
+      {
+        "title": "Redshift small-dimension alternative",
+        "explanation": "If joining to a small customers dimension instead of another large table, distribute the dimension with DISTSTYLE ALL so it is replicated to every node and the join is always local, freeing the fact table's DISTKEY to serve a different purpose. Choose based on whether the join partner is large or small.",
+        "code": "CREATE TABLE customers (\n  customer_id BIGINT,\n  country     VARCHAR(2)\n) DISTSTYLE ALL SORTKEY (customer_id);"
+      },
+      {
+        "title": "BigQuery ingestion-time partitioning",
+        "explanation": "If queries filter on load date rather than an event column, partition by ingestion time using _PARTITIONTIME (PARTITION BY _PARTITIONDATE) instead of a data column. This suits append-only pipelines where the load date is the natural filter, avoiding maintaining a separate date column."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why put the date first in the Snowflake clustering key and customer_id second?",
+        "answer": "Clustering keys, like sort keys, give the most pruning benefit to the leading column, and the primary, most selective filter here is the date range. Putting TO_DATE(order_ts) first ensures micro-partitions cluster tightly by date so date-range queries (the dominant access pattern) prune aggressively. Adding customer_id second gives a secondary level of co-location that helps queries also filtering or joining on customer within a date range. If customer_id were first, date-range pruning would weaken because partitions would be organized primarily by customer, spreading each date across many partitions. So you order clustering columns by filter importance, most common/selective filter first, which is why date leads."
+      },
+      {
+        "question": "Why does Redshift use two different columns (customer_id for DISTKEY, order_ts for SORTKEY) rather than one?",
+        "answer": "Because distribution and sorting solve two different problems that happen to want different columns here. The DISTKEY controls which slice a row lands on, so setting it to customer_id co-locates matching rows for the customer_id join and eliminates the expensive cross-network redistribution that would otherwise dominate a big join. The SORTKEY controls the physical row order within each slice, so setting it to order_ts makes the zone maps discriminating for date-range filters, letting the engine skip blocks outside the range. Since the query both joins on customer_id and filters on date, using customer_id for distribution and order_ts for sorting lets each mechanism target the operation it is best suited to, giving co-located joins and pruned scans simultaneously from one table design."
+      }
+    ],
+    "tags": ["warehousing", "coding", "ddl", "clustering", "partitioning", "distribution-key", "sort-key"]
+  },
+  {
+    "id": "warehousing-coding-3",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "You have a target table dim_customer and a staging table stg_customer_changes containing inserts and updates keyed by customer_id (with an is_deleted flag for deletes). Write an idempotent, set-based MERGE to apply the changes.",
+    "thoughtProcess": "The interviewer is testing whether I reach for a single set-based MERGE instead of row-by-row DML, and whether I handle insert, update, and delete correctly and idempotently. I match target to source on customer_id. For matched rows where is_deleted is true, I DELETE; for matched rows otherwise, I UPDATE the attributes; for unmatched source rows that are not deletes, I INSERT. Keying on customer_id makes it idempotent: re-running the same batch converges to the same state (updates re-apply identically, inserts do not duplicate). I should be careful with clause ordering since MERGE evaluates WHEN MATCHED clauses in order, and I want the delete condition handled distinctly from the update. I would also mention limiting the partitions the MERGE touches on a huge target for performance.",
+    "solution": {
+      "code": "MERGE INTO dim_customer AS t\nUSING stg_customer_changes AS s\n    ON t.customer_id = s.customer_id\n\nWHEN MATCHED AND s.is_deleted = TRUE THEN\n    DELETE\n\nWHEN MATCHED AND s.is_deleted = FALSE THEN\n    UPDATE SET\n        t.name       = s.name,\n        t.email      = s.email,\n        t.country    = s.country,\n        t.updated_at = s.updated_at\n\nWHEN NOT MATCHED AND s.is_deleted = FALSE THEN\n    INSERT (customer_id, name, email, country, updated_at)\n    VALUES (s.customer_id, s.name, s.email, s.country, s.updated_at);",
+      "language": "sql"
+    },
+    "lineByLine": "MERGE INTO dim_customer AS t ... USING stg_customer_changes AS s ON t.customer_id = s.customer_id joins target and source on the business key. The first WHEN MATCHED AND s.is_deleted = TRUE THEN DELETE removes target rows whose change record marks them deleted. The second WHEN MATCHED AND s.is_deleted = FALSE THEN UPDATE SET ... refreshes the attributes for existing customers that are not deletes. WHEN NOT MATCHED AND s.is_deleted = FALSE THEN INSERT adds genuinely new customers, ignoring delete records for keys that do not exist. Keying on customer_id makes the whole operation idempotent, re-applying the same staging batch produces the same target state without duplicates.",
+    "timeComplexity": "One set-based pass: roughly O(S + affected T) with a join/shuffle on customer_id, distributed across workers, far cheaper than O(S) individual statements. Pruning the target to affected partitions keeps the scanned portion small.",
+    "spaceComplexity": "O(S) for the staging batch plus the join's intermediate structures; the operation rewrites only the affected micro-partitions/blocks rather than the whole target.",
+    "alternativeApproaches": [
+      {
+        "title": "Delete-then-insert (Redshift classic)",
+        "explanation": "On engines historically without full MERGE, load staging via COPY, DELETE target rows whose keys appear in staging, then INSERT all non-deleted staging rows. It is also set-based and idempotent but touches more rows than a targeted MERGE and needs care to stay transactional.",
+        "code": "BEGIN;\nDELETE FROM dim_customer USING stg_customer_changes s WHERE dim_customer.customer_id = s.customer_id;\nINSERT INTO dim_customer SELECT customer_id, name, email, country, updated_at FROM stg_customer_changes WHERE is_deleted = FALSE;\nCOMMIT;"
+      },
+      {
+        "title": "Dedup staging before MERGE",
+        "explanation": "If staging can contain multiple changes per customer_id in one batch, a MERGE that matches multiple source rows to one target row errors (or is non-deterministic). Pre-reduce staging to one latest row per key with a ROW_NUMBER window before merging.",
+        "code": "WITH latest AS (\n  SELECT * FROM stg_customer_changes\n  QUALIFY ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY updated_at DESC) = 1\n)\nMERGE INTO dim_customer t USING latest s ON t.customer_id = s.customer_id ..."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What happens if the staging table has more than one row per customer_id, and how do you prevent problems?",
+        "answer": "A MERGE requires that each target row match at most one source row; if staging has multiple changes for the same customer_id, the MERGE either raises a nondeterministic-merge error (Snowflake, BigQuery) or, worse, applies an arbitrary one, which is incorrect. You prevent this by deduplicating the source to exactly one row per key before merging, typically keeping the latest change with a ROW_NUMBER (or QUALIFY) window ordered by an updated_at or sequence column, so only the most recent state per customer_id enters the MERGE. This both avoids the error and ensures the correct final value is applied. Reducing to one row per key is a standard preprocessing step whenever a change feed can contain several updates to the same entity within a batch."
+      },
+      {
+        "question": "The target is huge and the MERGE scans the whole table. How do you make it cheaper?",
+        "answer": "Constrain the MERGE so it only touches the partitions that could be affected, letting the engine prune. If the target is partitioned/clustered on a date (or another column present in staging), add a predicate to the ON clause or a filter that limits the merge to the relevant range, for example only the recent dates the batch can affect, so it does not scan the full history. Cluster/distribute the target on the merge key so matching is efficient and, in Redshift, so it is co-located. Ensure the staging table is reasonably sized and not skewed. Right-size the warehouse up since MERGE parallelizes well. Profiling the MERGE's partitions scanned confirms whether these changes reduced the scanned portion from the whole table to just the affected slice."
+      }
+    ],
+    "tags": ["warehousing", "coding", "sql", "merge", "upsert", "idempotency", "cdc"]
+  },
+  {
+    "id": "warehousing-coding-4",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a query that computes each product's revenue and its share of its category's total revenue, plus a running cumulative revenue rank within the category, from sales(product_id, category, revenue). Optimize for a single scan.",
+    "thoughtProcess": "This is a window-function analytics problem where the goal is to compute several category-level metrics without multiple passes or self-joins. Per-category total is SUM(revenue) OVER (PARTITION BY category); the share is the product's revenue divided by that total; and a rank within category by revenue is RANK/ROW_NUMBER OVER (PARTITION BY category ORDER BY revenue DESC). A cumulative revenue within category ordered by revenue is SUM(revenue) OVER (PARTITION BY category ORDER BY revenue DESC ...). All of these share the same PARTITION BY category, so the engine can compute them in a single windowed pass after one shuffle by category, which is far better than joining an aggregate back to the detail. I would guard against division by zero if a category total could be zero, and select only needed columns.",
+    "solution": {
+      "code": "SELECT\n    product_id,\n    category,\n    revenue,\n    SUM(revenue) OVER (PARTITION BY category)                     AS category_revenue,\n    revenue\n      / NULLIF(SUM(revenue) OVER (PARTITION BY category), 0)      AS pct_of_category,\n    RANK() OVER (\n        PARTITION BY category ORDER BY revenue DESC\n    )                                                             AS revenue_rank,\n    SUM(revenue) OVER (\n        PARTITION BY category ORDER BY revenue DESC\n        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    )                                                             AS cumulative_revenue\nFROM sales;",
+      "language": "sql"
+    },
+    "lineByLine": "SUM(revenue) OVER (PARTITION BY category) gives each product its category's total revenue without collapsing rows. Dividing revenue by NULLIF(category_total, 0) yields the product's share, with NULLIF returning NULL instead of erroring when a category total is zero. RANK() OVER (PARTITION BY category ORDER BY revenue DESC) ranks products within their category by revenue, ties sharing a rank. SUM(revenue) OVER (PARTITION BY category ORDER BY revenue DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) accumulates revenue from the top product down, a running cumulative within category. Because every window shares PARTITION BY category, the engine performs one shuffle by category and computes all metrics in a single sorted pass.",
+    "timeComplexity": "One shuffle by category plus a per-partition sort on revenue: O(N log N) distributed. All four window metrics are computed in the same pass over the sorted partitions, so there is no extra scan or join.",
+    "spaceComplexity": "O(N) for the shuffled data; each category's partition is materialized to compute the ordered windows, so a dominant category is a potential memory/skew hotspot.",
+    "alternativeApproaches": [
+      {
+        "title": "Aggregate-then-join (worse)",
+        "explanation": "Compute category totals with a GROUP BY, then join back to the detail to compute shares and rank. This requires an extra aggregation and a join (two shuffles) instead of one windowed pass, so it is slower and more code; window functions are strictly better here.",
+        "code": "WITH tot AS (SELECT category, SUM(revenue) cat_rev FROM sales GROUP BY category)\nSELECT s.*, s.revenue/NULLIF(t.cat_rev,0) AS pct\nFROM sales s JOIN tot t USING (category);"
+      },
+      {
+        "title": "RATIO_TO_REPORT (Snowflake/Oracle)",
+        "explanation": "Some engines offer RATIO_TO_REPORT(revenue) OVER (PARTITION BY category) as a built-in for the share-of-total, which is more concise than the manual division and handles the total internally.",
+        "code": "RATIO_TO_REPORT(revenue) OVER (PARTITION BY category) AS pct_of_category"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is the single windowed pass better than a GROUP BY plus join for this?",
+        "answer": "All the required metrics, category total, share, rank, and cumulative, are relative to each product's category, and window functions compute per-partition aggregates while keeping every detail row, so they get all of them in one pass after a single shuffle and sort by category. The GROUP BY plus join alternative first aggregates category totals (one shuffle), then joins that back to the detail rows to compute per-row shares and needs a separate window anyway for rank and cumulative (another shuffle), so it does more data movement and more code for the same result. Fewer shuffles is the dominant performance factor in MPP warehouses, so consolidating the work into one windowed pass over category-partitioned data is both faster and cleaner than aggregate-then-join."
+      },
+      {
+        "question": "How would a heavily skewed category (most rows in one category) affect this query, and what could you do?",
+        "answer": "Because every window partitions by category, one dominant category sends most of the data to a single worker, which must sort and hold that huge partition while others idle, becoming a straggler and possibly spilling to disk, so the query fails to benefit from parallelism. To mitigate, you can rely on the engine's adaptive/skew handling if available, size up the warehouse so the big partition fits in memory and avoids spilling, or restructure the computation: for the non-order-dependent metrics (category total and share) you can compute the total via a separate aggregation and broadcast/join it, which parallelizes better than a single giant window, and only apply the ordered windows (rank, cumulative) where truly needed, possibly on a reduced set. Recognizing that PARTITION BY on a skewed key concentrates work is the key insight, and the fix is to reduce or spread that concentrated partition."
+      }
+    ],
+    "tags": ["warehousing", "coding", "sql", "window-function", "cumulative", "single-scan", "skew"]
+  },
+  {
+    "id": "warehousing-coding-5",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "In BigQuery, write a query that estimates and minimizes the bytes scanned for a report over a large partitioned table events(event_ts, user_id, country, payload STRING). The report needs daily distinct users per country for a given month. Show a bytes-efficient query and explain how to check the scan.",
+    "thoughtProcess": "The interviewer wants a query that scans as few bytes as possible on BigQuery's bytes-priced model and awareness of how to measure it. The table is partitioned (assume on DATE(event_ts)). To minimize bytes: select only the columns needed (event_ts truncated to day, user_id, country), never touch the large payload column so it is pruned, and filter on the partition column with a direct range so only that month's partitions are scanned. Distinct users per country per day is COUNT(DISTINCT user_id) grouped by day and country; for very large data I could mention APPROX_COUNT_DISTINCT to cut cost further. To check the scan, use a dry run (which returns bytes processed without running) or the query validator/estimated bytes, and confirm partition pruning happened. I must keep the date filter SARGable on the partition column.",
+    "solution": {
+      "code": "SELECT\n    DATE(event_ts)                    AS event_date,\n    country,\n    COUNT(DISTINCT user_id)           AS distinct_users\nFROM `dataset.events`\nWHERE event_ts >= TIMESTAMP('2024-06-01')          -- prunes to the month's partitions\n  AND event_ts <  TIMESTAMP('2024-07-01')\nGROUP BY event_date, country\nORDER BY event_date, country;\n\n-- Check bytes without running (dry run), e.g. via the CLI:\n-- bq query --dry_run --use_legacy_sql=false 'SELECT ...'\n-- or inspect \"This query will process X bytes\" in the console editor.",
+      "language": "sql"
+    },
+    "lineByLine": "The SELECT lists only event_ts (truncated to a day via DATE), country, and user_id, so the large payload column is never read, minimizing bytes via column pruning. The WHERE clause compares the raw partition column event_ts to a direct timestamp range for June, which is SARGable so BigQuery prunes to only that month's partitions instead of scanning all history. COUNT(DISTINCT user_id) computes distinct users, grouped by day and country. The comment shows checking the scan: a dry run (bq query --dry_run) or the console editor's estimated bytes reports how many bytes the query will process without executing it, so you validate the optimization before paying to run it.",
+    "timeComplexity": "After partition pruning to one month (N rows), it does an aggregation with distinct counting, roughly O(N) plus the distinct/group shuffle, distributed. Pruning keeps N to one month rather than the full table.",
+    "spaceComplexity": "O(G) for the output where G is day-by-country groups; exact COUNT(DISTINCT) maintains per-group sets that can be memory-heavy on high-cardinality user_id, which APPROX_COUNT_DISTINCT reduces.",
+    "alternativeApproaches": [
+      {
+        "title": "APPROX_COUNT_DISTINCT for lower cost",
+        "explanation": "If an approximate distinct count is acceptable, APPROX_COUNT_DISTINCT(user_id) uses a sketch (HyperLogLog) that is far cheaper in memory and compute than exact distinct counting on high-cardinality columns, while scanning the same pruned bytes.",
+        "code": "SELECT DATE(event_ts) AS event_date, country, APPROX_COUNT_DISTINCT(user_id) AS distinct_users\nFROM `dataset.events`\nWHERE event_ts >= TIMESTAMP('2024-06-01') AND event_ts < TIMESTAMP('2024-07-01')\nGROUP BY event_date, country;"
+      },
+      {
+        "title": "Materialized view for repeated reporting",
+        "explanation": "If this daily distinct-users report runs often, a materialized view maintaining daily per-country distinct counts (or an HLL sketch) lets recurring queries read a tiny precomputed table instead of rescanning the events partitions, cutting both bytes and latency.",
+        "code": "CREATE MATERIALIZED VIEW dataset.daily_users AS\nSELECT DATE(event_ts) d, country, HLL_COUNT.INIT(user_id) sketch\nFROM `dataset.events` GROUP BY d, country;"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How exactly do you find how many bytes a query will scan before running it?",
+        "answer": "Use a dry run, which validates the query and returns the estimated bytes it would process without executing or billing it. In the bq CLI it is bq query --dry_run --use_legacy_sql=false '<SQL>', which prints the bytes; via the API you set dryRun in the job configuration and read totalBytesProcessed; and in the BigQuery console the editor shows a 'This query will process X bytes' estimate as you type. This lets you compare the cost of alternative query formulations (for example with and without a partition filter, or selecting fewer columns) before spending money, and it is the standard way to verify that an optimization actually reduced the scan. It is also how you can enforce guardrails, rejecting or flagging queries whose estimated bytes exceed a threshold."
+      },
+      {
+        "question": "Why does excluding the payload column matter so much for cost here?",
+        "answer": "BigQuery on-demand bills by bytes scanned, and it reads only the columns a query references thanks to columnar storage, so touching the large payload STRING column, even incidentally via SELECT *, would force reading a huge amount of data and multiply the bill, whereas the report only needs event_ts, user_id, and country, which are small. Payload columns holding raw JSON or text are typically the largest by far, so omitting them keeps bytes scanned to the small analytical columns. This is why explicit column selection is critical on BigQuery: the difference between reading three narrow columns and reading a wide payload can be one or two orders of magnitude in bytes and cost, even for the identical set of rows after partition pruning. Combining column pruning (skip payload) with partition pruning (one month) is what makes the query cheap."
+      }
+    ],
+    "tags": ["warehousing", "coding", "bigquery", "bytes-scanned", "dry-run", "partition-pruning", "cost"]
+  },
+  {
+    "id": "warehousing-coding-6",
+    "tech": "warehousing",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write the Snowflake commands to (a) create a zero-copy clone of a production database for testing, (b) query a table as it existed 2 hours ago using Time Travel, and (c) create a secure share of a filtered view to a partner account.",
+    "thoughtProcess": "This tests knowledge of three distinctive Snowflake features and their exact syntax. For the clone, CREATE DATABASE ... CLONE creates an instant, storage-free copy at the current state, ideal for a test environment. For Time Travel, I use the AT clause with an OFFSET (negative seconds) or a TIMESTAMP to read the historical version, useful for recovering from or inspecting a recent change. For sharing, I create a secure view that filters to the partner's rows, create a SHARE, grant USAGE on the database/schema and SELECT on the secure view to the share, then add the partner's account. I should emphasize the secure view for governance and that no data is copied. I will use realistic object names and correct grant chain.",
+    "solution": {
+      "code": "-- (a) Zero-copy clone of a database for testing (instant, no storage until modified)\nCREATE DATABASE analytics_test CLONE analytics_prod;\n\n-- (b) Time Travel: query a table as of 2 hours ago\nSELECT *\nFROM analytics_prod.public.orders\nAT (OFFSET => -60*60*2);            -- 2 hours (7200 seconds) ago\n-- Alternatively by absolute time:\n-- ... AT (TIMESTAMP => '2024-06-15 08:00:00'::timestamp_tz);\n\n-- (c) Secure data share of a filtered view to a partner account\nCREATE SECURE VIEW analytics_prod.share_schema.partner_orders AS\n    SELECT order_id, order_ts, amount\n    FROM analytics_prod.public.orders\n    WHERE partner_id = 'ACME';\n\nCREATE SHARE acme_share;\nGRANT USAGE  ON DATABASE analytics_prod              TO SHARE acme_share;\nGRANT USAGE  ON SCHEMA   analytics_prod.share_schema TO SHARE acme_share;\nGRANT SELECT ON VIEW analytics_prod.share_schema.partner_orders TO SHARE acme_share;\nALTER SHARE acme_share ADD ACCOUNTS = ACME_ACCOUNT_LOCATOR;",
+      "language": "sql"
+    },
+    "lineByLine": "CREATE DATABASE analytics_test CLONE analytics_prod makes an instant zero-copy clone: the clone shares the source's micro-partitions and costs no extra storage until either side changes, giving a full production-like test database immediately. The Time Travel SELECT ... AT (OFFSET => -7200) reads the orders table as it existed 2 hours ago by pointing at the historical version in the retention window; the TIMESTAMP variant does the same for an absolute time. For sharing, CREATE SECURE VIEW defines a governed, filtered view exposing only the partner's rows and chosen columns; CREATE SHARE makes a share container; the GRANT USAGE on the database and schema plus GRANT SELECT on the secure view populate the share with exactly what the partner may read; ALTER SHARE ... ADD ACCOUNTS grants the partner account live, read-only access with no data copied.",
+    "timeComplexity": "The clone and share are metadata operations, effectively O(1) regardless of data size, since they manipulate pointers/grants rather than moving data. The Time Travel query costs like a normal query over the historical version, scanning the pruned partitions it needs.",
+    "spaceComplexity": "The clone adds no storage until modified (copy-on-write); the share adds none (consumer reads provider storage). Only subsequent changes to the clone, and the retained historical partitions backing Time Travel, consume storage.",
+    "alternativeApproaches": [
+      {
+        "title": "Clone a single schema or table",
+        "explanation": "You do not have to clone a whole database; CREATE SCHEMA ... CLONE or CREATE TABLE ... CLONE creates a zero-copy clone at finer granularity, useful when only one dataset needs a test copy or a point-in-time snapshot.",
+        "code": "CREATE TABLE orders_snapshot CLONE analytics_prod.public.orders AT (OFFSET => -3600);"
+      },
+      {
+        "title": "Restore via UNDROP or clone-at-timestamp",
+        "explanation": "To recover from a bad change, you can UNDROP a dropped object, or CREATE TABLE ... CLONE ... AT a pre-incident timestamp to materialize the good state into a new table, then swap it in, combining Time Travel with cloning for recovery.",
+        "code": "UNDROP TABLE analytics_prod.public.orders;"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Does the clone cost storage, and what happens as the test database diverges from production?",
+        "answer": "At creation the clone costs no additional storage because it references the same micro-partitions as the source production database via metadata pointers. Storage is billed only for divergence: as you modify the clone (insert, update, delete in testing) or as production changes, new micro-partitions are written and charged to whichever object created them, using copy-on-write. So a clone used lightly for testing accrues only the storage of the changes made to it, not a full duplicate, which is exactly why zero-copy cloning is cheap for spinning up full-size test or dev environments. Additionally, changes generate Time Travel/Fail-safe retention on the affected partitions, contributing some retained-partition storage. The key point is you pay for what changes, not for the initial full-size copy."
+      },
+      {
+        "question": "What limits how far back the Time Travel query can go, and what if it exceeds that?",
+        "answer": "Time Travel is bounded by the object's data retention period, configurable via DATA_RETENTION_TIME_IN_DAYS, up to 1 day on Standard edition and up to 90 days on Enterprise and higher; the default is often 1 day. If you request a point older than the retention window, the query fails because the historical micro-partitions are no longer available for user access. After Time Travel expires, permanent tables enter a fixed 7-day Fail-safe period during which only Snowflake support can recover the data, not you via SQL, and after that it is purged. So to query or restore from 2 hours ago you simply need retention of at least a day, but to reach back weeks you must have set a longer retention (which increases storage cost for retained partitions). If you have exceeded even Fail-safe, the data is unrecoverable, which is why retention should be sized to your recovery needs in advance."
+      }
+    ],
+    "tags": ["warehousing", "coding", "snowflake", "zero-copy-clone", "time-travel", "data-sharing", "secure-view"]
+  }
+]

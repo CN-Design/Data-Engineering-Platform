@@ -1,0 +1,390 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Airflow scheduling is driven by the scheduler, which continuously evaluates each DAG's schedule and creates DAG runs for the time intervals of data the pipeline is responsible for; the single most important mental model is that a DAG run for a data interval executes AFTER the interval ends, so its logical_date describes the period of data being processed, not the wall-clock moment it actually runs.",
+      "Catchup and backfill are two related mechanisms for handling past intervals: catchup automatically fills every interval between start_date and now when a DAG is first enabled, while a backfill is an explicit, operator-initiated re-run of a DAG across a chosen historical date range (for a new pipeline, a bug fix, or reprocessing).",
+      "Because catchup and backfills replay history, idempotency is the non-negotiable prerequisite: each task must use its data interval (via templated dates like {{ data_interval_start }} / {{ ds }}) to write deterministic, partitioned output so that re-running any interval produces the same result rather than duplicating or corrupting data."
+    ],
+    "learningObjectives": [
+      "Explain Airflow's data-interval model and why a DAG run executes after the interval end, resolving the classic 'off by one' confusion between logical_date and actual run time.",
+      "Configure schedules correctly using cron strings, cron presets, timedelta, None, modern timetables, and dataset/asset-based scheduling, and choose catchup=True vs catchup=False deliberately.",
+      "Run safe backfills across historical date ranges using the CLI and templated dates, relying on idempotent, partition-aware tasks and concurrency limits (max_active_runs, pools) to control cost and load."
+    ],
+    "formalDefinition": "In Apache Airflow, scheduling is the process by which the scheduler materializes DagRun objects for the successive data intervals defined by a DAG's schedule. A schedule may be a cron expression, a cron preset (@daily, @hourly), a datetime.timedelta, None (manual only), a Timetable instance, or a collection of Datasets/Assets. Each DagRun is associated with a data interval [data_interval_start, data_interval_end) and a logical_date, and is created and executed after data_interval_end has passed. Catchup governs whether, upon activation, the scheduler creates runs for all past intervals from start_date to the present. A backfill is an explicit command (airflow dags backfill) that instructs Airflow to create and run DagRuns for a specified historical interval range, independent of the catchup setting.",
+    "simpleExplanation": "Think of a daily newspaper. The Monday edition covers Monday's news, but it is printed and delivered early Tuesday morning once Monday is over. Airflow works the same way: the run 'for 2026-01-01' covers all of January 1st's data, but it actually starts running just after midnight on January 2nd, because only then is the day complete. Catchup is like a subscriber who cancels for a year and then, on return, receives every back-issue at once. A backfill is you deliberately asking the press to reprint a specific range of past editions - say January 1 through January 7 - because you fixed a typo or want to reprocess them.",
+    "historicalContext": "Airflow began at Airbnb in 2014 and became an Apache project in 2016. For years scheduling revolved around execution_date, a name that caused endless confusion because it did not equal when the task executed. Airflow 2.2 (2021, AIP-39) introduced the data-interval model and pluggable Timetables, renaming the concept to logical_date with explicit data_interval_start/end and adding presets like @daily as timetables. Airflow 2.4 (2022) added data-aware, Dataset-based scheduling so DAGs can trigger when upstream datasets are updated rather than on a clock. Airflow 3.0 (2025) refined this further - Datasets were generalized to Assets, backfills became a first-class, UI- and API-driven feature managed by the scheduler (rather than a blocking CLI process), and the deprecated execution_date parameter was fully removed in favor of logical_date and the data interval.",
+    "whyItMatters": {
+      "business": "Correct scheduling ensures reports, dashboards, and downstream systems receive complete data for the right period; a misunderstood data interval can silently produce yesterday's numbers labeled as today's, eroding trust in analytics and driving costly wrong decisions.",
+      "engineering": "The data-interval model lets engineers write time-parameterized pipelines that are naturally partitioned and re-runnable; getting catchup and backfills right prevents duplicate loads, gaps, and the operational pain of manually patching historical data.",
+      "scalability": "As pipelines grow, uncontrolled catchup can spawn hundreds of concurrent runs that overwhelm workers and warehouses; understanding max_active_runs, pools, and interval semantics is what keeps large fleets of DAGs stable.",
+      "cost": "A large backfill or an accidental catchup=True on a DAG with an old start_date can trigger thousands of warehouse queries and compute-hours in minutes; deliberate concurrency limits and idempotent, incremental loads keep cloud bills predictable.",
+      "reliability": "Idempotent, interval-driven tasks make reprocessing safe and routine: a bug fix becomes a bounded backfill rather than a risky manual data surgery, and missed intervals can be recovered deterministically without corrupting existing partitions."
+    },
+    "coreComponents": [
+      {
+        "name": "Scheduler and DagRun creation",
+        "definition": "The long-running Airflow scheduler process that parses DAGs, evaluates each DAG's timetable, and creates DagRun objects for successive data intervals once each interval has ended.",
+        "purpose": "To translate a DAG's declared schedule into concrete, time-bounded runs and to enqueue their task instances for execution.",
+        "responsibilities": "Compute the next data interval, create DagRuns (scheduled or backfill), respect start_date/end_date, catchup, and max_active_runs, and hand task instances to the executor.",
+        "examples": "Creating the 2026-01-01 run just after 2026-01-02 00:00 for a @daily DAG | skipping future intervals | queuing catchup runs oldest-first"
+      },
+      {
+        "name": "Schedule / Timetable / Dataset (Asset) triggers",
+        "definition": "The parameter that declares when a DAG runs: a cron string, a cron preset (@daily), a timedelta, None, a custom Timetable class, or a list of Datasets/Assets that trigger the DAG on update.",
+        "purpose": "To define the cadence or event that produces new data intervals and DAG runs.",
+        "responsibilities": "Given the last interval and current time, return the next data interval (time-based) or fire when subscribed datasets are updated (data-aware).",
+        "examples": "schedule=\"0 6 * * *\" | schedule=\"@daily\" | schedule=timedelta(hours=1) | schedule=None | schedule=[my_dataset]"
+      },
+      {
+        "name": "Catchup and Backfill",
+        "definition": "Catchup is the boolean that controls whether the scheduler fills all missed intervals from start_date to now on activation; a backfill is an explicit command to run a DAG over a specified historical date range.",
+        "purpose": "To (re)process historical intervals - either automatically on first enable (catchup) or deliberately on demand (backfill) for new pipelines, bug fixes, or reprocessing.",
+        "responsibilities": "Enumerate the target intervals, create the corresponding DagRuns, and execute them subject to concurrency limits and, optionally, depends_on_past ordering.",
+        "examples": "catchup=False (skip history) | airflow dags backfill -s 2026-01-01 -e 2026-01-07 my_dag | Airflow 3 UI-triggered backfill"
+      }
+    ],
+    "internalWorking": [
+      "The scheduler parses each DAG file and asks the DAG's Timetable for the next data interval given the most recent completed run and the current time. For a cron-based timetable, it aligns the interval to the cron boundaries; for @daily starting 2026-01-01 the first interval is [2026-01-01 00:00, 2026-01-02 00:00), and the corresponding DagRun becomes eligible to run only once wall-clock time passes data_interval_end (2026-01-02 00:00).",
+      "When a DagRun is created, Airflow stamps it with logical_date, data_interval_start, and data_interval_end. These values are injected into the Jinja template context, so {{ ds }} resolves to the interval start's date, {{ data_interval_start }} and {{ data_interval_end }} to the interval bounds, and {{ prev_ds }} to the prior interval's start - giving each task a deterministic, self-describing window of data to process.",
+      "If catchup=True, on activation the scheduler enumerates every interval from start_date up to (but not including) the current incomplete interval and creates a DagRun for each, ordering them oldest-first and throttling how many run at once via max_active_runs. If catchup=False, it skips straight to the single most recent completed interval, discarding the historical backlog so the DAG does not flood the cluster.",
+      "A backfill (airflow dags backfill -s START -e END) explicitly asks Airflow to create DagRuns for each interval in the given range regardless of catchup. In Airflow 2.x this ran as a foreground CLI process that itself scheduled and monitored the runs; in Airflow 3.x backfills are first-class objects managed by the scheduler and triggerable from the UI/API, so they survive restarts and integrate with normal concurrency controls.",
+      "Concurrency and ordering guards shape execution: max_active_runs caps concurrent DagRuns per DAG, pools cap concurrent task slots across DAGs, and depends_on_past / wait_for_downstream force a task (or its downstream) to wait for the same task in the previous interval to succeed - critical for stateful, sequential backfills but a common cause of stuck runs if an early interval fails."
+    ],
+    "architectureFlow": "DAG definition (schedule + start_date + catchup) -> Scheduler parses DAG -> Timetable computes next data interval [start, end) -> wait until wall-clock passes interval end -> create DagRun (logical_date, data_interval_start/end) -> render templated dates ({{ ds }}, {{ data_interval_start }}) -> executor runs task instances (subject to max_active_runs / pools / depends_on_past) -> partitioned, idempotent output written for that interval",
+    "dataFlowWalkthrough": [
+      "1. An engineer defines a DAG with schedule=\"0 6 * * *\", start_date=2026-01-01, catchup=False; the scheduler parses it and asks the cron timetable for the next interval.",
+      "2. For the interval [2026-01-01, 2026-01-02), the scheduler waits until wall-clock time reaches the interval end plus the cron offset (06:00 on 2026-01-02) before creating the DagRun, so the day's data is complete.",
+      "3. The DagRun is stamped with data_interval_start=2026-01-01 and data_interval_end=2026-01-02; a task renders a query like WHERE event_date >= '{{ data_interval_start }}' AND event_date < '{{ data_interval_end }}', scoping it to exactly that day.",
+      "4. The task writes results to a deterministic partition (e.g., s3://.../date=2026-01-01/ or a warehouse partition keyed on the date), so re-running the same interval overwrites that partition rather than appending duplicates.",
+      "5. When a bug is later found, the engineer runs 'airflow dags backfill -s 2026-01-01 -e 2026-01-07 my_dag'; Airflow creates seven DagRuns, each recomputing and overwriting its own partition, and max_active_runs throttles how many hit the warehouse at once."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Data interval (data_interval_start / data_interval_end)",
+        "meaning": "The half-open time window [start, end) of data a DagRun is responsible for; the run executes only after data_interval_end has passed.",
+        "importance": "It is the foundation of correct scheduling - queries should filter on the interval, not on wall-clock 'now', so pipelines are partitioned and re-runnable."
+      },
+      {
+        "term": "logical_date (formerly execution_date)",
+        "meaning": "The timestamp identifying a DagRun, equal to the data interval start for standard schedules; it labels the period of data, not the actual run time.",
+        "importance": "Misreading logical_date as 'when it ran' is the #1 Airflow confusion; understanding it correctly prevents off-by-one date bugs in queries and outputs."
+      },
+      {
+        "term": "catchup",
+        "meaning": "A DAG-level boolean controlling whether the scheduler creates runs for all missed intervals between start_date and now when the DAG is enabled.",
+        "importance": "Left at its historical default (True) with an old start_date, it can spawn a flood of runs; setting catchup=False is the usual safe default."
+      },
+      {
+        "term": "Backfill",
+        "meaning": "An explicit, operator-initiated execution of a DAG across a chosen range of past data intervals, independent of the catchup setting.",
+        "importance": "It is the standard, safe way to reprocess history after a bug fix or when onboarding a new pipeline - provided tasks are idempotent."
+      },
+      {
+        "term": "Timetable / Dataset (Asset) scheduling",
+        "meaning": "Pluggable Timetable classes define custom cadences (e.g., trading days); Dataset/Asset scheduling triggers a DAG when upstream datasets it subscribes to are updated.",
+        "importance": "They move Airflow beyond rigid cron to event- and data-driven pipelines, reducing latency and eliminating brittle time-based coupling between DAGs."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "The 'runs after the interval end' model (the off-by-one)",
+        "explanation": "The most persistent source of confusion in Airflow is that a scheduled run does not execute during the period it is named after - it executes after that period completes. A @daily DAG's run labeled 2026-01-01 has data_interval_start=2026-01-01 and data_interval_end=2026-01-02, and Airflow only creates and runs it once wall-clock time crosses 2026-01-02 00:00, because only then is January 1st's data fully available. This is by design: batch pipelines process complete periods. The practical consequence is that tasks must never query 'today' via a wall-clock function like CURRENT_DATE; they must use the templated interval ({{ data_interval_start }} / {{ ds }}) so the same code produces correct results whether it runs on schedule or in a backfill months later. Engineers who confuse logical_date with the run time end up writing pipelines that produce data offset by one interval, or that break entirely when replayed."
+      },
+      {
+        "concept": "Idempotency as the prerequisite for catchup and backfills",
+        "explanation": "Catchup and backfills replay historical intervals, sometimes many times, so every task must be idempotent - running it again for the same interval must yield the same end state, not duplicated or corrupted data. The reliable pattern is to derive the output location and query bounds from the data interval: write to a partition keyed on {{ ds }} (partition overwrite / MERGE / DELETE-then-INSERT for that date), and read only rows within [data_interval_start, data_interval_end). This makes reprocessing a bounded, deterministic operation: a bug fix becomes 'backfill these seven days,' each day cleanly overwriting its own partition. Without idempotency, a backfill becomes dangerous - appending duplicates, double-counting metrics, or racing with the regular schedule - which is why experienced teams treat idempotency and partition-aware writes as a hard design requirement before ever enabling catchup or running a backfill."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Cron string / preset:** schedule=\"0 6 * * *\" or schedule=\"@daily\"/\"@hourly\" for fixed clock cadences; the most common and predictable choice for batch ELT.",
+      "**timedelta:** schedule=timedelta(hours=6) creates rolling intervals relative to start_date rather than aligned to clock boundaries - useful for 'every N hours' regardless of wall-clock alignment.",
+      "**None / manual:** schedule=None means the DAG never runs on a clock and is only triggered manually or via the API - ideal for on-demand or externally triggered pipelines.",
+      "**Custom Timetable:** a pluggable Timetable subclass encodes non-trivial cadences (business days only, month-end, market hours) that cron cannot express cleanly.",
+      "**Dataset / Asset-based:** schedule=[dataset_a, dataset_b] triggers the DAG when its subscribed datasets are updated by producer tasks, enabling data-driven, cross-DAG dependencies instead of time coupling."
+    ],
+    "advantages": [
+      "**Deterministic, re-runnable pipelines:** interval-based templating makes every run self-describing and reproducible, so reprocessing history is routine and safe.",
+      "**Automatic historical processing:** catchup can bootstrap a pipeline across its full history with a single deploy, and backfills recover gaps on demand.",
+      "**Flexible scheduling models:** cron, timedelta, custom timetables, and dataset/asset triggers cover clock-based, rolling, calendar-aware, and event-driven needs.",
+      "**Built-in concurrency control:** max_active_runs, pools, and depends_on_past let operators throttle load and enforce ordering during large replays."
+    ],
+    "disadvantages": [
+      "**Steep mental model:** the data-interval / 'runs after end' semantics are non-intuitive and a frequent source of off-by-one bugs.",
+      "**Catchup foot-guns:** an old start_date with catchup enabled can spawn a flood of runs that overwhelm workers and warehouses and rack up cost.",
+      "**Idempotency burden:** safe catchup/backfill demands disciplined partition-aware, idempotent task design that is easy to get wrong.",
+      "**Backfill/ordering pitfalls:** depends_on_past and large ranges can create stuck or serialized runs, and pre-Airflow-3 CLI backfills were fragile foreground processes."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use cron/preset schedules with catchup=False and idempotent, partitioned tasks for standard daily/hourly ELT. Enable catchup only when you genuinely want to process the full history on first deploy. Run explicit backfills for bug fixes, reprocessing, or onboarding a pipeline over a known historical range, using max_active_runs/pools to bound load. Use dataset/asset scheduling when a DAG should react to upstream data rather than a clock.",
+      "whenToAvoid": "Avoid catchup=True on DAGs with a distant start_date unless you have deliberately sized the backlog and concurrency. Avoid backfilling non-idempotent tasks (they duplicate/corrupt data). Avoid depends_on_past for large backfills unless strict sequential ordering is truly required, and avoid wall-clock date functions (CURRENT_DATE/now()) in tasks that must be replayable."
+    },
+    "realWorldAnalogy": "Airflow scheduling is like producing a daily newspaper. Each edition is named for the day it covers (the data interval), but it is printed and delivered the next morning, once that day is over - just as a run for 2026-01-01 executes at the start of 2026-01-02. Catchup is a returning subscriber being handed every missed back-issue at once. A backfill is deliberately asking the presses to reprint editions from January 1 to January 7 after fixing a printing error. And idempotency is the rule that each reprint replaces that day's edition on the shelf rather than piling extra copies next to it - so no matter how many times you reprint, the archive stays clean and correct.",
+    "commonMisconceptions": [
+      {
+        "myth": "A DAG scheduled @daily for 2026-01-01 runs at the start of 2026-01-01.",
+        "reality": "It runs at the start of 2026-01-02, after the 2026-01-01 data interval has ended. logical_date/data_interval_start=2026-01-01 labels the period being processed, not the wall-clock run time. Expecting it to run at the interval start is the classic off-by-one mistake."
+      },
+      {
+        "myth": "Setting catchup=False and running a backfill are the same thing.",
+        "reality": "catchup=False only affects automatic scheduling on activation - it tells the scheduler to skip the historical backlog. A backfill is a separate, explicit command that runs a chosen historical range regardless of the catchup setting. You often use catchup=False for normal operation and still run targeted backfills when you need to reprocess history."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Bound replay load with max_active_runs per DAG and pools across DAGs so a catchup or large backfill cannot saturate workers or the warehouse; partition inputs/outputs by the data interval so each run touches an independent slice and runs can safely execute in parallel.",
+      "reliability": "Design every task to be idempotent and partition-aware (overwrite/MERGE keyed on {{ ds }}) so retries, catchup, and backfills never duplicate data; use retries and sensible retry_delay so transient failures self-heal without manual intervention.",
+      "faultTolerance": "Let individual interval failures be isolated - avoid depends_on_past unless strict ordering is required, since one failed early interval otherwise blocks all later ones; in Airflow 3, scheduler-managed backfills survive restarts rather than dying with a CLI process.",
+      "monitoring": "Track DagRun state per interval, task duration trends, and SLA misses; watch the count of queued/running DagRuns during backfills to catch runaway concurrency and expose gaps where an interval never produced a run.",
+      "security": "Restrict who can trigger backfills and change schedules via RBAC, since a mis-sized backfill can incur large cost or overwrite production partitions; keep connection credentials in a secrets backend, not in DAG code that gets replayed.",
+      "costOptimization": "Prefer catchup=False plus targeted backfills over blanket catchup to avoid processing intervals nobody needs; throttle concurrency and use incremental, partition-scoped queries so replays touch only the affected date range and its compute.",
+      "performance": "Align schedules to when source data is actually ready (offset the cron time past ingestion completion) to avoid empty or partial runs; keep tasks short and interval-scoped so many can be scheduled and backfilled without long-running bottlenecks."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "A daily ELT DAG with cron schedule, catchup=False, and interval-templated query",
+        "overview": "The canonical pattern: a cron schedule, explicit start_date, catchup disabled, and a task that filters on the data interval so it is idempotent and backfill-safe.",
+        "code": "from datetime import datetime\nfrom airflow import DAG\nfrom airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator\n\nwith DAG(\n    dag_id=\"daily_orders_elt\",\n    start_date=datetime(2026, 1, 1),\n    schedule=\"0 6 * * *\",      # 06:00 every day, after upstream ingestion\n    catchup=False,             # do NOT flood the cluster with history on enable\n    max_active_runs=1,         # one interval at a time for this DAG\n    default_args={\"retries\": 2},\n    tags=[\"elt\", \"orders\"],\n) as dag:\n\n    load_daily_orders = SQLExecuteQueryOperator(\n        task_id=\"load_daily_orders\",\n        conn_id=\"warehouse\",\n        # Scope to THIS run's data interval, not CURRENT_DATE, so it is\n        # deterministic on schedule AND on backfill. Overwrite the day's\n        # partition to stay idempotent.\n        sql=\"\"\"\n            DELETE FROM analytics.orders_daily\n            WHERE order_date = DATE '{{ ds }}';\n\n            INSERT INTO analytics.orders_daily\n            SELECT order_id, amount, DATE '{{ ds }}' AS order_date\n            FROM raw.orders\n            WHERE created_at >= TIMESTAMP '{{ data_interval_start }}'\n              AND created_at <  TIMESTAMP '{{ data_interval_end }}';\n        \"\"\",\n    )\n",
+        "language": "python",
+        "breakdown": "start_date fixes the first interval; schedule=\"0 6 * * *\" makes the run for interval [D, D+1) execute at 06:00 on D+1, after the day's data has landed. catchup=False tells the scheduler to skip the backlog between start_date and now, scheduling only the most recent interval. The SQL uses {{ ds }} (interval-start date) for the partition and {{ data_interval_start }}/{{ data_interval_end }} for the row filter, so a backfill months later recomputes exactly the right window. DELETE-then-INSERT on the day's partition makes the task idempotent.",
+        "expectedOutput": "In the scheduler/task logs after 2026-01-02 06:00:\n[2026-01-02T06:00:04+0000] {taskinstance.py} INFO - Executing SQLExecuteQueryOperator on 2026-01-01T00:00:00+00:00\n[2026-01-02T06:00:05+0000] {sql.py} INFO - Running statement: DELETE FROM analytics.orders_daily WHERE order_date = DATE '2026-01-01'\n[2026-01-02T06:00:06+0000] {sql.py} INFO - Rows affected: 4821\n[2026-01-02T06:00:07+0000] {taskinstance.py} INFO - Marking task as SUCCESS. dag_id=daily_orders_elt, task_id=load_daily_orders, logical_date=20260101T000000",
+        "commonIssues": "Using CURRENT_DATE or now() instead of {{ ds }} breaks backfills (every replayed run writes 'today'). Forgetting catchup=False with an old start_date spawns a year of runs. Setting the cron time to 00:00 can run before source data has finished landing.",
+        "optimizationTips": "Offset the cron time past ingestion completion to avoid partial data. Use MERGE instead of DELETE+INSERT on engines that support it for atomic idempotent upserts. Keep max_active_runs at 1 for strictly sequential loads, or raise it (with a pool) to parallelize independent partitions during backfills."
+      },
+      {
+        "title": "Dataset/Asset-driven and TaskFlow @dag scheduling",
+        "overview": "Two modern alternatives to cron: a producer DAG that updates a Dataset, and a consumer DAG scheduled to run whenever that Dataset is updated, written with the TaskFlow @dag API.",
+        "code": "from datetime import datetime\nfrom airflow.decorators import dag, task\nfrom airflow.datasets import Dataset  # Asset in Airflow 3.x\n\norders_clean = Dataset(\"s3://warehouse/analytics/orders_daily\")\n\n# Producer: time-scheduled, and it UPDATES the dataset on success.\n@dag(\n    dag_id=\"orders_producer\",\n    start_date=datetime(2026, 1, 1),\n    schedule=\"0 6 * * *\",\n    catchup=False,\n)\ndef orders_producer():\n    @task(outlets=[orders_clean])   # marks the dataset updated when this succeeds\n    def build_orders(**context):\n        ds = context[\"ds\"]\n        # ... write partition for `ds` ...\n        return ds\n    build_orders()\n\norders_producer()\n\n# Consumer: NO cron. It runs automatically whenever orders_clean is updated.\n@dag(\n    dag_id=\"orders_report\",\n    start_date=datetime(2026, 1, 1),\n    schedule=[orders_clean],        # data-aware / asset-based scheduling\n    catchup=False,\n)\ndef orders_report():\n    @task\n    def refresh_dashboard(**context):\n        # runs right after the producer updates the dataset\n        print(\"Refreshing for interval\", context[\"data_interval_start\"])\n    refresh_dashboard()\n\norders_report()\n",
+        "language": "python",
+        "breakdown": "The producer is a normal cron DAG, but its task declares outlets=[orders_clean]; when that task succeeds, Airflow records a dataset update event. The consumer sets schedule=[orders_clean] instead of a cron expression, so the scheduler triggers it as soon as the dataset is updated - no time coupling, no guessing how long the producer takes. The TaskFlow @dag/@task decorators reduce boilerplate and inject context (ds, data_interval_start) via **context. In Airflow 3.x, Dataset is generalized to Asset (airflow.sdk / assets), but the pattern is identical.",
+        "expectedOutput": "Scheduler log:\n[2026-01-02T06:03:11+0000] INFO - DAG orders_producer run 2026-01-01 succeeded; dataset s3://warehouse/analytics/orders_daily updated\n[2026-01-02T06:03:11+0000] INFO - Dataset update triggered DAG orders_report; creating dataset-triggered run\n[2026-01-02T06:03:14+0000] INFO - orders_report.refresh_dashboard -> Refreshing for interval 2026-01-01T00:00:00+00:00",
+        "commonIssues": "Expecting a dataset-triggered DAG to also run on a clock - it only runs on updates unless you combine schedule with datasets. Forgetting outlets on the producer task means the dataset is never marked updated and the consumer never fires. Mixing Airflow 2 Dataset imports with Airflow 3 Asset imports.",
+        "optimizationTips": "Use datasets to eliminate brittle ExternalTaskSensor polling and fixed time gaps between DAGs. Combine multiple datasets in schedule=[a, b] to fire only when all required inputs update. In Airflow 3, prefer Asset and asset-aware scheduling for the richer lineage/UI."
+      },
+      {
+        "title": "Backfilling a historical date range from the CLI",
+        "overview": "Reprocessing a fixed past window after a bug fix using airflow dags backfill, with dates that map to data intervals, plus a dry-run test of a single interval.",
+        "code": "# First, sanity-check ONE interval without creating a DagRun or touching state.\n# 'tasks test' runs the task for the given logical date using templated dates.\nairflow tasks test daily_orders_elt load_daily_orders 2026-01-01\n\n# Backfill the inclusive interval range 2026-01-01 .. 2026-01-07 (7 daily runs).\n# -s/--start-date and -e/--end-date bound the data intervals to reprocess.\nairflow dags backfill \\\n  --start-date 2026-01-01 \\\n  --end-date 2026-01-07 \\\n  --reset-dagruns \\\n  --max-active-runs 2 \\\n  daily_orders_elt\n\n# Inspect the resulting runs and their states.\nairflow dags list-runs -d daily_orders_elt\n",
+        "language": "bash",
+        "breakdown": "airflow tasks test executes a single task for one logical date in isolation - no DagRun, no dependency checks, no DB state changes - so you can verify the templated SQL renders and runs correctly before committing to a full backfill. airflow dags backfill then creates and runs a DagRun for each daily interval from 2026-01-01 through 2026-01-07. --reset-dagruns clears any existing runs in that range first so they re-execute cleanly, and --max-active-runs 2 throttles to two concurrent intervals so the warehouse is not overwhelmed. list-runs confirms every interval produced a successful run. Because the task overwrites each day's partition idempotently, the backfill cleanly recomputes exactly the affected days.",
+        "expectedOutput": "[2026-07-02 10:15:02] INFO - Backfilling from 2026-01-01T00:00:00+00:00 to 2026-01-07T00:00:00+00:00\n[2026-07-02 10:15:03] INFO - [backfill] Creating 7 DagRuns for daily_orders_elt\n[2026-07-02 10:15:20] INFO - [backfill] 2026-01-01 load_daily_orders SUCCESS (rows=4821)\n[2026-07-02 10:15:33] INFO - [backfill] 2026-01-02 load_daily_orders SUCCESS (rows=5090)\n...\n[2026-07-02 10:17:41] INFO - Backfill done. Exiting. 7/7 runs succeeded.",
+        "commonIssues": "In Airflow 2 the backfill runs in the foreground - killing the terminal can leave runs half-scheduled (Airflow 3's scheduler-managed backfill fixes this). Backfilling a non-idempotent task duplicates data. Omitting --reset-dagruns leaves already-succeeded runs skipped, so a bug fix is not actually reprocessed. Very large ranges without --max-active-runs can overload the warehouse.",
+        "optimizationTips": "Always test one interval with 'airflow tasks test' first. Size ranges and --max-active-runs to your warehouse capacity. In Airflow 3, trigger and monitor backfills from the UI/API so they survive restarts and respect normal concurrency controls. Pause the DAG's regular schedule during a large backfill to avoid the scheduler and backfill competing for the same intervals."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "An analytics team runs a daily ELT that loads the previous day's orders into a partitioned warehouse table powering revenue dashboards. A bug in the amount calculation went unnoticed for a week, so the last seven daily partitions are wrong and must be recomputed correctly without duplicating rows or disrupting the ongoing daily schedule.",
+    "inputData": "A raw.orders table in the warehouse with created_at timestamps, and a target analytics.orders_daily table partitioned by order_date. Roughly 5,000 orders land per day; the seven affected partitions are 2026-01-01 through 2026-01-07.",
+    "architecture": "An Airflow DAG (schedule=\"0 6 * * *\", start_date=2026-01-01, catchup=False, max_active_runs controlled) with a single idempotent SQLExecuteQueryOperator that DELETEs the day's partition and re-INSERTs rows filtered on [data_interval_start, data_interval_end); reprocessing is performed via 'airflow dags backfill' over the affected range.",
+    "processingSteps": [
+      "1. Fix the amount calculation in the DAG's SQL and deploy; run 'airflow dags reserialize' so the scheduler picks up the new DAG definition.",
+      "2. Validate the fix on a single interval with 'airflow tasks test daily_orders_elt load_daily_orders 2026-01-01', confirming the templated dates render and the corrected numbers look right - no state is changed.",
+      "3. Pause the DAG's regular schedule to avoid the scheduler and the backfill contending for the same intervals.",
+      "4. Run 'airflow dags backfill --start-date 2026-01-01 --end-date 2026-01-07 --reset-dagruns --max-active-runs 2 daily_orders_elt', which creates seven DagRuns, each overwriting its own day's partition idempotently, two at a time.",
+      "5. Verify with 'airflow dags list-runs -d daily_orders_elt' that all seven intervals succeeded, spot-check the corrected partitions, then unpause the DAG so normal daily scheduling resumes."
+    ],
+    "output": "Seven cleanly recomputed daily partitions (2026-01-01..2026-01-07) in analytics.orders_daily with correct amounts and no duplicate rows, and a resumed daily schedule producing the next day's partition on time.",
+    "monitoring": "Watch the backfill log for 7/7 SUCCESS, track rows-affected per interval against expected daily volume (~5,000), and confirm dashboard revenue for the affected week now matches source-of-truth reconciliation; alert if any interval fails or row counts deviate sharply.",
+    "errorHandling": "Because each interval overwrites its own partition, a failed interval can be retried individually without affecting others; --reset-dagruns ensures previously-succeeded (buggy) runs are re-executed rather than skipped; retries in default_args absorb transient warehouse errors; pausing the schedule prevents a race between the daily run and the backfill.",
+    "finalResult": "The week of corrupted revenue data is fully corrected through a bounded, idempotent backfill with controlled concurrency - no duplicate rows, no manual data surgery, and no disruption to the ongoing daily pipeline once it is unpaused."
+  },
+  "industryUseCases": [
+    {
+      "company": "Airbnb (Airflow's origin, large-scale batch ELT)",
+      "problem": "Thousands of interdependent daily/hourly pipelines must reprocess historical windows after schema or logic changes without double-counting metrics.",
+      "solution": "Interval-templated, idempotent tasks writing to date-partitioned tables, with targeted backfills over affected ranges and pools/max_active_runs to protect shared warehouse capacity.",
+      "benefits": "Safe, routine reprocessing of history and controlled catchup, keeping metrics accurate while shielding the warehouse from replay-induced overload."
+    },
+    {
+      "company": "A fintech data platform (regulatory reprocessing)",
+      "problem": "A corrected exchange-rate feed requires re-deriving several months of daily settlement reports with a full audit trail and no duplicate entries.",
+      "solution": "catchup=False for normal operation plus explicit, RBAC-restricted backfills over the impacted date range, each run overwriting its own partition and logging logical_date for auditability.",
+      "benefits": "Deterministic, auditable reprocessing that satisfies compliance, avoids duplicate financial records, and bounds the cost of a large replay."
+    },
+    {
+      "company": "An e-commerce analytics team (data-aware pipelines)",
+      "problem": "Downstream report DAGs were coupled to upstream loads by fixed time gaps and ExternalTaskSensors, causing stale dashboards when upstream jobs ran late.",
+      "solution": "Dataset/Asset-based scheduling: report DAGs are triggered by dataset updates from the loaders instead of a clock, eliminating the fixed gap and sensor polling.",
+      "benefits": "Fresher dashboards, fewer failed sensors, and simpler cross-DAG dependencies that react to actual data readiness rather than guessed timing."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Scale by partitioning every input read and output write on the data interval so runs are independent and horizontally parallelizable; govern replay concurrency with max_active_runs per DAG and shared pools across DAGs so a catchup or multi-month backfill cannot saturate the executor or the downstream warehouse. Align cron schedules to source-readiness to avoid wasteful empty runs.",
+    "faultTolerance": "Make tasks idempotent and interval-scoped so retries and re-runs are always safe; isolate interval failures by avoiding depends_on_past unless strict ordering is essential, since it otherwise blocks all later intervals behind one failed early one. In Airflow 3, backfills are scheduler-managed objects that survive component restarts rather than dying with a CLI process.",
+    "highAvailability": "Run multiple schedulers (Airflow 2.0+ supports active-active HA schedulers) so DagRun creation continues if one scheduler fails; keep the metadata database on a managed HA instance since it is the single source of truth for DagRun and interval state.",
+    "disasterRecovery": "Because tasks are idempotent and driven by data intervals, recovery from an outage is a bounded backfill of the missed range rather than manual patching; keep source data immutable and outputs partition-overwritable so any interval can be recomputed deterministically, and back up the metadata DB to preserve run history.",
+    "performanceOptimization": "Keep tasks short and interval-scoped so many can be scheduled and backfilled in parallel; offset cron times past ingestion so runs do not process partial data and then need re-running; prefer MERGE/partition-overwrite for atomic idempotent writes; reserialize DAGs after changes so the scheduler is not parsing stale definitions.",
+    "costOptimization": "Default to catchup=False plus targeted backfills so you never pay to process intervals nobody needs; throttle backfill concurrency to fit warehouse credits; use incremental, interval-scoped queries so a replay touches only the affected date range instead of full-table scans.",
+    "securityConsiderations": "Gate schedule changes and backfill triggers behind RBAC, since a mis-sized backfill can overwrite production partitions or incur large cost; store all connection credentials in a secrets backend (not in DAG code that is parsed and replayed); audit who initiated each backfill via logical_date and run metadata.",
+    "monitoringAndObservability": "Track per-interval DagRun state, task duration trends, SLA misses, and the number of queued/running DagRuns during replays to catch runaway concurrency; surface intervals that never produced a run (gaps) and compare per-interval row counts against expected volumes to detect silent data issues.",
+    "dataQualityValidation": "Add post-load checks per interval (row counts within expected bounds, no duplicate keys in the partition, referential checks) so a bad backfill is caught immediately; fail the run if the partition's checks do not pass rather than publishing incorrect data downstream.",
+    "loggingAndAlerting": "Log the logical_date/data_interval bounds and rows-affected for every run so reprocessing is auditable; alert on failed backfill intervals, catchup backlogs exceeding a threshold, schedule drift (runs starting late relative to source readiness), and row-count anomalies per partition."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Set catchup=False by default** and enable it only when you deliberately want to process the full history from start_date on first deploy.",
+      "**Template every date from the data interval** ({{ ds }}, {{ data_interval_start }}, {{ data_interval_end }}) rather than using CURRENT_DATE/now(), so runs are correct on schedule and on backfill.",
+      "**Make tasks idempotent and partition-aware** (overwrite/MERGE keyed on {{ ds }}) so catchup, retries, and backfills never duplicate or corrupt data.",
+      "**Throttle replays with max_active_runs and pools** so a catchup or large backfill cannot overwhelm workers or the downstream warehouse."
+    ],
+    "engineeringStandards": [
+      "Always set an explicit, timezone-aware start_date and choose the schedule to run after source data is known to be ready.",
+      "Test a single interval with 'airflow tasks test' before running a full backfill, and 'airflow dags reserialize' after changing a DAG.",
+      "Prefer dataset/asset-based scheduling over fixed time gaps and ExternalTaskSensors when a DAG should react to upstream data readiness."
+    ],
+    "designRecommendations": [
+      "Partition outputs by the interval date so each run owns an independent slice, enabling safe parallel backfills.",
+      "Avoid depends_on_past unless strictly sequential processing is required, because it serializes runs and one failure blocks all later intervals.",
+      "Pause a DAG's regular schedule during large backfills so the scheduler and backfill do not contend for the same intervals."
+    ],
+    "namingConventions": [
+      "Name DAGs by domain and cadence (e.g., daily_orders_elt, hourly_events_load) so schedule intent is obvious.",
+      "Name partitions and output paths by the interval date (date=YYYY-MM-DD) to make idempotent overwrites and lineage clear.",
+      "Name datasets/assets by their storage URI (s3://.../orders_daily) so producer outlets and consumer schedules line up unambiguously."
+    ],
+    "documentationStandards": [
+      "Document each DAG's schedule, start_date, catchup setting, and the data-readiness assumption behind the cron time.",
+      "Document that tasks are idempotent and how output is partitioned, so operators know backfills are safe.",
+      "Document the backfill procedure (test one interval, reset-dagruns, throttle concurrency, verify) for each critical pipeline."
+    ],
+    "testingStrategies": [
+      "Use 'airflow tasks test dag task DATE' to verify templated dates render and a single interval produces correct output without touching state.",
+      "Test idempotency explicitly: run the same interval twice and assert the partition is identical (no duplicates).",
+      "Test catchup/backfill behavior in a staging environment with a small date range before running against production data volumes."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Assuming a run labeled 2026-01-01 executes on 2026-01-01 and querying data with CURRENT_DATE/now().",
+      "whyItHappens": "The data-interval model is non-intuitive; logical_date reads like 'the day it runs,' and wall-clock date functions feel natural.",
+      "impact": "Off-by-one data: the run for 2026-01-01 actually starts on 2026-01-02, and CURRENT_DATE-based queries produce wrong or unreproducible results that break entirely on backfill.",
+      "correctApproach": "Understand that a run executes after its interval ends, and always scope queries to the templated interval ({{ ds }}, {{ data_interval_start }}/{{ data_interval_end }}) so the same code is correct on schedule and on replay."
+    },
+    {
+      "mistake": "Leaving catchup enabled on a DAG with an old start_date.",
+      "whyItHappens": "Catchup was the historical default and the effect is invisible until the DAG is unpaused, when the scheduler suddenly enumerates every missed interval.",
+      "impact": "A flood of hundreds of concurrent runs overwhelms workers and the warehouse, spikes cost, and can overwrite or duplicate data at scale.",
+      "correctApproach": "Set catchup=False explicitly for normal pipelines; if you truly need history, enable catchup deliberately and cap concurrency with max_active_runs and pools."
+    },
+    {
+      "mistake": "Running a backfill against non-idempotent tasks (append-only inserts).",
+      "whyItHappens": "The task works fine on the forward schedule where each interval is only processed once, so the duplication risk is not obvious until history is replayed.",
+      "impact": "Backfilling re-inserts rows, double-counting metrics and corrupting partitions; the 'fix' makes the data worse.",
+      "correctApproach": "Make tasks idempotent first - DELETE/MERGE the interval's partition before insert, keyed on {{ ds }} - then backfill with --reset-dagruns so each interval cleanly overwrites its own slice."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Handling historical intervals",
+      "optionA": "catchup=True (automatic scheduling)",
+      "optionB": "Explicit backfill (airflow dags backfill)",
+      "explanation": "catchup=True makes the scheduler automatically create runs for every missed interval between start_date and now when the DAG is enabled - convenient for bootstrapping a pipeline over its full history, but dangerous with an old start_date because it can spawn a flood of runs. A backfill is an explicit, operator-controlled command that reprocesses a specific chosen range regardless of the catchup setting, with flags like --reset-dagruns and --max-active-runs for control. In practice teams keep catchup=False for safe normal operation and use targeted backfills whenever they need to reprocess a known historical window."
+    },
+    {
+      "feature": "What triggers a DAG run",
+      "optionA": "Cron/timedelta (time-based scheduling)",
+      "optionB": "Dataset/Asset (data-aware scheduling)",
+      "explanation": "Time-based schedules (cron strings, presets, timedelta) create runs on a fixed clock cadence and are simple and predictable, but they couple downstream DAGs to upstream ones via guessed time gaps and brittle sensors. Dataset/Asset scheduling instead triggers a DAG when the specific datasets it subscribes to are updated by producer tasks, so consumers run as soon as data is actually ready - eliminating fixed delays and polling. Use cron for genuinely time-driven work (nightly batch) and dataset/asset scheduling for cross-DAG data dependencies where freshness and decoupling matter."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "In Airflow, when does a DAG scheduled @daily with start_date 2026-01-01 actually run its first execution?",
+        "answer": "The first run covers the data interval [2026-01-01, 2026-01-02) and executes just after that interval ends - at the start of 2026-01-02. Its logical_date/data_interval_start is 2026-01-01, which labels the period of data, not the wall-clock run time.",
+        "explanation": "This directly probes the data-interval model. The key phrase is 'runs after the interval ends' - the run for a day executes once that day is complete, which is the #1 source of Airflow confusion."
+      },
+      {
+        "question": "What does the catchup parameter do, and why is catchup=False a common default?",
+        "answer": "catchup controls whether the scheduler creates runs for all missed intervals between start_date and now when the DAG is enabled. catchup=False makes it skip the historical backlog and schedule only the most recent interval, which avoids suddenly spawning a flood of runs from an old start_date.",
+        "explanation": "Show you understand the foot-gun: catchup=True with a distant start_date can overwhelm the cluster. Mention that you still use explicit backfills when you genuinely need history."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How do you make a task safe to backfill, and which templated variables do you use?",
+        "answer": "Make it idempotent and interval-scoped: derive the output partition and query bounds from the data interval using {{ ds }} (interval start date), {{ data_interval_start }}, and {{ data_interval_end }}, and overwrite the partition (DELETE/MERGE) rather than appending. Then re-running any interval produces the same result.",
+        "explanation": "Ties idempotency to templating. Contrast with CURRENT_DATE/now(), which breaks replay because every backfilled run would write 'today' instead of the interval it represents."
+      },
+      {
+        "question": "What is the difference between running a backfill and setting catchup=False?",
+        "answer": "catchup=False only affects automatic scheduling on activation - it tells the scheduler to skip the historical backlog. A backfill is a separate, explicit command (airflow dags backfill -s ... -e ...) that runs a chosen historical range regardless of the catchup setting. They are complementary: catchup=False for normal operation, backfill for deliberate reprocessing.",
+        "explanation": "Interviewers check that you do not conflate the two. Emphasize that a backfill ignores catchup and is operator-initiated with its own concurrency controls."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How do depends_on_past and max_active_runs affect a large backfill, and what are the risks?",
+        "answer": "max_active_runs caps concurrent DagRuns per DAG, throttling how many intervals hit downstream systems at once. depends_on_past forces a task to wait for the same task in the previous interval to succeed, serializing the backfill; if an early interval fails, every later interval blocks behind it. For large backfills you usually want a controlled max_active_runs and to avoid depends_on_past unless strict sequential ordering is truly required.",
+        "explanation": "Demonstrates operational depth: concurrency control protects the warehouse, while depends_on_past can turn a parallel backfill into a stuck serial one. Mention pools for cross-DAG slot limits."
+      },
+      {
+        "question": "How has scheduling evolved across Airflow versions - execution_date, timetables, datasets, and Airflow 3 backfills?",
+        "answer": "Airflow 2.2 introduced the data-interval model and pluggable Timetables, replacing the confusing execution_date with logical_date plus data_interval_start/end. Airflow 2.4 added Dataset-based data-aware scheduling. Airflow 3.0 generalized Datasets to Assets, removed the deprecated execution_date, and made backfills first-class, scheduler-managed, UI/API-triggerable objects instead of fragile foreground CLI processes.",
+        "explanation": "Signals current knowledge. The headline points are: data interval over execution_date, timetables and dataset/asset scheduling, and Airflow 3's managed backfills that survive restarts."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "You deploy a new daily DAG with start_date one year in the past to 'load all history.' On unpause, the cluster is instantly overwhelmed by hundreds of runs and the warehouse bill spikes. What went wrong and how do you fix it?",
+        "thinkingProcess": "A one-year-old start_date with catchup enabled makes the scheduler enumerate ~365 missed intervals and create runs for all of them at once. The fix is to control catchup and concurrency: set catchup=False for normal operation, and if history is genuinely needed, load it as a deliberately throttled backfill rather than an uncontrolled catchup.",
+        "expectedAnswer": "Set catchup=False so the scheduler only schedules the latest interval going forward. To load the year of history intentionally, run an explicit backfill over the range with --max-active-runs (and a pool) sized to warehouse capacity, ideally pausing the regular schedule during the backfill and ensuring tasks are idempotent so partitions overwrite cleanly. This bounds concurrency and cost instead of flooding the cluster."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a daily partitioned warehouse ELT in Airflow that supports safe reprocessing of arbitrary historical date ranges after bug fixes, without duplicating data or destabilizing the cluster.",
+        "designApproach": "Use a cron schedule offset past source-readiness, start_date fixed, catchup=False. Each task derives its window from {{ data_interval_start }}/{{ data_interval_end }} and writes to a partition keyed on {{ ds }} using MERGE/partition-overwrite for idempotency. Reprocessing is done via 'airflow dags backfill' with --reset-dagruns over the affected range. Concurrency is bounded by max_active_runs and pools; per-interval data-quality checks gate publication.",
+        "tradeOffs": "Idempotent partition-overwrite adds design discipline and slightly more work than naive appends, but buys safe replay. catchup=False plus manual backfills gives control at the cost of an explicit operational step. depends_on_past would give strict ordering but serialize and fragilize backfills, so it is avoided unless required.",
+        "scalingStrategy": "Partition by date so intervals are independent and backfills parallelize; raise max_active_runs (with a warehouse-sized pool) to speed large replays; run HA active-active schedulers and a managed HA metadata DB; in Airflow 3 use scheduler-managed backfills that survive restarts and dataset/asset scheduling to decouple downstream report DAGs from timing."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between {{ ds }}, {{ data_interval_start }}, and {{ prev_ds }}?",
+      "How does wait_for_downstream differ from depends_on_past?",
+      "When would you choose a custom Timetable over a cron string?",
+      "How do pools differ from max_active_runs in controlling concurrency?",
+      "What changed about execution_date in Airflow 3, and what replaced it?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Airflow's scheduler creates a DagRun for each data interval and runs it AFTER the interval ends (logical_date labels the data period, not the run time); catchup fills missed intervals automatically, backfills reprocess a chosen range on demand, and idempotent, interval-templated tasks make both safe.",
+    "keyConcepts": [
+      "A run for interval [D, D+1) executes just after D+1 begins - logical_date=D describes the data, not the wall-clock run time.",
+      "schedule can be a cron string, preset (@daily), timedelta, None, a custom Timetable, or Datasets/Assets (data-aware).",
+      "catchup=True fills all intervals from start_date to now; catchup=False (usual default) skips the backlog.",
+      "Backfill is an explicit run of a historical range, independent of catchup; idempotency is its prerequisite.",
+      "Use {{ ds }} / {{ data_interval_start }} / {{ data_interval_end }} and partition-overwrite so tasks are replay-safe."
+    ],
+    "formulas": [],
+    "commands": [
+      "airflow dags backfill -s 2026-01-01 -e 2026-01-07 my_dag",
+      "airflow dags trigger -l 2026-01-01 my_dag",
+      "airflow dags list-runs -d my_dag",
+      "airflow tasks test my_dag task 2026-01-01",
+      "airflow dags reserialize"
+    ],
+    "interviewPoints": [
+      "Data-interval model: runs execute after the interval ends (the off-by-one).",
+      "catchup=False by default; backfill is explicit and ignores catchup.",
+      "Idempotency + interval templating make catchup/backfill safe.",
+      "max_active_runs and pools throttle replay load; depends_on_past serializes it.",
+      "Airflow evolution: execution_date -> data interval, timetables, datasets/assets, Airflow 3 managed backfills."
+    ],
+    "quickNotes": [
+      "{{ ds }} = interval start date (YYYY-MM-DD); {{ data_interval_start/end }} = interval bounds; {{ prev_ds }} = prior interval start.",
+      "Never use CURRENT_DATE/now() in scheduled tasks that must be replayable.",
+      "Offset the cron time past source-data readiness to avoid partial runs.",
+      "Use --reset-dagruns so a backfill re-runs already-succeeded (buggy) intervals.",
+      "depends_on_past blocks all later intervals if one early interval fails - avoid it for large backfills unless ordering is required."
+    ]
+  },
+  "keyTakeaways": [
+    "The core mental model: a DAG run executes AFTER its data interval ends, so logical_date/data_interval_start describes the period of data being processed (a daily run for 2026-01-01 actually starts at the beginning of 2026-01-02), not the wall-clock moment it runs - internalizing this resolves the #1 source of Airflow confusion.",
+    "schedule is flexible - cron strings, presets like @daily, timedelta, None, custom Timetables, and modern Dataset/Asset (data-aware) scheduling - so choose time-based cadences for clock-driven batch and dataset/asset triggers for decoupled, freshness-driven cross-DAG dependencies.",
+    "catchup=True fills every missed interval from start_date to now and can flood the cluster, so set catchup=False by default; a backfill (airflow dags backfill -s ... -e ...) is a separate, explicit way to reprocess a chosen historical range regardless of catchup.",
+    "Idempotency is the prerequisite for safe catchup and backfills: derive query bounds and output partitions from the data interval ({{ ds }}, {{ data_interval_start }}/{{ data_interval_end }}) and overwrite rather than append, so replaying any interval is deterministic and never duplicates data.",
+    "Control cost and stability with max_active_runs and pools, avoid depends_on_past for large backfills unless strict ordering is required, and leverage Airflow 3's scheduler-managed, UI/API-triggerable backfills that survive restarts - always testing a single interval with 'airflow tasks test' before a full replay."
+  ]
+}

@@ -1,0 +1,413 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Replication is how Kafka keeps data durable and available: every partition has one leader and zero or more follower replicas spread across brokers, and followers continuously fetch records from the leader to stay in sync. If the broker hosting a leader dies, one of the in-sync followers is promoted so producers and consumers keep working with no data loss.",
+      "The In-Sync Replica (ISR) set is the subset of a partition's replicas that are fully caught up with the leader (within replica.lag.time.max.ms). The ISR is the heart of Kafka's durability contract: with acks=all, a produce request only succeeds once every member of the ISR has the record, and min.insync.replicas defines how many ISR members must exist for that write to be accepted at all.",
+      "In a data-engineering pipeline (for example CDC from Postgres streamed into a lakehouse), replication is what lets you promise that a committed change event is never lost even when a broker or an entire availability zone fails. Getting replication.factor, min.insync.replicas, acks, and unclean.leader.election.enable right is the difference between a pipeline that silently drops rows and one that is genuinely exactly-as-durable-as-the-source."
+    ],
+    "learningObjectives": [
+      "Explain the roles of partition leaders and followers, how followers fetch from the leader, and how leader election works when a broker fails.",
+      "Define the ISR set, how it shrinks and expands based on replica.lag.time.max.ms, and how the high watermark determines what consumers can read.",
+      "Configure replication.factor, min.insync.replicas, and acks=all together to get a durable-but-available baseline, and understand the unclean.leader.election.enable tradeoff.",
+      "Detect and diagnose under-replicated partitions using kafka-topics.sh and understand the KRaft controller's role in tracking ISR and electing leaders."
+    ],
+    "formalDefinition": "Kafka replication is the mechanism by which each topic partition is stored as a configurable number of copies (replication.factor) across distinct brokers, with exactly one replica designated leader and the rest followers. Followers issue fetch requests to the leader to replicate its log; those that remain caught up within replica.lag.time.max.ms form the In-Sync Replica (ISR) set. A record is considered committed only once it has been replicated to all members of the ISR, and the high watermark, the offset up to which all ISR members have the data, marks the boundary of what consumers may read. The min.insync.replicas setting, evaluated with producer acks=all, requires a minimum ISR size for a write to be accepted, and the controller (the KRaft controller quorum in modern clusters) tracks ISR membership and elects new leaders from the ISR when a leader broker fails.",
+    "simpleExplanation": "Think of each partition as a shared notebook. One broker holds the master copy (the leader) and everyone writes to it; other brokers keep photocopies (followers) that they constantly update by copying the master. The set of photocopies that are fully up to date is the ISR. When you say acks=all, the writer waits until every up-to-date photocopy has the new line before calling the write done, and min.insync.replicas says how many up-to-date copies must exist before anyone is even allowed to write. If the master copy is lost, one of the up-to-date photocopies is promoted to master so nothing written is lost. Consumers are only allowed to read lines that every up-to-date copy already has (the high watermark), so they never see something that could vanish.",
+    "historicalContext": "Replication was added in Kafka 0.8 (2013), transforming Kafka from a single-copy log into a fault-tolerant system and introducing leaders, followers, and the ISR concept. Early versions relied on ZooKeeper to store ISR and leadership metadata, and the controller was a broker elected via ZooKeeper. KIP-101 and later work refined replication correctness (leader epochs to prevent log divergence). The biggest recent change is KRaft (KIP-500), which by Kafka 3.3 (2022) made a Raft-based controller quorum production-ready and, in Kafka 4.0 (2025), removed ZooKeeper entirely. Under KRaft the controller quorum holds cluster metadata (including ISR and leadership) in its own replicated metadata log, and brokers learn leadership changes from it, making leader election faster and more scalable for clusters with many partitions.",
+    "whyItMatters": {
+      "business": "For pipelines feeding financial reporting, compliance, or customer-facing analytics, a lost record is a wrong number that erodes trust and can trigger audits. Replication with the right durability settings lets the business promise that ingested events (orders, payments, CDC changes) survive hardware and zone failures, which is a prerequisite for treating Kafka as a system of record rather than a best-effort buffer.",
+      "engineering": "Replication removes the need for engineers to build custom failover or backup logic per pipeline. With replication.factor=3 and min.insync.replicas=2, a broker can be patched or lost without downtime or data loss, so on-call engineers can do rolling restarts and node replacements as routine operations instead of emergencies.",
+      "scalability": "Replicas let read and write load ride out broker failures, and partition-level replication means the cluster can grow to thousands of partitions while still recovering quickly. KRaft specifically improves how fast leadership for huge partition counts is propagated, so large multi-tenant clusters stay responsive during failovers.",
+      "cost": "Replication multiplies storage (RF=3 means three copies), so it is the single biggest storage cost lever. The engineering task is to set RF high enough for durability but not higher than needed, and to reserve high RF and strict min.insync.replicas for topics that truly require it, using cheaper settings for reprocessable or ephemeral data.",
+      "reliability": "The ISR, high watermark, and acks=all together give a precise durability contract: a committed record is on multiple brokers before the producer is told success, and consumers never read data that is not yet durable. This is what makes end-to-end guarantees (including exactly-once) possible, since those guarantees assume committed data does not disappear."
+    },
+    "coreComponents": [
+      {
+        "name": "Partition leader",
+        "definition": "The single replica of a partition that handles all produce and consume requests for that partition; every read and write goes through the leader.",
+        "purpose": "Serialize all writes into one authoritative log so ordering is well defined, and be the source that followers replicate from.",
+        "responsibilities": "Append incoming records to its log; assign offsets; track each follower's fetch position; maintain the ISR set and the high watermark; acknowledge produce requests per the acks setting.",
+        "examples": "For topic cdc.public.orders partition 3 hosted on brokers {1,2,3}, broker 1 might be the leader that a Debezium producer writes all order-change events to."
+      },
+      {
+        "name": "Follower replicas",
+        "definition": "The non-leader copies of a partition that continuously fetch records from the leader to mirror its log.",
+        "purpose": "Provide durable extra copies so that if the leader broker fails, a follower can be promoted with no (or bounded) data loss.",
+        "responsibilities": "Send fetch requests to the leader; append fetched records in order; report their fetched offset back so the leader can update the ISR and high watermark; be eligible for leader election if in-sync.",
+        "examples": "Brokers 2 and 3 act as followers for orders-partition-3, each pulling records from broker 1 and staying within replica.lag.time.max.ms to remain in the ISR."
+      },
+      {
+        "name": "In-Sync Replica (ISR) set",
+        "definition": "The dynamic set of replicas (including the leader) that are fully caught up with the leader within replica.lag.time.max.ms.",
+        "purpose": "Define which replicas are safe to promote and which must acknowledge an acks=all write, forming the core of the durability guarantee.",
+        "responsibilities": "Shrink when a replica falls behind or its broker is unreachable; expand when a lagging replica catches back up; gate committed writes together with min.insync.replicas.",
+        "examples": "If broker 3 goes down, the ISR for orders-partition-3 shrinks from {1,2,3} to {1,2}; when broker 3 recovers and catches up, the ISR expands back to {1,2,3}."
+      },
+      {
+        "name": "High watermark (HW)",
+        "definition": "The offset up to which every member of the ISR has successfully replicated; records at or below the high watermark are considered committed and readable.",
+        "purpose": "Ensure consumers only ever read data that is durable across the whole ISR, so a leader failover cannot make already-read data disappear.",
+        "responsibilities": "Advance as the slowest ISR follower catches up; bound what consumers can fetch; be preserved and reconciled during leader election using leader epochs to avoid log divergence.",
+        "examples": "If the leader has offsets up to 1000 but the slowest ISR follower only has up to 980, the high watermark is 980 and consumers cannot yet read offsets 981-1000."
+      },
+      {
+        "name": "Controller (KRaft quorum)",
+        "definition": "The component that manages cluster metadata including partition leadership and ISR membership; in modern Kafka this is the KRaft controller quorum, replacing the old ZooKeeper-backed controller.",
+        "purpose": "Elect partition leaders from the ISR when a broker fails and propagate leadership and ISR changes to all brokers quickly and consistently.",
+        "responsibilities": "Persist metadata in the replicated __cluster_metadata log; detect broker failures; choose new leaders (preferring the preferred replica and the ISR); apply ISR shrink/expand requests from leaders.",
+        "examples": "When broker 1 (leader of orders-partition-3) crashes, the KRaft controller elects broker 2 from the ISR {2,3} as the new leader and tells all brokers about the change."
+      }
+    ],
+    "internalWorking": [
+      "Each partition has an ordered replica list (the assignment); the first live, in-sync replica is normally the preferred leader. The leader appends produced records to its local log and assigns them monotonically increasing offsets, while followers issue continuous fetch requests to the leader exactly as a consumer would, appending the returned records to their own copies of the log.",
+      "The leader tracks the last fetched offset of every follower. A follower stays in the ISR as long as it has fetched up to the leader's log end offset within the last replica.lag.time.max.ms (default 30000 ms). If a follower stops fetching or falls behind that time window (slow disk, network, GC pause, or a dead broker), the leader removes it from the ISR (an ISR shrink); when it catches up again the leader adds it back (an ISR expand).",
+      "The high watermark is the minimum log-end offset across all ISR members. The leader only advances the high watermark once the slowest in-sync follower has the data, and consumers are served only up to the high watermark, so no consumer can read a record that is not yet on every ISR replica. Leader epochs are attached to records so that after a failover, followers can detect and truncate any divergent tail rather than keeping inconsistent data.",
+      "Producer acks interacts with the ISR: acks=0 does not wait at all, acks=1 waits only for the leader's local write, and acks=all waits until every current ISR member has the record. min.insync.replicas is checked when acks=all is used: if the current ISR size is below min.insync.replicas, the leader rejects the produce with NotEnoughReplicas rather than accepting a write that would not be sufficiently durable.",
+      "When a leader's broker fails, the controller (KRaft quorum) detects it and elects a new leader. With unclean.leader.election.enable=false (the safe default), it only chooses from the surviving ISR, so no committed data is lost; if the ISR is empty and unclean election is disabled, the partition goes offline until an ISR member returns. With unclean.leader.election.enable=true, the controller may elect an out-of-sync replica to restore availability, at the cost of losing records that only existed on the failed leader."
+    ],
+    "architectureFlow": "Producer sends record with acks=all -> Leader (broker 1) appends to its log and assigns offset -> Followers (brokers 2,3) fetch the record from the leader -> Leader checks ISR size against min.insync.replicas -> once all ISR members have fetched, leader advances the high watermark -> leader acknowledges the produce to the producer -> Consumers fetch only up to the high watermark -> if leader broker fails, KRaft controller detects it and elects a new leader from the ISR -> brokers learn the new leader from the controller metadata log -> producers/consumers transparently reconnect to the new leader",
+    "dataFlowWalkthrough": [
+      "1. A Debezium CDC producer writes an order-change event to topic cdc.public.orders partition 3 with acks=all; the request routes to the current leader, broker 1.",
+      "2. Broker 1 appends the record at offset 1001 to its local log segment and records the leader epoch, but does not yet acknowledge because acks=all is set.",
+      "3. Followers on brokers 2 and 3 (the other ISR members) fetch offset 1001 from broker 1 and append it to their own logs, then report their new fetch offset back to the leader.",
+      "4. The leader sees that all ISR members {1,2,3} now hold offset 1001, confirms the ISR size (3) meets min.insync.replicas (2), advances the high watermark to 1001, and sends the acknowledgment to the producer.",
+      "5. A lakehouse sink consumer fetches records only up to the high watermark (1001), so it never ingests an offset that is not yet on every in-sync replica; if broker 1 later dies, the KRaft controller promotes broker 2 (still in the ISR) and no committed order event is lost."
+    ],
+    "keyTerminology": [
+      {
+        "term": "replication.factor",
+        "meaning": "The number of copies of each partition Kafka maintains across brokers, set at topic creation (e.g., 3 means one leader plus two followers).",
+        "importance": "It caps how many broker failures a partition can tolerate; RF=3 tolerates the loss of one broker while still keeping min.insync.replicas=2 satisfiable, making it the standard durable baseline."
+      },
+      {
+        "term": "min.insync.replicas",
+        "meaning": "The minimum number of in-sync replicas that must be available for an acks=all produce to succeed; if the ISR is smaller, the write is rejected with NotEnoughReplicas.",
+        "importance": "It is the durability floor: setting it to 2 with RF=3 guarantees every acknowledged write is on at least two brokers, so a single broker loss never loses acknowledged data."
+      },
+      {
+        "term": "High watermark (HW)",
+        "meaning": "The highest offset that has been replicated to all ISR members and is therefore committed and readable by consumers.",
+        "importance": "It defines the boundary between durable, consumable data and not-yet-safe data, and is why consumers never see records that a failover could erase."
+      },
+      {
+        "term": "replica.lag.time.max.ms",
+        "meaning": "The maximum time a follower may go without fully catching up to the leader before it is removed from the ISR (default 30000 ms).",
+        "importance": "It defines what 'in-sync' means; too low causes flapping ISR under normal jitter, too high keeps slow replicas in the ISR and can stall the high watermark and hurt latency."
+      },
+      {
+        "term": "unclean.leader.election.enable",
+        "meaning": "A setting that, when true, allows an out-of-sync replica to be elected leader when no ISR member is available, trading data loss for availability.",
+        "importance": "Keeping it false (the default) preserves the no-data-loss guarantee; enabling it can silently drop committed records, so it is only chosen when availability strictly outranks durability."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "acks=all and min.insync.replicas must be tuned together",
+        "explanation": "acks=all only waits for the current ISR, so on its own it does not guarantee a minimum number of copies; if the ISR has shrunk to just the leader, acks=all still succeeds with a single copy. min.insync.replicas is what enforces a floor: with RF=3 and min.insync.replicas=2, an acks=all write is accepted only when at least two replicas are in sync, so any acknowledged record survives one broker loss. Setting min.insync.replicas equal to the replication.factor removes all failure tolerance for writes, because losing any single replica drops the ISR below the minimum and produces start failing."
+      },
+      {
+        "concept": "The high watermark protects consumers from failover data loss",
+        "explanation": "Because consumers can only read up to the high watermark, and the high watermark only advances once every ISR member has the data, a consumer can never read a record that exists solely on a leader that might fail. If the leader dies before a record is replicated to the ISR, that record was below the high watermark for no one and is simply discarded on the new leader via log truncation using leader epochs. This is what prevents the classic split-brain scenario where a consumer reads data that then vanishes after a failover."
+      },
+      {
+        "concept": "Under-replicated partitions are an early warning, not necessarily an outage",
+        "explanation": "An under-replicated partition is one whose current ISR is smaller than its replication.factor, meaning at least one replica has fallen behind or its broker is down. The partition is still available and durable as long as the ISR meets min.insync.replicas, but a persistently under-replicated partition signals a struggling broker, slow disk, or network problem and reduces your remaining failure tolerance. Monitoring UnderReplicatedPartitions and alerting when it is non-zero for more than a short window is a core operational practice."
+      },
+      {
+        "concept": "unclean leader election is a durability-vs-availability decision",
+        "explanation": "If all ISR members for a partition are lost, Kafka faces a choice: keep the partition offline until an ISR member returns (unclean.leader.election.enable=false, no data loss) or promote a stale, out-of-sync replica to restore availability immediately (true, but any records that only existed on the failed ISR are permanently lost). For data-engineering pipelines feeding ledgers or CDC where correctness matters, keep it false and accept temporary unavailability; enable it only for pipelines where stale-but-available beats correct-but-down, and document that choice explicitly."
+      }
+    ],
+    "variationsAndTypes": [
+      "**acks=0 (fire-and-forget):** The producer does not wait for any acknowledgment; fastest and lowest latency but records can be lost on any leader failure or network drop. Suitable only for lossy telemetry.",
+      "**acks=1 (leader ack):** The producer waits only for the leader's local write; a record can still be lost if the leader fails before followers replicate it. A middle ground rarely appropriate for durable pipelines.",
+      "**acks=all with min.insync.replicas=2 and RF=3:** The durable baseline for data-engineering pipelines: every acknowledged write is on at least two brokers and survives a single broker loss.",
+      "**Rack-aware replication:** Using broker.rack so replicas of a partition are spread across racks or availability zones, so a whole-zone failure still leaves an ISR member; the standard for multi-AZ durability.",
+      "**Observer / non-ISR replicas (tiered/DR patterns):** Additional replicas (e.g., in follower-fetching or cross-cluster setups) that hold copies for locality or disaster recovery without participating in the ISR acknowledgment path."
+    ],
+    "advantages": [
+      "**No-data-loss durability:** With RF=3, min.insync.replicas=2, and acks=all, every acknowledged record survives a single broker (or AZ, with rack awareness) failure.",
+      "**Transparent failover:** Leader election from the ISR means producers and consumers reconnect to a new leader automatically, enabling zero-downtime rolling restarts and patching.",
+      "**Read-your-committed guarantee:** The high watermark ensures consumers never read data that a failover could erase, which is the foundation for stronger guarantees like exactly-once.",
+      "**Operational safety:** Under-replicated-partition and ISR metrics give clear, actionable signals of broker health before a failure becomes an outage."
+    ],
+    "disadvantages": [
+      "**Storage and bandwidth cost:** RF=3 triples storage and adds constant inter-broker replication traffic, which is the largest single cost multiplier in a cluster.",
+      "**Latency under acks=all:** Waiting for the full ISR adds latency, and a slow in-sync follower can stall the high watermark and back-pressure producers.",
+      "**Configuration foot-guns:** Misconfigurations like min.insync.replicas equal to RF, or enabling unclean leader election, silently trade away availability or durability.",
+      "**Rebalance and recovery overhead:** Adding brokers or replacing a failed one triggers replica reassignment that consumes disk and network and can take a long time for large partitions."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use strong replication (RF=3, min.insync.replicas=2, acks=all, unclean election disabled, rack-aware) for any pipeline where losing a record is unacceptable: CDC feeding a warehouse or lakehouse, financial and order events, and any topic treated as a system of record. Use rack awareness whenever brokers span availability zones so a zone failure cannot empty the ISR.",
+      "whenToAvoid": "Avoid maximal durability settings for high-volume, low-value, reprocessable data such as raw clickstream, metrics, or logs where occasional loss is acceptable and cost/latency dominate; there RF=2 or acks=1 may be fine. Avoid setting min.insync.replicas equal to replication.factor, because it removes all write tolerance to a single broker being down."
+    },
+    "realWorldAnalogy": "Imagine a newsroom that must never lose a story. The editor-in-chief (the leader) is the only person who officially files stories, and two deputy editors (followers) keep exact carbon copies, updating them as fast as the chief files. A story is only declared 'published' (committed, past the high watermark) once both up-to-date deputies have it, so the public (consumers) only ever reads published stories. The house rule is that at least two editors must have a story before it can be filed (min.insync.replicas=2 with acks=all). If the chief has a heart attack, one up-to-date deputy is immediately promoted and no published story is lost. Only if the newsroom is desperate would it let a deputy who was out sick and missed recent stories take over (unclean leader election), knowing some stories would be lost.",
+    "commonMisconceptions": [
+      {
+        "myth": "Setting acks=all alone guarantees my data is on multiple brokers.",
+        "reality": "acks=all only waits for the current ISR, which can shrink to just the leader. You also need min.insync.replicas>=2 so that a write is rejected rather than accepted when fewer than two replicas are in sync."
+      },
+      {
+        "myth": "A higher replication.factor always means safer, so I should set min.insync.replicas equal to it.",
+        "reality": "Setting min.insync.replicas equal to replication.factor means losing any single replica immediately blocks all writes. The durable-but-available norm is min.insync.replicas = replication.factor - 1 (e.g., 2 with RF=3)."
+      },
+      {
+        "myth": "Consumers can read the very latest record as soon as the leader writes it.",
+        "reality": "Consumers can only read up to the high watermark, which is the offset replicated to all ISR members. Records the leader has but the ISR does not are not yet readable, precisely so a failover cannot make read data disappear."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Keep partition and replica counts within broker limits; very high partition counts increase controller and replication overhead. KRaft scales leadership propagation for large partition counts far better than the old ZooKeeper controller, so migrate to KRaft for large clusters and balance leadership so no broker is leader for a disproportionate share of partitions.",
+      "reliability": "Standardize RF=3, min.insync.replicas=2, and acks=all on durable topics; keep unclean.leader.election.enable=false; use rack awareness across AZs so the ISR cannot be emptied by a single zone loss; ensure the internal topics and metadata log are equally durable.",
+      "faultTolerance": "Design so that any single broker can be lost without dropping the ISR below min.insync.replicas; run enough brokers that replica reassignment after a failure completes quickly, and verify preferred-leader election keeps leadership balanced after recovery.",
+      "monitoring": "Alert on UnderReplicatedPartitions > 0 sustained, OfflinePartitionsCount > 0, IsrShrinksPerSec spikes, and a growing gap between leader log-end offset and follower fetch offset; track per-broker leader count for balance and replication throughput for saturation.",
+      "security": "Protect inter-broker replication with TLS and authenticate brokers via SASL; restrict who can alter topic configs (replication.factor, min.insync.replicas, unclean.leader.election.enable) with ACLs so durability settings cannot be weakened casually; secure the controller quorum.",
+      "costOptimization": "Reserve RF=3 and strict min.insync.replicas for topics that need it; use RF=2 or shorter retention for reprocessable or ephemeral data; right-size partitions so replication and reassignment costs stay manageable, and consider tiered storage to cut the cost of long retention on replicated topics.",
+      "performance": "Tune replica.lag.time.max.ms to avoid ISR flapping without keeping chronically slow replicas in the ISR; ensure follower fetch threads (num.replica.fetchers) and network/disk keep up so the high watermark advances promptly; isolate a slow broker quickly since it can stall the high watermark for its leader partitions."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Create a replicated topic and inspect its ISR (Kafka CLI)",
+        "overview": "Create a durable CDC topic with replication.factor=3, set min.insync.replicas=2 so acks=all writes need two in-sync copies, then describe the topic to read its leader, replicas, and current ISR set.",
+        "code": "# 1) Create a durable topic for CDC order changes\nkafka-topics.sh --bootstrap-server localhost:9092 \\\n  --create --topic cdc.public.orders \\\n  --partitions 6 --replication-factor 3\n\n# 2) Enforce a durability floor: at least 2 in-sync replicas for acks=all writes\nkafka-configs.sh --bootstrap-server localhost:9092 \\\n  --entity-type topics --entity-name cdc.public.orders \\\n  --alter --add-config min.insync.replicas=2\n\n# 3) Describe the topic to see Leader / Replicas / Isr per partition\nkafka-topics.sh --bootstrap-server localhost:9092 \\\n  --describe --topic cdc.public.orders\n",
+        "language": "bash",
+        "breakdown": "Step 1 creates the topic with three copies of every partition spread across brokers, so any one broker can be lost. Step 2 sets min.insync.replicas=2 as a per-topic override, so an acks=all producer must reach at least two in-sync replicas or the write is rejected with NotEnoughReplicas. Step 3 describes the topic; the Replicas column shows the assigned broker ids in preferred-leader order and the Isr column shows which of them are currently in sync. When Isr matches Replicas, the partition is fully replicated; when Isr is a subset, it is under-replicated.",
+        "expectedOutput": "Step 1 prints 'Created topic cdc.public.orders.'. Step 2 prints 'Completed updating config for topic cdc.public.orders.'. Step 3 prints one line per partition, for example:\nTopic: cdc.public.orders  TopicId: aBc...  PartitionCount: 6  ReplicationFactor: 3  Configs: min.insync.replicas=2\n  Topic: cdc.public.orders  Partition: 0  Leader: 1  Replicas: 1,2,3  Isr: 1,2,3\n  Topic: cdc.public.orders  Partition: 1  Leader: 2  Replicas: 2,3,1  Isr: 2,3,1\n  ... (Leader is one of the Replicas; Isr equal to Replicas means fully in sync).",
+        "commonIssues": "Requesting replication-factor greater than the number of brokers fails with InvalidReplicationFactorException; setting min.insync.replicas=3 on an RF=3 topic means any single broker down blocks all acks=all writes; describing the wrong entity name silently returns nothing useful; forgetting that min.insync.replicas only takes effect with acks=all (acks=1 ignores it).",
+        "optimizationTips": "Standardize RF=3 with min.insync.replicas=2 as the durable-but-available default; set broker.rack on each broker so the three replicas land in different AZs; script a periodic describe of all critical topics to confirm Isr equals Replicas; set min.insync.replicas as a broker default so new topics inherit it rather than relying on per-topic overrides."
+      },
+      {
+        "title": "Detect under-replicated partitions and confirm acks behavior",
+        "overview": "Find partitions whose ISR has shrunk below the replication factor, then run a durable producer with acks=all so a write only succeeds when min.insync.replicas is satisfied, demonstrating the durability contract in action.",
+        "code": "# 1) List only partitions that are currently under-replicated (Isr < Replicas)\nkafka-topics.sh --bootstrap-server localhost:9092 \\\n  --describe --under-replicated-partitions\n\n# 2) Also surface partitions with no leader at all (offline)\nkafka-topics.sh --bootstrap-server localhost:9092 \\\n  --describe --unavailable-partitions\n\n# 3) Produce with acks=all so a write needs the full min.insync.replicas ISR\nkafka-console-producer.sh --bootstrap-server localhost:9092 \\\n  --topic cdc.public.orders \\\n  --producer-property acks=all \\\n  --producer-property enable.idempotence=true\n# type a line and press enter; it is acknowledged only once >= min.insync.replicas\n# replicas have it. If the ISR is below the floor, you get NotEnoughReplicas.\n",
+        "language": "bash",
+        "breakdown": "Step 1 uses --under-replicated-partitions so the output lists only partitions where the current Isr is smaller than the assigned Replicas, which is the fastest way to spot a lagging or dead broker. Step 2 uses --unavailable-partitions to find partitions with no leader (offline), which indicates an empty ISR with unclean election disabled. Step 3 runs a console producer with acks=all and idempotence; each line is only acknowledged once the ISR (of size >= min.insync.replicas) has replicated it, so if a broker outage has dropped the ISR to one replica the produce fails with NotEnoughReplicas rather than silently accepting an under-durable write.",
+        "expectedOutput": "In a healthy cluster steps 1 and 2 print nothing (no under-replicated or unavailable partitions). If broker 3 is down you would see lines like:\n  Topic: cdc.public.orders  Partition: 0  Leader: 1  Replicas: 1,2,3  Isr: 1,2\nStep 3 accepts typed lines silently on success; if the ISR is below min.insync.replicas the producer prints an error such as 'org.apache.kafka.common.errors.NotEnoughReplicasException: Messages are rejected since there are fewer in-sync replicas than required.'",
+        "commonIssues": "Treating a brief under-replicated blip during a rolling restart as an incident; running the producer with acks=1, which ignores min.insync.replicas and hides the durability problem; assuming --under-replicated-partitions shows offline partitions (it does not, use --unavailable-partitions); not idempotence-enabling the producer, which can reintroduce duplicates on retry.",
+        "optimizationTips": "Wire --under-replicated-partitions (or the UnderReplicatedPartitions JMX metric) into alerting with a short sustained threshold; test the NotEnoughReplicas path in staging by stopping a broker so on-call knows what a durability-floor breach looks like; keep acks=all and enable.idempotence=true as the standard durable-producer config; investigate any partition that stays under-replicated beyond a rolling restart window as a broker-health issue."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A retailer streams change-data-capture events from a Postgres orders database into a lakehouse for near-real-time analytics and reconciliation. Finance treats these order events as authoritative, so a lost change event means a wrong revenue number and a failed reconciliation. The pipeline must survive a broker failure, and even the loss of an entire availability zone, without dropping any acknowledged change event.",
+    "inputData": "A Debezium Postgres connector produces to topic cdc.public.orders (6 partitions), one Kafka record per row-level change (insert/update/delete), keyed by primary key, at a few thousand events per second with bursts during sales.",
+    "architecture": "cdc.public.orders is created with replication.factor=3 and min.insync.replicas=2, brokers span three availability zones via broker.rack so each partition's three replicas land in different zones, unclean.leader.election.enable is left false, and the Debezium producer uses acks=all with enable.idempotence=true. A lakehouse sink consumer reads committed data (up to the high watermark) and upserts by primary key into the lake tables.",
+    "processingSteps": [
+      "1. Debezium captures a row change and produces it to the appropriate partition of cdc.public.orders with acks=all, routing to that partition's current leader.",
+      "2. The leader appends the record with its leader epoch and the two ISR followers (in other zones) fetch and append it to their logs.",
+      "3. Once both followers have the record the ISR size (3) meets min.insync.replicas (2), the leader advances the high watermark and acknowledges the produce to Debezium.",
+      "4. The lakehouse sink consumer fetches only up to the high watermark and upserts each change by primary key, so it never ingests a record that is not yet durable across the ISR.",
+      "5. When a broker (and its zone) goes down, the KRaft controller elects a new leader from the surviving ISR in another zone; the ISR shrinks to 2, writes continue because 2 meets min.insync.replicas, and no acknowledged change event is lost."
+    ],
+    "output": "The cdc.public.orders topic holds a durable, ordered-per-key stream of order changes replicated across three zones, and the lakehouse tables reflect every acknowledged change exactly, so finance reconciliations match the Postgres source of truth.",
+    "monitoring": "Dashboards track UnderReplicatedPartitions, OfflinePartitionsCount, ISR shrink/expand rate, per-broker leader balance, follower fetch lag, and sink consumer lag; alerts fire on any sustained under-replication, any offline partition, or NotEnoughReplicas errors from the producer.",
+    "errorHandling": "If a follower falls behind, it drops out of the ISR and the partition is flagged under-replicated but stays available (ISR still meets the floor). If a zone is lost, leader election from the remaining ISR keeps writes flowing. If two zones were lost simultaneously (ISR below the floor), acks=all writes are rejected with NotEnoughReplicas so the producer retries rather than accepting under-durable data, and the partition never elects an out-of-sync leader because unclean election is disabled.",
+    "finalResult": "A single broker or whole-zone failure causes at most a brief under-replicated window and automatic failover with zero loss of acknowledged order events, so the lakehouse stays consistent with Postgres and finance can trust the numbers without manual reconciliation of dropped rows."
+  },
+  "industryUseCases": [
+    {
+      "company": "Retail and e-commerce data platforms",
+      "problem": "CDC streams of orders, inventory, and payments feed the warehouse and must not lose events during broker maintenance or zone failures, or reconciliation breaks.",
+      "solution": "Topics use RF=3, min.insync.replicas=2, acks=all, rack-aware placement across AZs, and unclean leader election disabled, so any single-broker or single-zone loss fails over from the ISR with no data loss.",
+      "benefits": "Reconciliations that match the source database, zero-downtime broker patching via rolling restarts, and no manual recovery of dropped change events."
+    },
+    {
+      "company": "Financial services and ledger pipelines",
+      "problem": "Transaction and ledger event streams cannot lose or expose not-yet-durable records, since consumers downstream compute balances that must be provably correct.",
+      "solution": "Strict durability (acks=all with min.insync.replicas=2, unclean election off) plus the high-watermark read boundary ensures acknowledged records are on multiple brokers and consumers never read data a failover could erase.",
+      "benefits": "Auditable no-data-loss guarantees, safe failover during infrastructure incidents, and a durable foundation for exactly-once processing on top."
+    },
+    {
+      "company": "Large multi-tenant streaming platforms",
+      "problem": "Clusters with tens of thousands of partitions suffered slow failover and controller bottlenecks under the ZooKeeper-based controller when many leaders had to be re-elected at once.",
+      "solution": "Migrating to the KRaft controller quorum, which stores leadership and ISR in a replicated metadata log and propagates leadership changes far faster, and balancing leadership across brokers.",
+      "benefits": "Much faster leader election at high partition counts, simpler operations without ZooKeeper, and more headroom to grow the cluster while keeping recovery times low."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Replication cost grows with partition count and RF, so size partitions to keep replication and reassignment manageable and avoid pathological per-broker leader imbalance. KRaft removes the ZooKeeper controller bottleneck and propagates leadership for very large partition counts quickly, so prefer KRaft for large clusters and run enough controllers in the quorum for metadata durability.",
+    "faultTolerance": "With RF=3, min.insync.replicas=2, and rack awareness across three AZs, the cluster tolerates any single broker or single zone failure without data loss or write interruption, because the ISR still meets the floor and a new leader is elected from the surviving in-sync replicas. Leader epochs and log truncation ensure no divergent data is retained after failover.",
+    "highAvailability": "Automatic leader election from the ISR keeps partitions available through broker restarts; enable preferred-leader election so leadership rebalances back after recovery and no broker becomes a hotspot. Keep the controller quorum healthy so metadata (including leadership) is always available to brokers.",
+    "disasterRecovery": "For cross-region DR, replicate topics with tooling like MirrorMaker 2 or Cluster Linking; note that ISR, high watermark, and leadership are cluster-local, so the destination cluster maintains its own replication and the pipeline typically treats replicated data as at-least-once and dedups on a key. Keep RF and min.insync.replicas equally strict on the DR cluster.",
+    "performanceOptimization": "Ensure follower fetch keeps up so the high watermark advances promptly: provision enough num.replica.fetchers, adequate network and disk, and isolate a slow broker quickly since a lagging in-sync follower stalls the high watermark for the leader's partitions. Tune replica.lag.time.max.ms to avoid ISR flapping without keeping chronically slow replicas in the ISR.",
+    "costOptimization": "Because RF multiplies storage, reserve RF=3 and strict min.insync.replicas for topics that need it and use RF=2 or shorter retention for reprocessable or ephemeral data; adopt tiered storage to move older segments to cheaper object storage while keeping the durability guarantees on the hot data.",
+    "securityConsiderations": "Encrypt and authenticate inter-broker replication traffic (TLS + SASL) so a follower cannot be impersonated; restrict AlterConfigs on replication.factor, min.insync.replicas, and unclean.leader.election.enable via ACLs so durability settings cannot be silently weakened; secure the controller quorum and its metadata log as tightly as the data.",
+    "monitoringAndObservability": "Expose UnderReplicatedPartitions, OfflinePartitionsCount, IsrShrinksPerSec / IsrExpandsPerSec, ActiveControllerCount (should be exactly 1), per-partition leader/follower lag, and per-broker leader count. Alert on sustained under-replication, any offline partition, ISR shrink storms, and NotEnoughReplicas produce errors, which indicate the durability floor is being hit.",
+    "dataQualityValidation": "Reconcile source-database change counts against records committed below the high watermark, confirm that no acknowledged record is missing after an induced failover, and periodically verify that Isr equals Replicas for critical topics; assert that consumers configured on committed data never read past the high watermark.",
+    "loggingAndAlerting": "Log ISR shrink/expand events with the partition and the affected broker, leader election events with old and new leader and epoch, and NotEnoughReplicas rejections; alert on OfflinePartitionsCount > 0 immediately, on UnderReplicatedPartitions > 0 sustained beyond a rolling-restart window, and on any unclean leader election occurring, since that implies possible data loss."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Use RF=3 with min.insync.replicas=2 and acks=all as the durable default:** every acknowledged write lands on at least two brokers and survives a single broker loss while staying writable.",
+      "**Keep unclean.leader.election.enable=false on durable topics:** prefer temporary unavailability over silently electing a stale leader and losing committed records.",
+      "**Make replication rack-aware across availability zones:** set broker.rack so a partition's replicas span zones and a whole-zone failure cannot empty the ISR.",
+      "**Monitor and alert on UnderReplicatedPartitions and OfflinePartitions:** treat sustained under-replication as an early warning of broker health, not just noise."
+    ],
+    "engineeringStandards": [
+      "Set min.insync.replicas as a broker-level default (e.g., 2) so new topics inherit a durability floor rather than relying on per-topic overrides being remembered.",
+      "Standardize durable producers on acks=all with enable.idempotence=true so retries do not reintroduce duplicates while durability is enforced.",
+      "Run KRaft (not ZooKeeper) with an odd-sized controller quorum (3 or 5) so metadata and leadership are durable and there is a clear majority."
+    ],
+    "designRecommendations": [
+      "Tier durability by topic value: RF=3/min.insync.replicas=2 for systems of record, cheaper settings for reprocessable telemetry.",
+      "Ensure broker count comfortably exceeds RF so a failed broker can be replaced and replicas re-hosted without dropping below the durability floor.",
+      "Keep internal topics (offsets, transaction state) and the metadata log at least as durable as the data topics they support."
+    ],
+    "namingConventions": [
+      "Name topics by source and entity so durability policy is obvious (e.g., cdc.public.orders vs metrics.raw.clickstream).",
+      "Tag or document durability tier in the topic name or catalog (e.g., a -durable or -ephemeral convention) so operators know the expected RF and min.insync.replicas.",
+      "Use consistent broker.rack identifiers that map cleanly to real availability zones so rack-aware placement is auditable."
+    ],
+    "documentationStandards": [
+      "Document each critical topic's replication.factor, min.insync.replicas, acks expectation, and unclean.leader.election setting with the rationale.",
+      "Record the rack/AZ layout and confirm that replica placement genuinely spans zones for durable topics.",
+      "Note the failover expectations (what happens on one broker down, one zone down, ISR below floor) so on-call responders know intended behavior."
+    ],
+    "testingStrategies": [
+      "In staging, stop a broker and confirm the partition becomes under-replicated but stays available and no acknowledged records are lost.",
+      "Stop enough brokers to drop the ISR below min.insync.replicas and verify producers get NotEnoughReplicas rather than accepting under-durable writes.",
+      "Run a leader-failover drill and verify consumers on committed data see no gaps and that leadership rebalances after recovery via preferred-leader election."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Relying on acks=all without setting min.insync.replicas.",
+      "whyItHappens": "Teams assume acks=all means multiple copies, not realizing it only waits for the current ISR, which can shrink to just the leader.",
+      "impact": "During an ISR shrink a write can be acknowledged with only one copy, so a subsequent broker failure loses an acknowledged record despite acks=all being set.",
+      "correctApproach": "Set min.insync.replicas=2 (with RF=3) alongside acks=all so any write is rejected when fewer than two replicas are in sync, guaranteeing at least two copies of every acknowledged record."
+    },
+    {
+      "mistake": "Setting min.insync.replicas equal to the replication.factor.",
+      "whyItHappens": "It feels maximally safe to require all replicas to be in sync, and the durability tradeoff is not obvious.",
+      "impact": "Any single broker being down (even for a routine restart) drops the ISR below the minimum, so all acks=all producers start failing with NotEnoughReplicas and the pipeline stalls.",
+      "correctApproach": "Set min.insync.replicas to replication.factor - 1 (2 with RF=3) so you retain no-data-loss durability while tolerating one broker being down for maintenance or failure."
+    },
+    {
+      "mistake": "Enabling unclean.leader.election.enable to avoid unavailability.",
+      "whyItHappens": "Under pressure to keep a partition available when the ISR is empty, operators flip it on without weighing the data-loss cost.",
+      "impact": "An out-of-sync replica is promoted and any records that existed only on the failed ISR members are permanently lost, silently corrupting a supposedly durable pipeline.",
+      "correctApproach": "Keep it false for systems of record and accept brief unavailability until an ISR member returns; only enable it for pipelines where availability strictly outranks correctness, and document that explicitly."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Producer durability level",
+      "optionA": "acks=1 (leader acknowledges)",
+      "optionB": "acks=all with min.insync.replicas=2",
+      "explanation": "acks=1 is faster but can lose a record if the leader fails before followers replicate it. acks=all with min.insync.replicas=2 waits until at least two in-sync replicas have the record, so an acknowledged write survives a single broker loss, at the cost of extra latency. Durable pipelines should use the latter."
+    },
+    {
+      "feature": "Behavior when the ISR is empty",
+      "optionA": "unclean.leader.election.enable=false",
+      "optionB": "unclean.leader.election.enable=true",
+      "explanation": "With it false, the partition stays offline until an ISR member returns, guaranteeing no committed data is lost but sacrificing availability. With it true, a stale replica can be promoted to restore availability immediately, but any records only on the failed ISR are lost. This is the core durability-vs-availability choice."
+    },
+    {
+      "feature": "Controller / metadata backend",
+      "optionA": "ZooKeeper-backed controller (legacy)",
+      "optionB": "KRaft controller quorum (modern)",
+      "explanation": "The ZooKeeper controller stored ISR and leadership externally and became a bottleneck for very large partition counts, slowing failover. KRaft holds metadata in a replicated Raft log, propagates leadership changes faster, scales to far more partitions, and removes the ZooKeeper dependency entirely (default and only option in Kafka 4.0)."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is the difference between a partition leader and a follower in Kafka?",
+        "answer": "Each partition has exactly one leader replica that handles all produce and consume requests and assigns offsets, and zero or more follower replicas that continuously fetch records from the leader to keep identical copies. If the leader's broker fails, a follower from the in-sync set is promoted to leader so the partition stays available.",
+        "explanation": "Interviewers want to hear that all reads and writes go through the leader, followers only replicate, and failover promotes an in-sync follower, which is the basis of Kafka's fault tolerance."
+      },
+      {
+        "question": "What is the ISR (in-sync replica set) and why does it matter?",
+        "answer": "The ISR is the set of replicas, including the leader, that are fully caught up with the leader within replica.lag.time.max.ms. It matters because an acks=all write must be acknowledged by all ISR members, min.insync.replicas requires a minimum ISR size for writes to succeed, and only ISR members are eligible to become leader, so the ISR is the core of Kafka's durability contract.",
+        "explanation": "A strong answer connects the ISR to acks=all, min.insync.replicas, and leader eligibility, showing it is not just a metric but the mechanism behind durability."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How do acks=all and min.insync.replicas work together, and what does each on its own guarantee?",
+        "answer": "acks=all makes the producer wait until every current ISR member has the record, but the ISR can shrink to just the leader, so acks=all alone can still acknowledge a single-copy write. min.insync.replicas sets a floor: with it at 2, a write is rejected with NotEnoughReplicas unless at least two replicas are in sync. Together with RF=3 they guarantee every acknowledged record is on at least two brokers and survives one broker loss.",
+        "explanation": "This tests whether the candidate knows the subtle interaction that acks=all is insufficient without a min.insync.replicas floor, a very common production mistake."
+      },
+      {
+        "question": "What is the high watermark and how does it protect consumers?",
+        "answer": "The high watermark is the highest offset replicated to all ISR members; it is the boundary of committed data. Consumers can only read up to the high watermark, so they never read a record that exists only on the leader. If the leader fails before a record is replicated, that record is below no one's high watermark and is truncated on the new leader, so consumers never see data that could later vanish in a failover.",
+        "explanation": "Looks for understanding that the high watermark is what prevents consumers from reading not-yet-durable data, and that leader epochs plus truncation keep logs consistent."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "Explain unclean leader election and the tradeoff of enabling it.",
+        "answer": "If all ISR members for a partition are lost, unclean.leader.election.enable=false keeps the partition offline until an ISR member returns, preserving all committed data but sacrificing availability. Setting it true lets the controller elect an out-of-sync replica so the partition is available again immediately, but any records that existed only on the failed ISR are permanently lost. It is a direct durability-versus-availability choice; the safe default is false for systems of record.",
+        "explanation": "Interviewers want the candidate to articulate the precise data-loss consequence and to tie the choice to the value of the data rather than reflexively picking availability."
+      },
+      {
+        "question": "How does the KRaft controller change leader election and ISR management compared with ZooKeeper?",
+        "answer": "Previously ZooKeeper stored ISR and leadership metadata and a broker-elected controller updated it, which bottlenecked failover at high partition counts. Under KRaft a dedicated controller quorum keeps all metadata, including ISR and leadership, in a replicated Raft-based __cluster_metadata log; the active controller elects leaders from the ISR and propagates changes to brokers via that log. This makes leadership propagation faster and more scalable and removes the ZooKeeper dependency entirely (Kafka 4.0 is KRaft-only).",
+        "explanation": "This probes awareness of the modern architecture; strong answers mention the replicated metadata log, faster failover at scale, and the removal of ZooKeeper."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your CDC topic (RF=3, acks=all) starts throwing NotEnoughReplicas errors and kafka-topics.sh --describe --under-replicated-partitions lists several partitions. What is happening and how do you respond?",
+        "thinkingProcess": "NotEnoughReplicas means the current ISR for some partitions has dropped below min.insync.replicas, so acks=all writes are being rejected. Under-replicated partitions confirm at least one replica per those partitions has fallen out of the ISR, usually because a broker is down or a broker is slow (disk/network/GC). The producer failing is actually correct behavior protecting durability; the fix is to restore the ISR, not to weaken the settings.",
+        "expectedAnswer": "Identify the affected broker(s) by describing the topics and checking which broker ids are missing from the Isr columns and the broker's health metrics. If a broker is down, restart or replace it so its followers rejoin and the ISR expands back; if a broker is slow, address the disk/network/GC issue. Do not lower min.insync.replicas or enable unclean leader election to make the errors go away, since that trades away the durability guarantee; instead let the producer retry (it should) until the ISR recovers, and add alerting on UnderReplicatedPartitions so this is caught before it hits producers."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design the replication and durability configuration for a CDC pipeline from Postgres to a lakehouse that must survive a single availability-zone failure with zero loss of acknowledged change events across three AZs.",
+        "designApproach": "Deploy brokers across three AZs with broker.rack set per zone. Create the CDC topic with replication.factor=3 and min.insync.replicas=2 so each partition's replicas land in different zones and any acknowledged write is on at least two zones. Use producer acks=all with enable.idempotence=true, keep unclean.leader.election.enable=false, and run a KRaft controller quorum (3 controllers, one per zone). The lakehouse sink consumer reads committed data (up to the high watermark) and upserts by primary key.",
+        "tradeOffs": "RF=3 across zones triples storage and adds cross-AZ replication bandwidth cost and some produce latency, but guarantees no acknowledged data is lost when a zone fails. Keeping unclean election off means a simultaneous two-zone loss makes affected partitions unwritable (NotEnoughReplicas) rather than lossy, which is the correct choice for authoritative data. min.insync.replicas=2 (not 3) keeps the pipeline writable during single-zone loss.",
+        "scalingStrategy": "Scale by partition count for throughput while keeping replicas rack-aware; run enough brokers per zone that a failed broker can be replaced without dropping below the durability floor; migrate to and stay on KRaft so leadership for large partition counts fails over quickly; monitor UnderReplicatedPartitions, ISR shrink rate, per-broker leader balance, and cross-AZ replication throughput, adding brokers before replication bandwidth or disk becomes the ceiling."
+      }
+    ],
+    "followUpQuestions": [
+      "How do leader epochs prevent log divergence after a failover, and why is the high watermark not enough on its own?",
+      "What happens to the high watermark when one in-sync follower is much slower than the others, and how does that affect consumers?",
+      "How does replica.lag.time.max.ms decide ISR membership, and what are the risks of setting it too low or too high?",
+      "What is preferred-leader election and why do you run it after recovering a failed broker?",
+      "How do you migrate a running cluster from a ZooKeeper-based controller to KRaft without downtime or data loss?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Kafka replication stores each partition as replication.factor copies with one leader and in-sync followers (the ISR); with acks=all and min.insync.replicas an acknowledged record is durable across multiple brokers, consumers read only up to the high watermark, and the controller elects a new leader from the ISR on failure.",
+    "keyConcepts": [
+      "One leader per partition handles all I/O; followers fetch from the leader and join the ISR when caught up within replica.lag.time.max.ms.",
+      "acks=all waits for the whole ISR; min.insync.replicas sets the floor so a write needs at least that many in-sync copies (use 2 with RF=3).",
+      "High watermark = min offset across all ISR members; consumers read only up to it, so a failover cannot erase read data.",
+      "Under-replicated partition = ISR smaller than Replicas; a warning of a lagging or dead broker and reduced failure tolerance.",
+      "unclean.leader.election.enable=false keeps no-data-loss; the KRaft controller elects leaders from the ISR and holds metadata in a replicated log."
+    ],
+    "formulas": [],
+    "commands": [
+      "kafka-topics.sh --bootstrap-server localhost:9092 --create --topic t --partitions 6 --replication-factor 3",
+      "kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic t   # shows Leader / Replicas / Isr",
+      "kafka-topics.sh --bootstrap-server localhost:9092 --describe --under-replicated-partitions",
+      "kafka-configs.sh --bootstrap-server localhost:9092 --entity-type topics --entity-name t --alter --add-config min.insync.replicas=2",
+      "kafka-console-producer.sh --bootstrap-server localhost:9092 --topic t --producer-property acks=all --producer-property enable.idempotence=true"
+    ],
+    "interviewPoints": [
+      "Explain leader vs follower and that all I/O goes through the leader.",
+      "Define the ISR and connect it to acks=all, min.insync.replicas, and leader eligibility.",
+      "Explain why acks=all needs min.insync.replicas=2 to actually guarantee two copies.",
+      "Describe the high watermark as the committed/readable boundary that protects consumers.",
+      "State the unclean.leader.election durability-vs-availability tradeoff and the KRaft controller's role."
+    ],
+    "quickNotes": [
+      "Durable baseline: RF=3, min.insync.replicas=2, acks=all, unclean election off.",
+      "Never set min.insync.replicas equal to replication.factor (one broker down blocks writes).",
+      "min.insync.replicas only matters with acks=all; acks=1 ignores it.",
+      "Set broker.rack for rack-aware placement across AZs.",
+      "Alert on UnderReplicatedPartitions > 0 sustained and OfflinePartitionsCount > 0."
+    ]
+  },
+  "keyTakeaways": [
+    "Every partition has one leader (all reads/writes) and follower replicas that fetch from it; caught-up replicas form the ISR, and only ISR members are eligible to become leader on failure.",
+    "The durable baseline is replication.factor=3, min.insync.replicas=2, and acks=all together: acks=all alone can acknowledge a single copy, so the min.insync.replicas floor is what guarantees at least two copies of every acknowledged record.",
+    "The high watermark, the offset replicated to all ISR members, bounds what consumers can read, so consumers never see data that a leader failover could erase; leader epochs and truncation keep replica logs consistent.",
+    "Under-replicated partitions signal a lagging or dead broker and reduced failure tolerance, and unclean.leader.election.enable is a direct durability-versus-availability choice that should stay false for systems of record.",
+    "The KRaft controller quorum tracks ISR and leadership in a replicated metadata log and elects new leaders from the ISR, giving faster, more scalable failover than the legacy ZooKeeper controller and removing ZooKeeper entirely in Kafka 4.0."
+  ]
+}

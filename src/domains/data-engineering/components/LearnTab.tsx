@@ -42,7 +42,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         } else {
           setPremiumData(null);
         }
-      } catch (err) {
+      } catch {
         setPremiumData(null);
       } finally {
         setIsLoadingPremium(false);
@@ -61,6 +61,16 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
 
   const { concept } = topic;
 
+  // Interview-question count for the sub-tab label. Prefer the premium content
+  // that is actually rendered; fall back to the topic stub when absent.
+  const interviewCount = premiumData?.interviewPreparation
+    ? (premiumData.interviewPreparation.beginnerQuestions?.length || 0)
+      + (premiumData.interviewPreparation.intermediateQuestions?.length || 0)
+      + (premiumData.interviewPreparation.advancedQuestions?.length || 0)
+      + (premiumData.interviewPreparation.scenarioBasedQuestions?.length || 0)
+      + (premiumData.interviewPreparation.systemDesignQuestions?.length || 0)
+    : concept.interviewQuestions.length + concept.scenarioQuestions.length;
+
   const toggleQ = (idx: number) => {
     setRevealedQs(prev => ({ ...prev, [idx]: !prev[idx] }));
   };
@@ -69,20 +79,26 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1000px', margin: '0 auto' }}>
 
       {/* Sub tabs header */}
-      <div className="scrollable-tabs" style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        background: 'var(--bg-inner)',
-        padding: '6px',
-        borderRadius: '12px',
-        border: '1px solid var(--border-glass)',
-        boxShadow: 'var(--shadow-inset-tabs)',
-        gap: '8px'
-      }}>
+      <div
+        className="scrollable-tabs"
+        role="tablist"
+        aria-label="Topic sections"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'center',
+          background: 'var(--bg-inner)',
+          padding: '6px',
+          borderRadius: '12px',
+          border: '1px solid var(--border-glass)',
+          boxShadow: 'var(--shadow-inset-tabs)',
+          gap: '8px'
+        }}
+      >
         <button
           onClick={() => setActiveSubTab('concept')}
           className={`tab-btn ${activeSubTab === 'concept' ? 'active' : ''}`}
+          role="tab" id="de-subtab-concept" aria-selected={activeSubTab === 'concept'} aria-controls="de-subpanel"
           style={{ fontSize: '13px', padding: '8px 16px', borderRadius: '8px' }}
         >
           <Book size={15} /> Core Concept
@@ -90,6 +106,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         <button
           onClick={() => setActiveSubTab('examples')}
           className={`tab-btn ${activeSubTab === 'examples' ? 'active' : ''}`}
+          role="tab" id="de-subtab-examples" aria-selected={activeSubTab === 'examples'} aria-controls="de-subpanel"
           style={{ fontSize: '13px', padding: '8px 16px', borderRadius: '8px' }}
         >
           <Code size={15} /> Examples & Code
@@ -97,6 +114,7 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         <button
           onClick={() => setActiveSubTab('bestpractices')}
           className={`tab-btn ${activeSubTab === 'bestpractices' ? 'active' : ''}`}
+          role="tab" id="de-subtab-tips" aria-selected={activeSubTab === 'bestpractices'} aria-controls="de-subpanel"
           style={{ fontSize: '13px', padding: '8px 16px', borderRadius: '8px' }}
         >
           <ShieldCheck size={15} /> Tips
@@ -104,14 +122,16 @@ export const LearnTab: React.FC<LearnTabProps> = ({ topic, isCompleted, onToggle
         <button
           onClick={() => setActiveSubTab('interview')}
           className={`tab-btn ${activeSubTab === 'interview' ? 'active' : ''}`}
+          role="tab" id="de-subtab-interview" aria-selected={activeSubTab === 'interview'} aria-controls="de-subpanel"
+          title="Interview questions specific to this topic"
           style={{ fontSize: '13px', padding: '8px 16px', borderRadius: '8px' }}
         >
-          <Award size={15} /> Interview Prep ({concept.interviewQuestions.length + concept.scenarioQuestions.length})
+          <Award size={15} /> Topic Q&amp;A ({interviewCount})
         </button>
       </div>
 
       {/* Sub tab content */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div id="de-subpanel" role="tabpanel" aria-labelledby={`de-subtab-${activeSubTab === 'bestpractices' ? 'tips' : activeSubTab}`} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
         {/* TAB 1: CORE CONCEPT */}
         {activeSubTab === 'concept' && (

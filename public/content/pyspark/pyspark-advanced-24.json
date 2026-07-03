@@ -1,0 +1,439 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Data skew is an uneven distribution of data across partitions, almost always caused by an uneven distribution of key values, so that after a shuffle a small number of partitions receive most of the rows while the rest are nearly empty.",
+      "Because Spark runs one task per shuffle partition, a skewed partition means one (or a few) tasks must process far more data than their peers, producing a long 'straggler' tail where the whole stage waits on the slowest task, and frequently OOM or heavy disk/memory spill.",
+      "The two dominant remedies are salting (artificially spreading a hot key across many synthetic sub-keys so its rows land in many partitions) and Adaptive Query Execution's skew-join handling (which splits oversized shuffle partitions automatically at runtime); broadcast joins and two-phase aggregation are complementary techniques that avoid or mask the skew entirely."
+    ],
+    "learningObjectives": [
+      "Recognize the symptoms of data skew (max task duration >> median, uneven shuffle read sizes, straggler tasks, spill, and executor OOM) and diagnose it from the Spark UI Stages tab summary metrics.",
+      "Detect hot keys programmatically with groupBy().count().orderBy(desc()) and quantify the severity of the imbalance before choosing a fix.",
+      "Implement salting for both skewed joins and skewed aggregations with real PySpark code, and configure AQE skew-join handling, broadcast joins, and two-phase aggregation as alternative or complementary strategies."
+    ],
+    "formalDefinition": "Data skew is the condition where the cardinality of rows per partition (or per shuffle key) deviates significantly from uniform, so that partition sizes follow a heavy-tailed distribution. Formally, if a stage has P shuffle partitions and one partition holds a fraction f of the total N rows where f >> 1/P, then the task processing that partition dominates stage wall-clock time (stage_time approximately equals max_task_time), defeating Spark's parallelism. Salting mitigates skew by remapping a skewed key k to a set of composite keys {k||0, k||1, ..., k||(S-1)} using a random salt in [0, S), redistributing k's rows across up to S partitions; the small side of a join is replicated across all S salt values so the join remains correct, after which the salt is stripped and results are re-aggregated.",
+    "simpleExplanation": "Imagine a supermarket with ten checkout lanes. If everyone with a shopping cart is forced into lane number 3 (because their loyalty card ends in 3), that one cashier is overwhelmed while nine cashiers stand idle, and the whole store 'finishes' only when lane 3 does. Data skew is exactly this: one Spark task gets buried in work while the others sit idle. Salting is like handing each shopper in the crowded lane a random extra digit so they get spread across all ten lanes evenly again, and everyone checks out at roughly the same time.",
+    "historicalContext": "Skew has been a fundamental problem in shared-nothing distributed systems since parallel databases in the 1980s (Gamma, GRACE hash join) which studied partition skew and join-product skew. Hadoop MapReduce suffered the same issue: a single overloaded reducer would stall a job, and practitioners hand-coded partitioners and 'salt' prefixes to spread hot keys. Spark inherited this, and for years salting was the standard manual workaround. Spark 3.0 (2020) introduced Adaptive Query Execution, which automated the most common case (skewed sort-merge joins) by detecting oversized shuffle partitions from runtime statistics and splitting them, dramatically reducing the need for manual salting while leaving salting as the tool for skewed aggregations and cases AQE cannot cover.",
+    "whyItMatters": {
+      "business": "A single skewed key can turn a job that should finish in 10 minutes into one that runs for hours or fails outright, delaying business-critical dashboards, SLAs, and downstream ML pipelines; fixing skew restores predictable, on-time delivery of data products.",
+      "engineering": "Skew is the most common cause of the frustrating 'my stage is 99% done and stuck on one task' problem; understanding detection and salting lets engineers turn an unbounded, failing job into a well-parallelized one without throwing more hardware at it.",
+      "scalability": "Skew breaks Spark's core promise of horizontal scalability: adding executors does nothing when the bottleneck is a single overloaded task. Rebalancing data via salting or AQE is what actually lets a job scale with cluster size.",
+      "cost": "A skewed job keeps an entire cluster provisioned while it waits on one straggler task, wasting cluster-hours; it may also require oversized executors just to fit the hot partition in memory. Fixing skew right-sizes both runtime and instance type, cutting cloud spend.",
+      "reliability": "Skewed partitions cause OutOfMemoryError, excessive spill, and repeated stage retries that can crash a job entirely; distributing the load makes jobs finish deterministically instead of failing intermittently under production data volumes."
+    },
+    "coreComponents": [
+      {
+        "name": "Skew Detection (Spark UI + Diagnostics)",
+        "definition": "The process of identifying that a stage is skewed by comparing per-task metrics and by profiling key-value frequencies.",
+        "purpose": "To confirm skew is the actual bottleneck (versus under-partitioning or a slow UDF) and to locate the specific hot keys before applying a fix.",
+        "responsibilities": "Compare max vs median task duration and shuffle read size in the Stages summary metrics, watch for spill and OOM, and run groupBy(key).count().orderBy(desc()) to find hot keys and their share of the data.",
+        "examples": "In the Stages tab, a task at the 75th percentile reads 50MB but the max task reads 8GB — a clear sign one partition holds a hot key."
+      },
+      {
+        "name": "Salting",
+        "definition": "A remapping that appends a random salt value to a skewed key so its rows are spread across many partitions, with the join's small side replicated across all salt values to preserve correctness.",
+        "purpose": "To break a single hot partition into S smaller partitions that can be processed in parallel, eliminating the straggler.",
+        "responsibilities": "Generate a salt in [0, S), form a composite key (original_key, salt), explode/replicate the other side across all salt values, join or aggregate on the composite key, then strip the salt and re-aggregate.",
+        "examples": "user_id 'BOT_999' becomes (BOT_999, 0)..(BOT_999, 63), and the dimension row for BOT_999 is expanded to 64 rows so every salted fact row still finds its match."
+      },
+      {
+        "name": "Adaptive Query Execution Skew Join",
+        "definition": "A Spark 3.x runtime optimization that reads shuffle-write statistics after a stage and splits partitions that are much larger than the median into multiple sub-partitions.",
+        "purpose": "To handle skewed sort-merge joins automatically without any code change, replicating the matching partition of the other side to the split sub-partitions.",
+        "responsibilities": "Detect partitions exceeding skewedPartitionFactor * median AND skewedPartitionThresholdInBytes, split them, and coalesce small partitions, all governed by spark.sql.adaptive.* configs.",
+        "examples": "A 6GB shuffle partition with median 40MB is split into ~150 sub-partitions handled by separate tasks, removing the straggler."
+      },
+      {
+        "name": "Broadcast Join & Two-Phase Aggregation",
+        "definition": "Complementary strategies: broadcasting a small table avoids the shuffle entirely (no skew possible), and two-phase (partial-then-final) aggregation with salting reduces data before the final combine.",
+        "purpose": "To sidestep skew rather than redistribute it — broadcast eliminates the shuffle side that would be skewed; salted partial aggregation shrinks hot-key volume before the final grouped stage.",
+        "responsibilities": "Use broadcast() hints when one side fits in memory; for aggregations, add a salt, aggregate partially per salted key, strip the salt, and do a final aggregate on the pre-reduced results.",
+        "examples": "Joining a 2TB fact with a 30MB dim via broadcast removes the shuffle; a salted COUNT on a hot event type aggregates 64 partials then sums them."
+      }
+    ],
+    "internalWorking": [
+      "During a shuffle, Spark hashes each row's key and assigns it to partition hash(key) % numPartitions; if one key value is extremely frequent, all its rows map to the same partition regardless of how many partitions exist, creating a giant partition.",
+      "The stage that reads shuffle output launches one task per partition, so the task assigned the giant partition must fetch, deserialize, sort/hash, and process orders of magnitude more bytes than its peers, becoming a straggler that determines stage completion time.",
+      "When the hot partition exceeds available execution memory, Spark spills sorted/hashed data to disk (visible as 'Spill (Memory)' and 'Spill (Disk)' metrics) and, if spilling cannot keep up, the task fails with OutOfMemoryError, triggering task and stage retries.",
+      "Salting intercepts this at the logical level: by concatenating a random integer salt to the hot key before the shuffle, hash(key||salt) now distributes the hot key's rows across S distinct partitions; the join's other side is exploded across all S salt values so each salted fact row still finds its dimension match.",
+      "AQE instead works at runtime after the map stage completes: it inspects the MapOutputStatistics (per-partition byte sizes), identifies partitions larger than skewedPartitionFactor times the median (and above the byte threshold), and splits each into contiguous slices assigned to independent tasks, replicating the corresponding partition of the other join side."
+    ],
+    "architectureFlow": "Skewed key distribution -> hash partitioning maps hot key to one partition -> shuffle write produces one giant partition + many small ones -> one task reads the giant partition (straggler / spill / OOM) -> DETECTION via Spark UI max-vs-median metrics + groupBy count -> MITIGATION: (salt hot key -> composite key -> replicate other side across salts -> join/aggregate -> strip salt -> final aggregate) OR (enable AQE skewJoin -> runtime split of oversized partitions) OR (broadcast small side to avoid shuffle) -> balanced tasks -> stage completes in parallel",
+    "dataFlowWalkthrough": [
+      "1. A fact table has a heavily skewed join key: 40% of rows share user_id = 'GUEST'. Code runs fact.join(dim, 'user_id') which triggers a sort-merge join and a shuffle on user_id.",
+      "2. The shuffle sends all 'GUEST' rows to a single partition; the Spark UI Stages tab shows the max task reading 12GB of shuffle while the median task reads 30MB — a 400x imbalance and the straggler.",
+      "3. Detection: fact.groupBy('user_id').count().orderBy(desc('count')).show(10) confirms 'GUEST' dominates. This is the hot key to salt.",
+      "4. Salting: add salt = floor(rand()*32) to the fact and build salted_key = concat(user_id, '_', salt); explode the dim by cross-joining it with a salt array 0..31 so each dim row becomes 32 rows with matching salted_key.",
+      "5. Join on salted_key: 'GUEST' rows now spread across 32 partitions and 32 tasks; strip the salt from the result if further grouping is needed. Stage tasks now read roughly equal shuffle sizes and finish together."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Straggler / Long Task Tail",
+        "meaning": "A task that runs far longer than all others in its stage because it was assigned a disproportionately large partition.",
+        "importance": "It is the visible symptom of skew: the stage cannot complete until the straggler does, so total runtime approximately equals the straggler's runtime regardless of cluster size."
+      },
+      {
+        "term": "Hot Key",
+        "meaning": "A key value that occurs far more frequently than others, so its rows all hash into one partition.",
+        "importance": "Hot keys are the root cause of most skew; identifying and salting them (or filtering/isolating them) is the core of the fix."
+      },
+      {
+        "term": "Salt",
+        "meaning": "A random or hashed value appended to a key to form a composite key that redistributes a hot key's rows across multiple partitions.",
+        "importance": "Salting is the primary manual technique to defeat skew when broadcast and AQE are insufficient; the salt count controls the degree of spreading."
+      },
+      {
+        "term": "Spill",
+        "meaning": "Writing intermediate shuffle/sort/aggregation data from memory to local disk when a partition exceeds execution memory.",
+        "importance": "Heavy spill on one task is a strong indicator of skew and directly degrades performance; eliminating it is a goal of salting/AQE."
+      },
+      {
+        "term": "skewedPartitionFactor",
+        "meaning": "The AQE multiplier: a shuffle partition is treated as skewed if its size is greater than this factor times the median partition size (and above the byte threshold).",
+        "importance": "It, together with skewedPartitionThresholdInBytes, is the knob that controls when AQE automatically splits skewed partitions."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Detecting skew via max-vs-median task metrics",
+        "explanation": "In the Spark UI Stages tab, the summary metrics table shows Min, 25th, Median, 75th, and Max for task duration and shuffle read size. When Max is many times the Median (e.g., 20x or more) for duration or shuffle read, the stage is skewed. A near-uniform distribution has Max close to Median. This is the fastest, tool-agnostic way to confirm skew before touching code."
+      },
+      {
+        "concept": "Correctness of salting a join",
+        "explanation": "Salting must not lose or duplicate matches. The skewed (large) side gets a random salt per row; the other (small) side must be replicated across ALL possible salt values so that for any salted fact row (k, s) there exists a matching dim row (k, s). Explode/cross-join with a salt-range array achieves this. If you salt only one side without replicating the other, you silently drop rows."
+      },
+      {
+        "concept": "Two-phase (salted partial then final) aggregation",
+        "explanation": "For skewed groupBy aggregations, add a salt to the group key, do a first aggregation on (key, salt) so the hot key's rows are combined in parallel across S partitions (partial results), then strip the salt and do a final aggregation on key to combine the S partials. Because SUM/COUNT/etc. are associative, the two-phase result equals the single-phase result, but the expensive first pass is now parallelized."
+      },
+      {
+        "concept": "AQE vs manual salting decision",
+        "explanation": "AQE skew join (Spark 3.x) handles skewed sort-merge joins automatically with zero code change and should be the default. Manual salting is needed when: AQE is unavailable (older Spark), the skew is in an aggregation (AQE splits joins, not group-bys), the join is already broadcast (no shuffle for AQE to split), or the skew is extreme enough that you also want to isolate/broadcast the hot keys separately."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Key skew (join skew):** One or a few join-key values dominate, overloading the partition they hash to. Fixed by salting, AQE skew join, or broadcast.",
+      "**Aggregation (groupBy) skew:** A hot group key makes one reducer task do most aggregation work. Fixed by two-phase salted aggregation.",
+      "**Partition skew (input file skew):** Uneven input file sizes produce uneven read partitions before any shuffle. Fixed by repartition/AQE coalesce or splitting large files.",
+      "**Null-key skew:** A large fraction of rows have NULL join keys that all hash together. Fixed by filtering/handling nulls separately or salting nulls.",
+      "**Isolated map-side (hot-key split) join:** Split the data into hot-key rows (broadcast-joined) and the rest (normal join), then union — a hybrid used for extreme, known hot keys."
+    ],
+    "advantages": [
+      "**Salting restores true parallelism:** A single overloaded task becomes S balanced tasks, so runtime scales with the cluster instead of the hot key.",
+      "**AQE skew handling is automatic:** No code change is needed for skewed sort-merge joins in Spark 3.x; it adapts to actual runtime data.",
+      "**Eliminates OOM and spill:** Distributing hot-key rows keeps each task within execution memory, removing crashes and disk-spill overhead.",
+      "**Broadcast fully avoids skew:** When one side is small, broadcasting removes the shuffle entirely so no partition can be skewed."
+    ],
+    "disadvantages": [
+      "**Salting adds code and complexity:** You must generate salts, replicate the other side, and strip/re-aggregate the salt, which is error-prone (easy to drop or duplicate rows).",
+      "**Salting inflates the small side:** Replicating the dimension across S salt values multiplies its size by S, adding shuffle/broadcast cost that must be balanced against the salt count.",
+      "**Choosing the salt count is a tuning problem:** Too few salts leaves skew; too many over-fragments non-hot keys and increases overhead.",
+      "**AQE cannot fix everything:** It does not split aggregation skew, does not help broadcast joins, and needs the shuffle to have already run to gather statistics."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use AQE skew join as the always-on default for shuffle joins. Add manual salting when detection shows a persistent hot-key straggler that AQE cannot fix (skewed aggregations, broadcast joins, extreme skew), and use broadcast joins whenever one side fits comfortably in memory to avoid the shuffle entirely.",
+      "whenToAvoid": "Avoid salting when the data is not actually skewed (Max task time is close to Median) — it only adds overhead. Avoid large salt counts for mildly skewed data, and avoid salting a join if broadcasting the small side already removes the shuffle."
+    },
+    "realWorldAnalogy": "Skew is like a highway toll plaza where every truck is routed to a single booth because their license plates start with 'T', while ten other booths sit empty; traffic backs up for miles and the plaza 'clears' only when that one booth does. Salting is like temporarily assigning each truck a random extra sticker (T-1, T-2, ... T-32) and opening matching lanes for each sticker, so the trucks spread evenly across all booths and everyone gets through at once. AQE is the smart traffic system that watches the queue build up and dynamically opens more lanes for the overloaded booth automatically.",
+    "commonMisconceptions": [
+      {
+        "myth": "Increasing spark.sql.shuffle.partitions fixes skew.",
+        "reality": "Adding partitions helps under-partitioning, but a single hot key still hashes to exactly one partition no matter how many exist. More partitions do not split one key's rows; only salting or AQE splitting does."
+      },
+      {
+        "myth": "Adding more executors or memory fixes skew.",
+        "reality": "Because the bottleneck is one task on one partition, extra executors sit idle and only bigger memory delays (not prevents) the problem. You must redistribute the data, not add hardware."
+      },
+      {
+        "myth": "Enabling AQE handles all skew automatically.",
+        "reality": "AQE skew handling targets skewed sort-merge joins. It does not split skewed group-by aggregations, does not help broadcast joins (no shuffle), and needs the byte thresholds met; aggregation skew still requires manual salting."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Salting and AQE let a job scale with cluster size instead of being pinned to the slowest task. Tune the salt count to roughly the number of executor cores you want the hot key spread across, and set spark.sql.shuffle.partitions high enough that non-hot keys are well distributed while AQE coalesces the excess.",
+      "reliability": "Skew causes OOM and repeated stage retries that can fail the whole job; distributing hot-key load makes completion deterministic. Add guardrails that detect a growing hot key over time (data drift) so a salt count chosen last quarter does not silently become insufficient.",
+      "faultTolerance": "A skewed straggler that OOMs triggers task retries and, on repeated failure, stage/job abort; salting reduces per-task memory pressure so transient retries succeed. AQE-split sub-partitions are ordinary tasks recovered via lineage like any other.",
+      "monitoring": "Watch the Stages tab summary metrics (Max vs Median duration and shuffle read), the task timeline for a single long bar, and the Spill (Memory/Disk) columns. Emit custom metrics of top-key counts to catch skew before it becomes a production incident.",
+      "security": "Salted keys are internal and derived from existing key columns, so they introduce no new sensitive data; ensure any hot-key values you log for diagnostics (e.g., a specific user_id) do not leak PII into logs or dashboards.",
+      "costOptimization": "A skewed job holds the whole cluster idle waiting on one task, wasting cluster-hours; fixing skew lets you finish faster on the same or smaller cluster. Balance salt count against the replication cost of the small side so you do not trade one overhead for another.",
+      "performance": "The goal is Max task time close to Median. Prefer broadcast when possible (no shuffle), let AQE split skewed joins, and reserve salting for aggregation skew and cases AQE misses. Combine salting with map-side partial aggregation so less data crosses the shuffle."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Detecting Skew: Finding Hot Keys and Measuring Imbalance",
+        "overview": "Before fixing skew, confirm it exists and locate the offending keys using a frequency count and a quick imbalance metric.",
+        "code": "from pyspark.sql import SparkSession\nfrom pyspark.sql.functions import col, count, desc, spark_partition_id\n\nspark = SparkSession.builder.appName(\"SkewDetect\").getOrCreate()\n\nfact = spark.read.parquet(\"/data/events.parquet\")  # skewed on user_id\n\n# 1) Find the hottest keys and how many rows each has\nhot_keys = (fact.groupBy(\"user_id\")\n                 .agg(count(\"*\").alias(\"cnt\"))\n                 .orderBy(desc(\"cnt\")))\nhot_keys.show(10, truncate=False)\n\n# 2) Quantify severity: what fraction does the top key hold?\ntotal = fact.count()\ntop = hot_keys.first()\nprint(f\"Top key {top['user_id']} = {top['cnt']} rows = {100*top['cnt']/total:.2f}% of data\")\n\n# 3) Inspect current physical partition sizes (partition skew)\n(fact.groupBy(spark_partition_id().alias(\"pid\"))\n     .agg(count(\"*\").alias(\"rows\"))\n     .orderBy(desc(\"rows\"))\n     .show(10))\n",
+        "language": "python",
+        "breakdown": "groupBy('user_id').count().orderBy(desc) surfaces the most frequent key values. Dividing the top count by the total gives the share of data one key holds — anything well above 1/numDistinctKeys signals skew. spark_partition_id() reveals whether the current partitions are already uneven (input/partition skew) even before a shuffle.",
+        "expectedOutput": "+---------+---------+\n|user_id  |cnt      |\n+---------+---------+\n|GUEST    |41250000 |\n|BOT_0001 |  980000 |\n|u_9931   |     420 |\n+---------+---------+\nTop key GUEST = 41250000 rows = 41.25% of data\n\n(pid 37 has 41M rows, others ~200k -> clear skew)",
+        "commonIssues": "Running .count() on a huge dataset twice is expensive; sample or cache first. A hot NULL key often hides at the top — remember NULLs all hash together and are a common skew source.",
+        "optimizationTips": "Use approx counts (approxQuantile / countApprox) on massive data to detect skew cheaply, and check the Spark UI Stages summary (Max vs Median shuffle read) instead of a full count when you just need confirmation."
+      },
+      {
+        "title": "Salting a Skewed Join (Full Working Example)",
+        "overview": "The canonical fix: salt the large skewed side, replicate (explode) the small side across all salt values, join on the composite key, then strip the salt.",
+        "code": "from pyspark.sql import functions as F\n\nSALT = 32  # spread hot keys across 32 partitions\n\nfact = spark.read.parquet(\"/data/events.parquet\")     # large, skewed on user_id\ndim  = spark.read.parquet(\"/data/users.parquet\")       # smaller dimension\n\n# 1) Salt the LARGE side: append a random salt in [0, SALT)\nfact_salted = fact.withColumn(\"salt\", (F.rand() * SALT).cast(\"int\")) \\\n                  .withColumn(\"user_key\", F.concat_ws(\"_\", F.col(\"user_id\"), F.col(\"salt\")))\n\n# 2) Explode the SMALL side across ALL salt values so every match survives\nsalt_range = F.array([F.lit(i) for i in range(SALT)])\ndim_salted = dim.withColumn(\"salt\", F.explode(salt_range)) \\\n                .withColumn(\"user_key\", F.concat_ws(\"_\", F.col(\"user_id\"), F.col(\"salt\")))\n\n# 3) Join on the composite salted key (hot key now spread over 32 partitions)\njoined = fact_salted.join(dim_salted, on=\"user_key\", how=\"inner\") \\\n                    .drop(\"salt\", \"user_key\")\n\njoined.write.mode(\"overwrite\").parquet(\"/output/enriched_events\")\n",
+        "language": "python",
+        "breakdown": "Step 1 gives each fact row a random salt so 'GUEST' rows scatter across 32 composite keys. Step 2 replicates each dimension row 32 times (one per salt) with F.explode over an array literal, guaranteeing every salted fact row finds its dim match — this is what preserves join correctness. Step 3 joins on user_key, so the hot key's rows now land in up to 32 partitions and 32 parallel tasks instead of one. The salt and helper columns are dropped afterward.",
+        "expectedOutput": "Spark UI: the join stage's Max task shuffle read drops from ~12GB (one task) to ~400MB (balanced across 32 tasks); Max task duration falls close to the Median. Output row count equals the unsalted inner join (correctness preserved).",
+        "commonIssues": "Forgetting to explode the small side across ALL salts silently drops matches. Using too many salts inflates the dimension (size * SALT) and can make it the new bottleneck. If the dim is small enough, prefer broadcast instead.",
+        "optimizationTips": "Salt only the actually-hot keys (leave cold keys with salt=0 and replicate the dim only for hot keys) to avoid inflating the dimension needlessly. If the dimension fits in memory, F.broadcast(dim) removes the shuffle entirely and no salting is needed."
+      },
+      {
+        "title": "Two-Phase Salted Aggregation for Skewed groupBy",
+        "overview": "AQE does not split aggregation skew, so a hot group key must be handled with a salted partial aggregation followed by a final aggregation.",
+        "code": "from pyspark.sql import functions as F\n\nSALT = 16\nevents = spark.read.parquet(\"/data/events.parquet\")  # skewed on event_type\n\n# Phase 1: partial aggregation on (event_type, salt) — hot key spread over 16 tasks\npartial = (events\n    .withColumn(\"salt\", (F.rand() * SALT).cast(\"int\"))\n    .groupBy(\"event_type\", \"salt\")\n    .agg(F.count(\"*\").alias(\"partial_cnt\"),\n         F.sum(\"amount\").alias(\"partial_sum\")))\n\n# Phase 2: strip the salt and combine the partials into the final result\nfinal = (partial\n    .groupBy(\"event_type\")\n    .agg(F.sum(\"partial_cnt\").alias(\"total_cnt\"),\n         F.sum(\"partial_sum\").alias(\"total_sum\")))\n\nfinal.orderBy(F.desc(\"total_cnt\")).show()\n",
+        "language": "python",
+        "breakdown": "Phase 1 groups by (event_type, salt), so the hot event_type's rows are combined in parallel across 16 salted sub-groups (16 tasks) instead of one. Because COUNT and SUM are associative and commutative, summing the 16 partials in Phase 2 (grouping by event_type only) yields exactly the same totals as a single groupBy would. The heavy first pass is now parallelized; the second pass processes only 16 small partials per key.",
+        "expectedOutput": "+----------+---------+-----------+\n|event_type|total_cnt|total_sum  |\n+----------+---------+-----------+\n|CLICK     |41250000 | 8250000.0 |\n|VIEW      |  980000 |  196000.0 |\n+----------+---------+-----------+\n\n(Phase-1 stage now shows balanced task shuffle reads instead of one straggler)",
+        "commonIssues": "This pattern only works for associative aggregations (sum, count, min, max). For non-associative ones like exact median or count-distinct, salting requires a different approach (e.g., approx_count_distinct or a merge of HLL sketches).",
+        "optimizationTips": "Combine with map-side partial aggregation (default for DataFrame groupBy) so less data crosses the shuffle. Choose SALT near the number of cores you want the hot key parallelized across; more is not better once each partial is already small."
+      },
+      {
+        "title": "AQE Skew-Join Configuration and Broadcast Alternative",
+        "overview": "Enable Spark 3.x Adaptive Query Execution to auto-split skewed sort-merge joins, and use broadcast to avoid the shuffle entirely when one side is small.",
+        "code": "from pyspark.sql import functions as F\n\n# 1) Turn on AQE and its skew-join handling (the automatic route)\nspark.conf.set(\"spark.sql.adaptive.enabled\", \"true\")\nspark.conf.set(\"spark.sql.adaptive.skewJoin.enabled\", \"true\")\n# a partition is 'skewed' if size > factor * median AND > threshold bytes\nspark.conf.set(\"spark.sql.adaptive.skewJoin.skewedPartitionFactor\", \"5\")\nspark.conf.set(\"spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes\", \"256m\")\nspark.conf.set(\"spark.sql.adaptive.coalescePartitions.enabled\", \"true\")\nspark.conf.set(\"spark.sql.shuffle.partitions\", \"400\")\n\nfact = spark.read.parquet(\"/data/events.parquet\")\ndim  = spark.read.parquet(\"/data/users.parquet\")\n\n# With AQE on, a skewed sort-merge join is split automatically at runtime\nauto = fact.join(dim, \"user_id\")\nauto.explain(mode=\"formatted\")   # look for AQEShuffleRead / skew=true\n\n# 2) Broadcast alternative: if dim fits in memory, avoid the shuffle entirely\nno_shuffle = fact.join(F.broadcast(dim), \"user_id\")\n",
+        "language": "python",
+        "breakdown": "Setting spark.sql.adaptive.enabled and skewJoin.enabled lets Spark inspect shuffle statistics after the map stage and split any partition larger than skewedPartitionFactor (5) times the median AND above skewedPartitionThresholdInBytes (256MB) into sub-partitions, replicating the other side's matching partition. shuffle.partitions=400 gives AQE room to coalesce. The broadcast() path sidesteps skew entirely: because the small dim is shipped to every executor, there is no shuffle on user_id and thus no skewed partition.",
+        "expectedOutput": "explain() shows 'AQEShuffleRead ... skewed' or coalesced partitions in the physical plan; the Spark UI Stages tab shows the previously-giant partition split across many tasks with balanced durations. The broadcast path shows BroadcastHashJoin with no Exchange on user_id.",
+        "commonIssues": "AQE skew handling only applies to sort-merge joins over a shuffle; it does nothing for broadcast joins (no shuffle) or aggregation skew. If skewedPartitionThresholdInBytes is set too high, moderate skew is never split.",
+        "optimizationTips": "Keep AQE on by default. Lower skewedPartitionFactor or the byte threshold to make splitting more aggressive for moderate skew. Raise spark.sql.autoBroadcastJoinThreshold so more small dimensions broadcast automatically and skip the shuffle."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "An ad-tech company runs an hourly pipeline joining a 2TB impressions fact table with a users dimension and then aggregating spend per user_id. A large share of traffic is anonymous ('GUEST'), so the join and aggregation stages consistently stall on one straggler task, occasionally OOM, and blow the hourly SLA.",
+    "inputData": "impressions.parquet (2TB, ~8B rows: impression_id, user_id, campaign_id, amount, ts) where user_id='GUEST' is ~40% of rows; users.parquet (120M rows: user_id, segment, country).",
+    "architecture": "PySpark on a Kubernetes cluster with 60 executors (8 cores each), Spark 3.5 with AQE enabled, external shuffle service on, DataFrame API compiled by Catalyst into a sort-merge join plus a hash aggregation.",
+    "processingSteps": [
+      "1. Detect: run impressions.groupBy('user_id').count().orderBy(desc('count')).show() — 'GUEST' holds 40% of rows, confirmed by Stages tab Max shuffle read (11GB) vs Median (28MB).",
+      "2. First line of defense: enable AQE skewJoin (skewedPartitionFactor=5, threshold=256m) so the sort-merge join's giant 'GUEST' partition is split automatically at runtime.",
+      "3. Because the aggregation stage (groupBy user_id spend) is still skewed on 'GUEST' — AQE does not split aggregations — apply two-phase salted aggregation with SALT=32.",
+      "4. For the join itself, since users.parquet at 120M rows is too big to broadcast, salt the impressions side and explode the users side across 32 salts, joining on the composite key so 'GUEST' spreads across 32 tasks.",
+      "5. Strip the salt, run the final aggregation combining the 32 partials per user_id, and write spend_per_user to /output/hourly_spend."
+    ],
+    "output": "A balanced set of Parquet files with per-user spend, produced by stages whose Max task duration is now within ~1.3x of the Median instead of 400x, with zero spill and no OOM.",
+    "monitoring": "The Stages tab confirms uniform task shuffle-read sizes and durations; the task timeline no longer shows a single long bar. A custom metric emits the top-5 user_id counts each run so a future data-drift spike (e.g., a new bot) is caught before it re-skews the job.",
+    "errorHandling": "If a salted task still OOMs (salt count too low for a newly-hotter key), the pipeline auto-retries with a doubled salt count; NULL user_ids are filtered/bucketed separately so they do not create a second hidden hot partition.",
+    "finalResult": "Combining AQE skew-join splitting, salted join, and two-phase salted aggregation cut the stage from a 55-minute straggler-bound run (with intermittent OOM failures) to a consistent 9-minute run on the same cluster, eliminating SLA breaches and reducing cluster-hour cost since executors are no longer idle waiting on one task."
+  },
+  "industryUseCases": [
+    {
+      "company": "Facebook / Meta",
+      "problem": "Massive interaction graphs and event logs have extreme key skew (a few viral posts or bot accounts generate billions of events), stalling joins and aggregations across their Spark/Presto estate.",
+      "solution": "Engineers detect hot keys from runtime statistics, apply salting and hot-key isolation (broadcast the few extreme keys, normally join the rest), and rely on adaptive execution to split oversized partitions automatically.",
+      "benefits": "Skewed jobs that once failed or ran for hours complete predictably, freeing cluster capacity and meeting data-freshness SLAs for ranking and analytics."
+    },
+    {
+      "company": "Uber",
+      "problem": "Trip and rider event data is skewed toward a handful of high-volume cities and popular drivers, so partition-key joins pile all their rows onto single tasks that OOM.",
+      "solution": "Uber salts high-cardinality-imbalanced keys, enables AQE skew join for sort-merge joins, and uses two-phase aggregation for city-level rollups where one city dominates.",
+      "benefits": "Balanced tasks eliminate stragglers and OOM, cutting pipeline latency and cloud spend on their large batch and near-real-time jobs."
+    },
+    {
+      "company": "LinkedIn",
+      "problem": "Member-activity and connection data is heavily skewed toward highly-connected accounts and popular companies, causing join skew in feature-generation pipelines for ML.",
+      "solution": "LinkedIn combines salting of known hot keys with AQE adaptive skew splitting and broadcasts small dimension tables, plus monitoring that alerts when a key's share grows.",
+      "benefits": "Feature pipelines run within SLA, avoid recompute-triggering failures, and scale as the graph grows without re-tuning for every new hot account."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Skew defeats horizontal scaling because one task bottlenecks the stage; salting (spread hot keys over S sub-keys) and AQE partition splitting restore scaling so runtime falls as executors are added. Tune the salt count and spark.sql.shuffle.partitions so non-hot keys are well distributed while AQE coalesces the excess, letting the same code scale from GBs to PBs.",
+    "faultTolerance": "A skewed straggler often OOMs, causing task retries and, on repeated failure, stage/job abort; reducing per-task data via salting keeps tasks within memory so transient retries succeed. AQE-split sub-partitions and salted tasks are recovered through ordinary RDD lineage like any other task.",
+    "highAvailability": "Skew mitigation is stateless within the job, so HA depends on standard driver/executor HA. What matters operationally is preventing skew-induced repeated failures that would otherwise keep restarting a job; distributing load makes completion deterministic and avoids retry storms.",
+    "disasterRecovery": "Because salted and AQE-split computations are deterministic (given a fixed salt seed or the same shuffle stats), reruns after a failure produce identical results, so partial outputs can be safely reprocessed. Persist checkpoints after expensive de-skewed stages so recovery does not replay the whole pipeline.",
+    "performanceOptimization": "Aim for Max task time close to Median. Prefer broadcast joins (no shuffle, no skew) when a side fits in memory; enable AQE skew join for sort-merge joins; use salting for aggregation skew and extreme cases; combine salting with map-side partial aggregation so less data crosses the shuffle. Salt only the genuinely hot keys to avoid inflating the small side.",
+    "costOptimization": "A skewed job keeps the whole cluster provisioned while one task runs, wasting cluster-hours and often forcing oversized memory instances just to fit the hot partition. De-skewing lets the job finish faster on the same or smaller, cheaper instances. Balance salt count against the replication cost of the small side so you do not trade compute cost for shuffle cost.",
+    "securityConsiderations": "Salt values are derived from existing key columns and add no new sensitive data, but hot-key diagnostics (logging specific user_ids or account IDs that are 'hot') can leak PII into logs and dashboards; hash or mask key values in diagnostics and restrict access to skew-analysis outputs.",
+    "monitoringAndObservability": "Use the Spark UI Stages tab summary metrics (Max vs Median task duration and shuffle read), the task timeline (a single long bar = straggler), and Spill (Memory/Disk) columns to confirm skew. In production, emit custom metrics of the top-N key frequencies each run and dashboard Max/Median task ratios to detect data drift that re-introduces skew.",
+    "dataQualityValidation": "Salting must preserve row counts and aggregates: validate that the salted join output row count and aggregate sums equal an unsalted reference on a sample. Guard against silently dropped matches (from failing to replicate the small side across all salts) and against NULL-key skew that hides a second hot partition.",
+    "loggingAndAlerting": "Log the chosen salt count, detected top keys, and the Max/Median task ratio per run. Alert when the top key's share of data exceeds a threshold (skew emerging), when Max/Median task duration exceeds (e.g.) 10x, or when Spill or task-retry counts spike — all early indicators that the current de-skew strategy needs re-tuning."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Detect before fixing:** Confirm skew with the Stages tab Max-vs-Median metrics and groupBy().count().orderBy(desc()) before salting — don't add complexity to a non-skewed job.",
+      "**Enable AQE by default:** Set spark.sql.adaptive.enabled and spark.sql.adaptive.skewJoin.enabled so skewed sort-merge joins are split automatically.",
+      "**Broadcast when you can:** If one side fits in memory, broadcast it to remove the shuffle entirely — the cleanest skew fix.",
+      "**Salt only hot keys:** Replicate the small side and salt only the genuinely hot keys to avoid inflating the dimension across all salt values.",
+      "**Use two-phase aggregation for group-by skew:** AQE won't split aggregations, so salt the group key, aggregate partials, strip salt, and combine."
+    ],
+    "engineeringStandards": [
+      "Parameterize the salt count (do not hardcode 32 in ten places) and log it per run so skew tuning is auditable.",
+      "Handle NULL keys explicitly (filter, bucket, or salt them) since NULLs all hash together and are a hidden skew source.",
+      "Validate salted-join output against an unsalted reference on a sample to prove correctness (no dropped or duplicated rows)."
+    ],
+    "designRecommendations": [
+      "Push filters/projections before the skewed shuffle so the hot key carries less data across the network.",
+      "Prefer the isolated hot-key split pattern (broadcast the extreme keys, normally join the rest, union) when a handful of keys are pathologically hot.",
+      "Right-size spark.sql.shuffle.partitions so non-hot keys distribute evenly and let AQE coalesce, rather than assuming more partitions alone fixes skew."
+    ],
+    "namingConventions": [
+      "Name salt/helper columns clearly and consistently (e.g., _salt, _salted_key) and drop them before writing output so they don't leak into downstream schemas.",
+      "Suffix de-skewed DataFrames semantically (fact_salted, dim_exploded, agg_partial, agg_final) so the pipeline reads self-documenting."
+    ],
+    "documentationStandards": [
+      "Record in the runbook which keys are known-hot, the chosen salt count and its rationale, and the target Max/Median task ratio.",
+      "Document the detection evidence (Spark UI screenshots or metrics) that justified each salting/AQE decision.",
+      "Note the correctness argument for each salted aggregation (which aggregates are associative) so future maintainers don't misuse it for non-associative ones."
+    ],
+    "testingStrategies": [
+      "Unit-test salted join/aggregation logic on synthetic skewed data and assert output equals the unsalted result (row counts and aggregate sums).",
+      "Add a regression test that fails if a stage's Max/Median task ratio exceeds a threshold on representative data, catching re-introduced skew.",
+      "Run failure-injection with an artificially hot key to verify OOM-avoidance and that the salt count is sufficient at production scale."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Increasing spark.sql.shuffle.partitions and expecting it to fix a single hot key.",
+      "whyItHappens": "Developers correctly learn that more partitions help under-partitioning and over-apply the lesson to skew.",
+      "impact": "A hot key still hashes to exactly one partition regardless of partition count, so the straggler persists while overhead from many tiny non-hot partitions grows.",
+      "correctApproach": "Salt the hot key (or enable AQE skew join) to actually split its rows across multiple partitions; use partition count tuning only for genuine under-partitioning."
+    },
+    {
+      "mistake": "Salting the large side of a join but forgetting to replicate the small side across all salt values.",
+      "whyItHappens": "The salting of the big side is the visible part; the explode of the small side is easy to overlook.",
+      "impact": "Salted fact rows whose salt has no matching salted dim row are silently dropped, producing incorrect (under-counted) results with no error.",
+      "correctApproach": "Explode the small side across the full salt range (F.explode over an array 0..S-1) so every salted key on the large side has a match, then validate row counts against an unsalted reference."
+    },
+    {
+      "mistake": "Relying on AQE to fix aggregation skew or broadcast-join skew.",
+      "whyItHappens": "Teams enable AQE, see join skew disappear, and assume it covers all skew.",
+      "impact": "Skewed group-by aggregations and already-broadcast joins keep stalling on a straggler because AQE splits only shuffle sort-merge join partitions.",
+      "correctApproach": "Use two-phase salted aggregation for group-by skew and salting/hot-key isolation for cases AQE cannot handle; reserve AQE for skewed sort-merge joins."
+    },
+    {
+      "mistake": "Choosing an arbitrary large salt count without measuring.",
+      "whyItHappens": "It feels safer to over-salt, and there is no obvious immediate downside.",
+      "impact": "The small side is replicated S times, inflating shuffle/broadcast volume and possibly creating a new bottleneck, while non-hot keys are needlessly fragmented.",
+      "correctApproach": "Set the salt count near the number of cores you want the hot key spread across (e.g., 16-64), salt only hot keys, and tune based on the resulting Max/Median task ratio."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Effort and coverage of the skew fix",
+      "optionA": "AQE Skew Join (automatic)",
+      "optionB": "Manual Salting",
+      "explanation": "AQE requires only config (no code) and splits skewed sort-merge join partitions at runtime, but it does not handle aggregation skew or broadcast joins. Manual salting requires code (salt, replicate, strip) and is error-prone, but it covers cases AQE cannot: skewed group-bys, extreme skew, and older Spark versions."
+    },
+    {
+      "feature": "How the shuffle is treated",
+      "optionA": "Broadcast Join (avoid shuffle)",
+      "optionB": "Salted Shuffle Join (redistribute shuffle)",
+      "explanation": "Broadcast ships the small side to every executor so there is no shuffle on the join key and thus no possibility of a skewed partition — the cleanest fix when one side fits in memory. Salting keeps the shuffle but spreads the hot key across many partitions; it is needed when neither side is broadcast-small."
+    },
+    {
+      "feature": "Handling join skew vs aggregation skew",
+      "optionA": "Salted Join (explode small side)",
+      "optionB": "Two-Phase Salted Aggregation (partial then final)",
+      "explanation": "A salted join distributes a hot join key by replicating the other side across salt values to preserve matches. A two-phase aggregation salts the group key, aggregates partials in parallel, then strips the salt and combines — it needs no second table but only works for associative aggregates (sum, count, min, max)."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is data skew in Spark and why is it a problem?",
+        "answer": "Data skew is an uneven distribution of data across partitions, usually because one key value is far more frequent than others. After a shuffle, that hot key's rows all land in one partition, so a single task must process most of the data — becoming a straggler that stalls the whole stage, causes spill, and may OOM, defeating Spark's parallelism.",
+        "explanation": "Emphasize the one-task-per-partition model and that the stage completes only when the slowest task does."
+      },
+      {
+        "question": "How can you quickly detect skew in a running job?",
+        "answer": "In the Spark UI Stages tab, look at the summary metrics: if the Max task duration or Max shuffle-read size is many times the Median, the stage is skewed. Programmatically, run df.groupBy(key).count().orderBy(desc('count')).show() to find hot keys and see what share of the data the top key holds.",
+        "explanation": "Mention both the UI (Max vs Median) and the code-based hot-key count as complementary."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "Explain the salting technique for a skewed join and why it stays correct.",
+        "answer": "You append a random salt in [0, S) to the skewed (large) side's key to form a composite key, spreading the hot key across S partitions. To keep the join correct you replicate the other (small) side across ALL S salt values (e.g., via explode over a 0..S-1 array), so every salted large-side row still finds a matching small-side row. Then you join on the composite key and drop the salt.",
+        "explanation": "The key correctness point is replicating the small side across all salts; salting only one side drops matches."
+      },
+      {
+        "question": "Why doesn't simply increasing spark.sql.shuffle.partitions fix skew?",
+        "answer": "Because a single key value always hashes to exactly one partition (hash(key) % numPartitions), adding partitions cannot split that one key's rows across more tasks. More partitions help when data is merely under-partitioned, but for a hot key you must change the key itself (salting) or split the partition at runtime (AQE).",
+        "explanation": "This distinguishes under-partitioning from true key skew — a very common interview trap."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How does AQE handle skewed joins, and what are its limits?",
+        "answer": "With spark.sql.adaptive.enabled and skewJoin.enabled, AQE reads shuffle-write statistics after the map stage and marks a partition skewed if its size exceeds skewedPartitionFactor * median AND skewedPartitionThresholdInBytes. It splits such partitions into sub-partitions handled by separate tasks, replicating the matching partition of the other side. Limits: it applies only to shuffle sort-merge joins — not broadcast joins (no shuffle) and not group-by aggregation skew.",
+        "explanation": "Name the two configs and the two conditions, and state clearly what AQE does NOT cover (aggregation skew)."
+      },
+      {
+        "question": "How would you handle skew in a groupBy aggregation where AQE can't help?",
+        "answer": "Use two-phase salted aggregation: add a random salt to the group key, run a partial aggregation on (key, salt) so the hot key's rows are combined in parallel across S sub-groups, then strip the salt and run a final aggregation on key that sums the S partials. This is correct because the aggregates (sum, count, min, max) are associative and commutative, so combining partials equals aggregating all rows at once.",
+        "explanation": "Stress associativity as the correctness condition and that it parallelizes the expensive first pass."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your join stage is 99% complete but stuck on one task for 40 minutes; the other tasks finished in seconds. The Stages tab shows one task read 9GB of shuffle while the median read 25MB. What is happening and how do you fix it?",
+        "thinkingProcess": "The 9GB-vs-25MB gap and the single stuck task are textbook join skew: a hot key hashed all its rows to one partition. First identify the hot key with groupBy(key).count().orderBy(desc). Then decide the fix: if the other side is small, broadcast it; otherwise enable AQE skew join and, if that is insufficient or unavailable, salt the hot key and explode the other side across salts.",
+        "expectedAnswer": "Confirm the hot key via groupBy count. If one side fits in memory, use F.broadcast() to remove the shuffle entirely. Otherwise enable spark.sql.adaptive.skewJoin.enabled so AQE splits the giant partition; for extreme or persistent skew, salt the large side (random salt in [0,S)), replicate the small side across all S salts via explode, join on the composite key, and drop the salt. Validate the output row count matches the unsalted join."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a daily pipeline that joins a 5TB event fact table with a 200M-row user dimension and computes per-user metrics, where a few keys (GUEST, bots) hold ~40% of rows. Address skew end-to-end.",
+        "designApproach": "Detect hot keys via a frequency count and Stages-tab Max/Median. Enable AQE skew join for the sort-merge join. Because the dimension is too large to broadcast, salt the fact side and explode the dimension across salts for the hot keys only (isolated hot-key handling: broadcast/normal-join the cold keys, salt the hot ones, union). For the per-user aggregation, use two-phase salted aggregation since AQE won't split group-bys. Push filters early and handle NULL user_ids separately.",
+        "tradeOffs": "Salting adds code complexity and replicates the dimension (size * salt count) — balance salt count against replication cost. Broadcasting the whole dimension is impossible at 200M rows, so hot-key isolation limits replication to just the extreme keys. AQE covers the join automatically but not the aggregation.",
+        "scalingStrategy": "Parameterize the salt count and auto-tune it from observed top-key share so growth in a hot key doesn't silently re-skew the job. Right-size shuffle partitions with AQE coalescing, monitor Max/Median task ratios and top-N key frequencies as production metrics, and checkpoint after the de-skewed join so recovery is bounded."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between partition skew (input file skew) and key skew, and how do their fixes differ?",
+      "How do skewedPartitionFactor and skewedPartitionThresholdInBytes interact to decide if a partition is split?",
+      "Why can NULL join keys cause skew, and how do you handle them?",
+      "When is broadcast join preferable to salting, and what are the size limits?",
+      "How would you salt a count-distinct or median where the aggregate is not simply associative?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Data skew is uneven key distribution that forces one task to process most of a stage's data (straggler, spill, OOM); fix it by salting the hot key (spread across S sub-keys, replicate the other side, strip salt), enabling AQE skew join, broadcasting the small side, or using two-phase salted aggregation.",
+    "keyConcepts": [
+      "Symptom: Max task duration/shuffle read >> Median in the Stages tab; one stuck task, spill, OOM.",
+      "Cause: a hot key hashes all its rows to one partition; more partitions can't split one key.",
+      "Salting: append random salt to hot key, explode small side across all salts, join, strip salt.",
+      "AQE skew join splits oversized sort-merge join partitions automatically (not aggregations, not broadcast).",
+      "Two-phase salted aggregation handles group-by skew for associative aggregates.",
+      "Broadcast the small side to avoid the shuffle (and skew) entirely."
+    ],
+    "formulas": [
+      "Skew factor = max_task_shuffle_read / median_task_shuffle_read (>> 1 means skewed)",
+      "AQE splits a partition if size > skewedPartitionFactor * median AND size > skewedPartitionThresholdInBytes",
+      "Hot key share = top_key_count / total_rows (>> 1/num_distinct_keys means skew)",
+      "Salted-side partitions per hot key = number of distinct salt values S"
+    ],
+    "commands": [
+      "df.groupBy(key).count().orderBy(desc('count')).show()  # find hot keys",
+      "df.withColumn('salt', (F.rand()*S).cast('int'))  # salt the large side",
+      "dim.withColumn('salt', F.explode(F.array([F.lit(i) for i in range(S)])))  # replicate small side",
+      "spark.conf.set('spark.sql.adaptive.enabled','true'); spark.conf.set('spark.sql.adaptive.skewJoin.enabled','true')",
+      "spark.conf.set('spark.sql.adaptive.skewJoin.skewedPartitionFactor','5')",
+      "spark.conf.set('spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes','256m')",
+      "fact.join(F.broadcast(dim), 'key')  # avoid shuffle entirely"
+    ],
+    "interviewPoints": [
+      "One task per partition means the stage waits on the slowest (straggler) task.",
+      "More shuffle partitions do NOT split a single hot key — salting or AQE does.",
+      "Salting correctness requires replicating the small side across ALL salt values.",
+      "AQE skew join covers sort-merge joins only, not aggregations or broadcast joins.",
+      "Two-phase salted aggregation works only for associative aggregates (sum/count/min/max)."
+    ],
+    "quickNotes": [
+      "Detect: Max vs Median in Stages tab; NULL keys are a hidden hot key.",
+      "Salt count ~ number of cores to spread the hot key across (16-64 typical).",
+      "Salt only hot keys to avoid inflating the small side by S.",
+      "Broadcast is the cleanest fix when one side fits in memory.",
+      "Validate salted output row counts/sums against an unsalted reference."
+    ]
+  },
+  "keyTakeaways": [
+    "Data skew is uneven key distribution that makes one (or few) tasks process most of a stage's data, creating a straggler tail, disk spill, and OOM that defeat Spark's parallelism — adding executors or memory does not fix it.",
+    "Detect skew from the Spark UI Stages tab (Max task duration/shuffle read >> Median) and locate hot keys with df.groupBy(key).count().orderBy(desc('count')); confirm the top key's share of the data before choosing a fix.",
+    "Salting spreads a hot key across S partitions by appending a random salt; for joins you must replicate the small side across ALL salt values (explode) to keep results correct, then strip the salt.",
+    "AQE skew join (spark.sql.adaptive.enabled + skewJoin.enabled with skewedPartitionFactor and skewedPartitionThresholdInBytes) auto-splits oversized sort-merge join partitions at runtime, but does not cover aggregation skew or broadcast joins.",
+    "Choose the right tool: broadcast the small side to avoid the shuffle entirely, let AQE handle sort-merge join skew, and use salting plus two-phase (partial-then-final) aggregation for group-by skew and cases AQE cannot fix."
+  ]
+}

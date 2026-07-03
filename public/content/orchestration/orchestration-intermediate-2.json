@@ -1,0 +1,407 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Source tables often get overwritten in place: an order's status flips from 'placed' to 'shipped' to 'delivered', and each update destroys the previous value. If you only ever query the current row, you lose history - you can never answer 'what was this order's status last Tuesday?' or 'how long did orders sit in placed before shipping?'. dbt snapshots solve this by capturing a full history of changes to a mutable source table over time, so every version of every row is preserved.",
+      "A snapshot implements Slowly Changing Dimension Type 2 (SCD2). Each time dbt snapshot runs, it compares the current source rows to what it recorded last time. New rows are inserted; rows whose tracked values changed are 'closed' (their old version is stamped with an end timestamp) and a new version is inserted. dbt manages four meta-columns automatically: dbt_scd_id (a unique key for each version), dbt_valid_from and dbt_valid_to (the window during which that version was current), and dbt_updated_at. A NULL dbt_valid_to marks the currently-active version.",
+      "You define a snapshot in a .sql file under the snapshots/ directory using a {% snapshot name %}...{% endsnapshot %} block with a config specifying a unique_key and a strategy. The timestamp strategy uses an updated_at column to detect changes (efficient and reliable when the source has a trustworthy last-updated timestamp); the check strategy compares a list of columns (check_cols) and records a new version whenever any of them changes (used when there is no reliable timestamp). Snapshots run with dbt snapshot and, crucially, must be run regularly - dbt can only capture a change it actually observes between runs."
+    ],
+    "learningObjectives": [
+      "Explain why mutable source tables lose history and how dbt snapshots implement SCD Type 2 to preserve every version of every row using dbt_valid_from / dbt_valid_to.",
+      "Author a snapshot in snapshots/ with a {% snapshot %} block, configure unique_key, and choose between the timestamp strategy (updated_at) and the check strategy (check_cols).",
+      "Run snapshots with dbt snapshot, reason about run cadence, query point-in-time history, and handle gotchas like hard deletes with invalidate_hard_deletes."
+    ],
+    "formalDefinition": "A dbt snapshot is a table that records the history of a mutable source table using the Slowly Changing Dimension Type 2 pattern. Defined in a .sql file under the configured snapshots/ path within a {% snapshot name %}...{% endsnapshot %} block, it declares a config with a unique_key (the business key identifying a logical record), a strategy ('timestamp' or 'check'), and strategy parameters (updated_at for timestamp; check_cols - a list or 'all' - for check). On each dbt snapshot invocation, dbt reads the source query result and diffs it against the existing snapshot table: unchanged current rows are left open, changed rows have their current version closed by setting dbt_valid_to, new versions and new records are inserted, and dbt maintains meta-columns dbt_scd_id (surrogate key per version), dbt_updated_at, dbt_valid_from, and dbt_valid_to (NULL = currently valid). Optionally invalidate_hard_deletes=true closes records absent from the source. Snapshots are typically materialized in a dedicated schema and referenced downstream via ref().",
+    "simpleExplanation": "Imagine a customer record that gets overwritten every time the customer moves house - once they update their address, the old one is gone forever. A snapshot is like a diary that photographs the record every time dbt looks at it. When something you care about changes (say the address), the diary stamps 'this version was true from date A to date B', tucks it into history, and writes a fresh page marked 'current' for the new address. Now you can flip back to any date and see exactly what the record looked like then. The 'timestamp' way of noticing changes is trusting the record's own 'last edited' date; the 'check' way is comparing specific fields side by side because there is no reliable edited date. The one rule: dbt only photographs what it sees, so you must run the snapshot regularly or you will miss changes that happened between visits.",
+    "historicalContext": "The Slowly Changing Dimension typology - most famously SCD Type 2, which preserves history by adding a new row per change with validity date ranges - was formalized by Ralph Kimball in dimensional data warehouse modeling in the 1990s. Traditionally, SCD2 was implemented with hand-written MERGE statements and effective-date logic that were tedious and error-prone. dbt (data build tool), created by dbt Labs starting around 2016, added snapshots as a first-class feature so analysts could capture history from mutable sources declaratively, letting dbt manage the diffing and the dbt_valid_from/dbt_valid_to bookkeeping. Early dbt kept snapshot configuration in dbt_project.yml; it later moved to inline config() blocks inside the {% snapshot %} definition, and added the check strategy for sources lacking a reliable timestamp and invalidate_hard_deletes to handle records that disappear from the source. Because EL tools (Fivetran, Airbyte, Stitch) commonly overwrite source tables in place, snapshots became the standard dbt-native way to retain a historical audit trail of otherwise-mutable data.",
+    "whyItMatters": {
+      "business": "Snapshots preserve history that the business needs for auditing, compliance, and trend analysis - what a customer's tier, a subscription's price, or an order's status was at any past point - so reports about the past stay accurate even after the source is overwritten.",
+      "engineering": "They replace fragile, hand-written SCD2 MERGE logic with a declarative, dbt-managed pattern: engineers specify a key and a strategy, and dbt handles the diffing, versioning, and validity-window bookkeeping consistently across databases.",
+      "scalability": "As data volumes and the number of mutable sources grow, snapshots provide a uniform history-capture mechanism that scales across dozens of tables without bespoke code per table, and the timestamp strategy avoids scanning every column.",
+      "cost": "Capturing only changes (SCD2 deltas) is far cheaper than storing full daily copies of large tables; the timestamp strategy in particular limits the work to comparing a single column, reducing compute versus full-row checks.",
+      "reliability": "Snapshots create an immutable historical record with clear validity windows, so downstream point-in-time joins are reproducible and auditable - critical for correct historical reporting and reconciliations that must not change when the source mutates."
+    },
+    "coreComponents": [
+      {
+        "name": "The snapshot definition ({% snapshot %} block in snapshots/)",
+        "definition": "A .sql file in the snapshots/ directory containing a {% snapshot name %}...{% endsnapshot %} block that wraps a SELECT over the source and a config() specifying how history is captured.",
+        "purpose": "To declaratively define which source data to historize and how, so dbt can manage the SCD2 diffing and versioning.",
+        "responsibilities": "Select the source rows (via source() or ref()), name the resulting history table, and carry the config (unique_key, strategy, strategy params, target schema).",
+        "examples": "{% snapshot orders_snapshot %} {{ config(unique_key='order_id', strategy='timestamp', updated_at='updated_at') }} select * from {{ source('shop','orders') }} {% endsnapshot %}"
+      },
+      {
+        "name": "unique_key",
+        "definition": "The business key (or expression/list of columns) that identifies a logical record across versions, so dbt knows which existing snapshot row a given source row corresponds to.",
+        "purpose": "To match incoming source rows to their prior versions in the snapshot so changes are recorded against the correct record.",
+        "responsibilities": "Uniquely identify each logical entity in the source; drive the diff that decides insert vs close-and-insert; must be stable and unique per entity.",
+        "examples": "unique_key='order_id'  |  unique_key=['order_id','line_no']  |  unique_key=\"customer_id || '-' || region\""
+      },
+      {
+        "name": "The timestamp strategy (updated_at)",
+        "definition": "A change-detection strategy that treats a source row as changed whenever its updated_at column holds a value newer than the timestamp recorded for the current snapshot version of that key.",
+        "purpose": "To efficiently and reliably detect changes when the source provides a trustworthy last-updated timestamp.",
+        "responsibilities": "Compare only the updated_at column to detect change, drive the valid_from/valid_to bookkeeping, and avoid scanning every column.",
+        "examples": "config(strategy='timestamp', unique_key='order_id', updated_at='updated_at')"
+      },
+      {
+        "name": "The check strategy (check_cols)",
+        "definition": "A change-detection strategy that records a new version whenever any of a specified list of columns (check_cols) differs from the current version; check_cols='all' compares every column.",
+        "purpose": "To capture history when the source has no reliable last-updated timestamp, by comparing column values directly.",
+        "responsibilities": "Compare the listed columns between incoming and current rows, flag any difference as a change, and manage versioning accordingly.",
+        "examples": "config(strategy='check', unique_key='id', check_cols=['status','amount'])  |  check_cols='all'"
+      },
+      {
+        "name": "dbt-managed meta-columns (dbt_valid_from, dbt_valid_to, dbt_scd_id, dbt_updated_at)",
+        "definition": "Columns dbt adds and maintains automatically: dbt_scd_id (unique surrogate key per version), dbt_updated_at (when the change was captured), dbt_valid_from and dbt_valid_to (the window during which the version was current; NULL dbt_valid_to = current).",
+        "purpose": "To encode the SCD2 validity windows and version identity so downstream point-in-time queries can select the correct version for any date.",
+        "responsibilities": "Track each version's validity window, mark the currently active version (NULL valid_to), and provide a stable per-version surrogate key.",
+        "examples": "select * from orders_snapshot where dbt_valid_to is null  (current)  |  ... where '2024-01-15' between dbt_valid_from and coalesce(dbt_valid_to, '9999-12-31')  (point-in-time)"
+      }
+    ],
+    "internalWorking": [
+      "On the first dbt snapshot run, dbt executes the snapshot's SELECT against the source, then creates the snapshot table by inserting every source row as its initial version. It stamps each with dbt_valid_from (the change/observation time), a NULL dbt_valid_to (meaning currently valid), a dbt_updated_at, and a computed dbt_scd_id surrogate key uniquely identifying that version.",
+      "On every subsequent run, dbt reads the current source rows and diffs them against the snapshot table, matching rows by unique_key. For each matched key it decides whether the row changed using the configured strategy: the timestamp strategy checks whether source updated_at is newer than the snapshot's recorded timestamp; the check strategy compares the check_cols (or all columns) value-by-value.",
+      "When a change is detected for a key, dbt performs a close-and-insert: it updates the currently-open version (the one with NULL dbt_valid_to) by setting its dbt_valid_to to the new change time, closing that historical window, and then inserts a new row for the changed values with a fresh dbt_valid_from, NULL dbt_valid_to, and a new dbt_scd_id. Unchanged rows are left untouched with their windows still open.",
+      "New source keys not previously seen are inserted as brand-new records with an open window. By default, keys that disappear from the source are left open (dbt does not know they were deleted); enabling invalidate_hard_deletes=true makes dbt close such records by setting their dbt_valid_to when they vanish from the source, so hard deletes are reflected in history.",
+      "Because dbt only compares the source to what it recorded on the previous run, it can capture at most one change per key per run and only sees the source's state at run time. If a value changes twice between two snapshot runs, only the latest value is captured and the intermediate state is lost - which is why cadence matters and why the timestamp/change time drives the validity boundaries rather than any intra-period changes dbt never observed."
+    ],
+    "architectureFlow": "mutable source table (overwritten in place) -> {% snapshot %} SELECT in snapshots/ -> dbt snapshot run -> diff source vs existing snapshot by unique_key -> strategy check (timestamp: updated_at newer? | check: any check_cols changed?) -> if changed: close current version (set dbt_valid_to) + insert new version (dbt_valid_from, NULL valid_to, new dbt_scd_id) | if new key: insert | if unchanged: leave open -> SCD2 history table -> ref() in downstream models -> point-in-time joins / current-version queries (dbt_valid_to is null)",
+    "dataFlowWalkthrough": [
+      "1. A raw source shop.orders is overwritten in place by an EL tool: order 100's status goes placed -> shipped -> delivered over three days, with an updated_at timestamp maintained on each change.",
+      "2. An engineer defines snapshots/orders_snapshot.sql with config(unique_key='order_id', strategy='timestamp', updated_at='updated_at') selecting from source('shop','orders'), and schedules dbt snapshot to run daily.",
+      "3. Day 1 (status placed): first run inserts order 100 with dbt_valid_from = day1, dbt_valid_to = NULL (current). Day 2 (status shipped): the run sees updated_at is newer, closes the placed version (dbt_valid_to = day2) and inserts a shipped version (valid_from=day2, valid_to=NULL).",
+      "4. Downstream, a mart references {{ ref('orders_snapshot') }}: querying where dbt_valid_to is null returns the current status; a point-in-time query using dbt_valid_from/dbt_valid_to between a target date reconstructs the order's status as of any past day - history the mutable source could never provide."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Slowly Changing Dimension Type 2 (SCD2)",
+        "meaning": "A modeling pattern that preserves the full history of a record by inserting a new row for each change and marking each version's validity window with effective-from / effective-to dates.",
+        "importance": "SCD2 is exactly what a dbt snapshot implements; understanding it explains why snapshots add version rows and validity columns instead of overwriting."
+      },
+      {
+        "term": "unique_key",
+        "meaning": "The business key (column, expression, or list) that identifies a logical record across versions so dbt can match incoming source rows to their prior snapshot versions.",
+        "importance": "A wrong or non-unique key breaks the diff - dbt either mis-matches records or creates duplicate/incorrect history, corrupting the whole snapshot."
+      },
+      {
+        "term": "timestamp strategy / updated_at",
+        "meaning": "A change-detection strategy that flags a row as changed when its updated_at column is newer than the recorded snapshot timestamp for that key.",
+        "importance": "It is the preferred, efficient strategy when a reliable last-updated timestamp exists, comparing one column rather than all of them."
+      },
+      {
+        "term": "check strategy / check_cols",
+        "meaning": "A change-detection strategy that records a new version when any listed column (check_cols, or 'all') differs from the current version.",
+        "importance": "It is the fallback when no trustworthy updated_at exists, at the cost of comparing multiple columns each run."
+      },
+      {
+        "term": "dbt_valid_from / dbt_valid_to",
+        "meaning": "dbt-managed columns marking the window during which a version was the current truth; a NULL dbt_valid_to indicates the currently active version.",
+        "importance": "These validity windows enable point-in-time queries and current-version filtering - the whole point of keeping history."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Snapshots only capture what they observe between runs",
+        "explanation": "A dbt snapshot is not a continuous change-data-capture stream; it is a periodic diff. Each dbt snapshot run compares the source's current state to what dbt recorded on the previous run. That means dbt can record at most one change per key per run, and it only ever sees the value the source holds at the moment the snapshot runs. If a column flips from A to B to C between two runs, dbt sees only C and records a single A-to-C transition, silently losing B. This is why run cadence is a design decision: run snapshots frequently enough to capture the granularity of change your business cares about (hourly, daily), and understand that the dbt_valid_from timestamps reflect observation/change times, not necessarily the exact instant every real-world change happened. It also means you cannot retroactively snapshot history you never captured - if you start snapshotting today, you have no record of yesterday's states."
+      },
+      {
+        "concept": "Choosing timestamp vs check strategy, and handling hard deletes",
+        "explanation": "The timestamp strategy is the default recommendation: if the source has a reliable updated_at that is bumped on every meaningful change, dbt compares just that one column, which is efficient and unambiguous. Its risk is a source whose updated_at is unreliable (not updated on every change, or updated for no-op writes) - then you miss changes or record spurious versions. The check strategy compares actual column values (a chosen list, or 'all'), so it does not depend on a timestamp, but it is heavier (multi-column comparison) and, with check_cols='all', a new column added to the source can trigger a flood of false changes. Separately, both strategies face the hard-delete problem: by default, when a row disappears from the source, dbt leaves its snapshot version open (NULL valid_to) forever, so history claims a deleted record is still current. Setting invalidate_hard_deletes=true makes dbt close those vanished records by stamping dbt_valid_to, correctly reflecting deletions - at the cost of dbt having to detect absences each run."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Timestamp strategy:** detects change via an updated_at column; efficient, single-column comparison; preferred when a reliable last-updated timestamp exists.",
+      "**Check strategy (explicit columns):** check_cols=['col_a','col_b'] records a new version when any listed column changes; used when there is no trustworthy timestamp.",
+      "**Check strategy (all columns):** check_cols='all' compares every column; broadest coverage but sensitive to schema changes and heavier to compute.",
+      "**With invalidate_hard_deletes:** invalidate_hard_deletes=true closes records that vanish from the source, reflecting deletions in history instead of leaving them perpetually 'current'.",
+      "**Composite / expression unique_key:** unique_key can be a single column, a list of columns, or a SQL expression, to identify records whose business key spans multiple fields.",
+      "**Related concept - SCD Type 1 vs Type 2:** Type 1 overwrites (no history) and is what a normal dbt model does; snapshots implement Type 2 (preserve history with validity windows)."
+    ],
+    "advantages": [
+      "**Preserves history from mutable sources:** captures every version of every row over time, enabling point-in-time and audit queries the overwritten source cannot answer.",
+      "**Declarative SCD2:** replaces error-prone hand-written MERGE/effective-date logic with a config-driven pattern dbt manages consistently.",
+      "**Efficient change detection:** the timestamp strategy compares a single column, capturing only deltas rather than storing full periodic copies.",
+      "**Cross-database and integrated:** snapshots run in the same dbt project/DAG, are referenced with ref(), and behave consistently across supported warehouses.",
+      "**Auditable validity windows:** dbt_valid_from/dbt_valid_to and dbt_scd_id give clear, queryable version boundaries for reproducible historical reporting."
+    ],
+    "disadvantages": [
+      "**Captures only observed changes:** intermediate values that change and revert (or change twice) between runs are lost; cadence directly limits fidelity.",
+      "**Cadence and reliability dependency:** missed or infrequent runs create gaps in history, and an unreliable updated_at (timestamp) or added columns (check='all') cause missed or spurious versions.",
+      "**Hard deletes need handling:** without invalidate_hard_deletes, deleted source rows appear perpetually current, silently misrepresenting history.",
+      "**Growth over time:** SCD2 tables accumulate rows indefinitely, so storage and query cost on very high-churn tables grow and may need pruning strategies.",
+      "**Not true CDC:** snapshots are periodic diffs, not a continuous change stream, so they cannot reconstruct sub-run-interval change sequences."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use snapshots when a source table is mutable (overwritten in place) and the business needs history - tracking status transitions, price or tier changes, address updates, or any attribute whose past values matter for auditing, reconciliation, or trend analysis. Prefer the timestamp strategy when a reliable updated_at exists, and the check strategy when it does not. Enable invalidate_hard_deletes when deletions must be reflected in history.",
+      "whenToAvoid": "Avoid snapshots when the source already has immutable, append-only history (event logs) - just model it directly; avoid them for extremely high-churn tables where per-change versioning explodes storage without business value; avoid relying on them for sub-interval fidelity (use real CDC for that); and do not snapshot data you can regenerate deterministically from raw immutable sources."
+    },
+    "realWorldAnalogy": "A dbt snapshot is like keeping a photo album of a whiteboard that people keep erasing and rewriting. The whiteboard (the mutable source) only ever shows the latest note - once someone rewrites it, the old note is gone. Each time you walk by (each dbt snapshot run) you take a photo and, if the note changed since your last photo, you write on the back 'this note was on the board from Monday to Wednesday' (dbt_valid_from / dbt_valid_to) and slot it into the album, marking the newest photo 'current'. Now you can flip to any week and see what the board said. The catch: you only capture what the board shows when you happen to walk by, so if it was rewritten twice between your visits you only ever saw the last version - which is why you decide how often to walk by."
+    ,
+    "commonMisconceptions": [
+      {
+        "myth": "A snapshot captures every change to the source as it happens, like change-data-capture.",
+        "reality": "A snapshot is a periodic diff run by dbt snapshot. It only sees the source's state at run time and records at most one change per key per run, so changes between runs (or a value that changes and reverts) are lost. It is not continuous CDC."
+      },
+      {
+        "myth": "Deleting a row from the source removes or closes it in the snapshot automatically.",
+        "reality": "By default, a row that disappears from the source keeps its snapshot version open (dbt_valid_to = NULL), so it looks perpetually current. You must set invalidate_hard_deletes=true for dbt to close deleted records."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Prefer the timestamp strategy so change detection compares one column; snapshot in a dedicated schema; and for very high-churn or huge tables, monitor row growth and consider partitioning/clustering the snapshot on the key or valid_from to keep point-in-time queries fast.",
+      "reliability": "Run dbt snapshot on a dependable, sufficiently frequent schedule (its own orchestrated step, before dependent models) because missed runs create permanent history gaps; ensure the source's updated_at is genuinely reliable when using the timestamp strategy.",
+      "faultTolerance": "Because snapshots are idempotent per state (a run with no source changes is a no-op), retries are safe; enable invalidate_hard_deletes where deletions matter so vanished records are correctly closed rather than silently 'current'.",
+      "monitoring": "Track snapshot row counts and number of versions created per run to detect anomalies (a spike may indicate an unreliable updated_at or a check_cols='all' schema change); alert if a scheduled snapshot run fails or is skipped.",
+      "security": "Snapshot tables retain historical PII indefinitely, including values that were later corrected or deleted from the source - govern access to the snapshot schema, and factor snapshots into data-retention and right-to-erasure processes.",
+      "costOptimization": "Choose an appropriate cadence (frequent enough for business need, not more) since each run and each version adds cost; use the timestamp strategy over check='all' where possible; and prune or archive very old versions on high-churn tables if the far history is no longer needed.",
+      "performance": "Index/cluster on unique_key and dbt_valid_from/dbt_valid_to to speed point-in-time joins; select the current version with a simple dbt_valid_to is null filter; avoid unnecessarily wide check_cols that force multi-column comparisons every run."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "A timestamp-strategy snapshot in snapshots/orders_snapshot.sql",
+        "overview": "A snapshot that historizes a mutable orders source using a reliable updated_at column - the recommended, efficient default strategy.",
+        "code": "{% snapshot orders_snapshot %}\n\n{{\n    config(\n        target_schema='snapshots',\n        unique_key='order_id',\n        strategy='timestamp',\n        updated_at='updated_at',\n        invalidate_hard_deletes=true\n    )\n}}\n\nselect\n    order_id,\n    customer_id,\n    status,\n    amount_cents,\n    updated_at\nfrom {{ source('shop', 'orders') }}\n\n{% endsnapshot %}",
+        "language": "sql",
+        "breakdown": "The {% snapshot orders_snapshot %}...{% endsnapshot %} block names the history table. config sets target_schema (where the snapshot lands), unique_key='order_id' (the business key dbt matches on), strategy='timestamp' with updated_at='updated_at' (dbt treats a row as changed when its updated_at is newer than the recorded version), and invalidate_hard_deletes=true so orders that vanish from the source get their dbt_valid_to stamped instead of staying open. The SELECT pulls the source columns to historize via source().",
+        "expectedOutput": "A snapshots.orders_snapshot table with the selected columns plus dbt-managed dbt_scd_id, dbt_updated_at, dbt_valid_from, and dbt_valid_to. Each order has one open row (dbt_valid_to NULL) per current state and one closed row per past state.",
+        "commonIssues": "Using an unreliable updated_at (not bumped on every change) silently misses versions. Omitting invalidate_hard_deletes leaves deleted orders perpetually 'current'. Selecting a non-unique unique_key mis-matches rows and corrupts history.",
+        "optimizationTips": "Prefer the timestamp strategy whenever a trustworthy updated_at exists - it compares one column. Keep the snapshot SELECT lean (only columns you need historized) to limit width and cost."
+      },
+      {
+        "title": "A check-strategy snapshot when there is no reliable timestamp",
+        "overview": "A snapshot for a customers source that lacks a dependable updated_at, using check_cols to detect changes on specific attributes.",
+        "code": "{% snapshot customers_snapshot %}\n\n{{\n    config(\n        target_schema='snapshots',\n        unique_key='customer_id',\n        strategy='check',\n        check_cols=['status', 'tier', 'address']\n    )\n}}\n\nselect\n    customer_id,\n    status,\n    tier,\n    address,\n    email\nfrom {{ source('crm', 'customers') }}\n\n{% endsnapshot %}",
+        "language": "sql",
+        "breakdown": "strategy='check' tells dbt to detect changes by comparing column values instead of a timestamp. check_cols lists the columns that matter (status, tier, address) - a new version is recorded whenever any of them changes for a given customer_id, while changes to email (not listed) are ignored. Using check_cols='all' would compare every selected column instead. unique_key='customer_id' matches records across versions.",
+        "expectedOutput": "A snapshots.customers_snapshot where each customer_id gains a new closed+open version pair whenever status, tier, or address changes; email edits alone do not create versions. dbt maintains dbt_valid_from/to and dbt_scd_id as usual.",
+        "commonIssues": "check_cols='all' means adding a new source column can trigger a version for every row on the next run. Listing too few check_cols misses real changes; listing volatile columns creates noisy history. Because there is no timestamp, dbt uses the run time for validity boundaries, so cadence strongly affects fidelity.",
+        "optimizationTips": "List only the business-meaningful columns in check_cols to avoid noise and reduce comparison cost; reserve check_cols='all' for narrow, stable tables where any change matters."
+      },
+      {
+        "title": "Running snapshots and querying history from the CLI/SQL",
+        "overview": "Commands to run snapshots and SQL patterns to query the current version and reconstruct point-in-time state.",
+        "code": "# Run all snapshots (typically scheduled, before dependent models)\ndbt snapshot\n\n# Run one snapshot\ndbt snapshot --select orders_snapshot\n\n# Snapshots also run as part of dbt build (in DAG order)\ndbt build\n\n-- Current version of every order (open records)\nselect order_id, status\nfrom {{ ref('orders_snapshot') }}\nwhere dbt_valid_to is null;\n\n-- Point-in-time: order statuses as of 2024-01-15\nselect order_id, status\nfrom {{ ref('orders_snapshot') }}\nwhere date '2024-01-15' >= dbt_valid_from\n  and (date '2024-01-15' < dbt_valid_to or dbt_valid_to is null);",
+        "language": "sql",
+        "breakdown": "dbt snapshot runs the snapshot diff/versioning logic; --select scopes to one snapshot; dbt build runs snapshots in DAG order alongside models and tests. The first query filters dbt_valid_to is null to get the currently-active version of each record. The second reconstructs a past state: a version was valid on a date if that date is at/after dbt_valid_from and before dbt_valid_to (treating a NULL valid_to as still-current), which is the canonical SCD2 point-in-time predicate.",
+        "expectedOutput": "dbt snapshot logs each snapshot as it runs, reporting rows inserted/updated. The current-version query returns one row per order with its latest status; the point-in-time query returns each order's status as it stood on 2024-01-15.",
+        "commonIssues": "Running snapshots too infrequently loses intermediate changes. Forgetting the dbt_valid_to is null filter double-counts historical versions in 'current' queries. Off-by-one boundary logic (>= vs >) can double-count or miss the boundary date - be explicit and consistent.",
+        "optimizationTips": "Schedule dbt snapshot as its own orchestrated step before models that depend on it; wrap current-version and point-in-time logic in downstream models so consumers do not reimplement the validity predicate each time."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A subscription company's billing system overwrites each customer's plan and price in place whenever they upgrade, downgrade, or churn. Finance needs to report monthly revenue by the plan a customer was actually on during each month, and audit past price changes - but the mutable source only ever shows the current plan, destroying history.",
+    "inputData": "A mutable source billing.subscriptions with columns subscription_id, customer_id, plan, price_cents, status, and updated_at (bumped on every change), overwritten in place by the billing system's sync.",
+    "architecture": "A snapshot snapshots/subscriptions_snapshot.sql uses the timestamp strategy on updated_at with unique_key='subscription_id' and invalidate_hard_deletes=true; it is scheduled to run daily before downstream models. A marts model reads {{ ref('subscriptions_snapshot') }} and uses dbt_valid_from/dbt_valid_to to attribute each subscription's plan/price to each calendar month for revenue reporting.",
+    "processingSteps": [
+      "1. Define subscriptions_snapshot with config(target_schema='snapshots', unique_key='subscription_id', strategy='timestamp', updated_at='updated_at', invalidate_hard_deletes=true) selecting the relevant columns from source('billing','subscriptions').",
+      "2. Schedule dbt snapshot to run daily (as its own orchestrated step) so each day's state is captured; the first run seeds history and each later run records any plan/price/status change per subscription.",
+      "3. When a customer upgrades, the next run sees a newer updated_at, closes the old plan version (dbt_valid_to = change time) and inserts the new plan version (valid_from = change time, valid_to = NULL); churned/cancelled subscriptions that vanish are closed via invalidate_hard_deletes.",
+      "4. Build a marts model that joins subscriptions_snapshot to a monthly calendar using the SCD2 point-in-time predicate (month overlaps [dbt_valid_from, dbt_valid_to)) to determine which plan/price applied in each month.",
+      "5. Run everything with dbt build so the snapshot runs before its dependents in DAG order, and downstream tests validate the reconstructed revenue figures."
+    ],
+    "output": "A subscriptions_snapshot SCD2 table with full plan/price/status history per subscription, and a monthly revenue mart that correctly attributes each month's revenue to the plan a customer was actually on that month - reconstructable for any past period even though the source is overwritten.",
+    "monitoring": "Row-count and versions-created-per-run metrics are tracked to catch anomalies (e.g. an updated_at glitch causing a spike); a failed or skipped daily dbt snapshot run triggers an alert because a missed run creates a permanent history gap.",
+    "errorHandling": "invalidate_hard_deletes ensures churned subscriptions are closed rather than left perpetually active; snapshot runs are idempotent so a retry after a transient failure is safe; downstream point-in-time logic treats NULL dbt_valid_to as the current version so open records are handled correctly.",
+    "finalResult": "Finance can report revenue by the plan actually in effect each month and audit every historical price change, because the snapshot preserves a complete, validity-windowed history of a source table that would otherwise overwrite its past on every update."
+  },
+  "industryUseCases": [
+    {
+      "company": "Subscription / SaaS billing platforms",
+      "problem": "Plan, price, and status are overwritten in place on upgrades and churn, so historical revenue attribution and price-change audits are impossible from the source.",
+      "solution": "Snapshot the subscriptions source with the timestamp strategy and invalidate_hard_deletes, then attribute revenue per month via SCD2 validity windows.",
+      "benefits": "Accurate historical revenue by plan, auditable price-change history, and correct handling of churned records - all from an otherwise mutable source."
+    },
+    {
+      "company": "E-commerce and order-management systems",
+      "problem": "Order status flips through a lifecycle (placed, shipped, delivered, returned) with each update overwriting the previous status, hiding transition timing.",
+      "solution": "Snapshot orders on order_id with the timestamp strategy so each status transition is preserved as a versioned row with valid_from/valid_to.",
+      "benefits": "Enables lifecycle analytics (time-in-status, transition rates) and point-in-time order state for reconciliations that the mutable source cannot support."
+    },
+    {
+      "company": "CRM and customer master data",
+      "problem": "Customer attributes like tier, segment, and address are frequently overwritten and the source lacks a reliable updated_at, so change history is lost.",
+      "solution": "Snapshot customers with the check strategy on business-meaningful columns (tier, segment, address) to capture versions when those attributes change.",
+      "benefits": "Preserves attribute history for segmentation-over-time and audit, without depending on an unreliable source timestamp."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Favor the timestamp strategy (single-column comparison) and a dedicated snapshot schema; for very large or high-churn tables, partition/cluster the snapshot on unique_key and dbt_valid_from to keep point-in-time joins performant, and monitor unbounded row growth.",
+    "faultTolerance": "Snapshot runs are idempotent relative to the observed source state, so retries after transient failures are safe; enable invalidate_hard_deletes where deletions matter so vanished rows are closed correctly rather than left perpetually open.",
+    "highAvailability": "Because snapshots are versioned, append-oriented history tables referenced via ref(), downstream models read a stable historical record; run the snapshot as its own orchestrated step before dependents so the DAG always sees consistent history.",
+    "disasterRecovery": "Version-control snapshot definitions and treat the snapshot tables as source-of-truth history (they cannot be regenerated from an overwritten source), so back them up as first-class data; document run cadence since history gaps from missed runs are unrecoverable.",
+    "performanceOptimization": "Keep the snapshot SELECT to only the columns you need historized; avoid check_cols='all' on wide tables; index/cluster on the key and validity columns; and push the SCD2 point-in-time predicate into a reusable downstream model rather than re-deriving it everywhere.",
+    "costOptimization": "Tune cadence to business need (each run and version adds cost), prefer timestamp over check='all', and prune or archive far-history versions on very high-churn tables when old detail is no longer required.",
+    "securityConsiderations": "Snapshots retain historical PII - including values later corrected or deleted from the source - so govern access to the snapshot schema and incorporate snapshots into retention and right-to-erasure workflows; a deletion in the source does not remove historical versions unless explicitly purged.",
+    "monitoringAndObservability": "Track rows inserted and versions created per run; a sudden spike can signal an unreliable updated_at or a check_cols='all' schema change, while zero versions over a long period may indicate a broken source feed; alert on failed or skipped runs.",
+    "dataQualityValidation": "Test the snapshot's unique_key for uniqueness among currently-open rows (dbt_valid_to is null), assert non-overlapping validity windows per key, and validate downstream point-in-time joins with singular tests so history stays consistent.",
+    "loggingAndAlerting": "Log snapshot run results and version counts to observability tooling; alert immediately on failed or skipped scheduled snapshot runs because missed captures create permanent, unrecoverable gaps in history."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Prefer the timestamp strategy** whenever the source has a reliable updated_at - it is efficient and unambiguous; fall back to the check strategy only when no trustworthy timestamp exists.",
+      "**Run snapshots on a dependable, frequent-enough schedule** as their own orchestrated step, because missed runs create permanent history gaps.",
+      "**Enable invalidate_hard_deletes** when deletions must be reflected, so vanished source rows are closed rather than left perpetually current.",
+      "**Choose a stable, truly unique unique_key** - a wrong key silently corrupts the entire history."
+    ],
+    "engineeringStandards": [
+      "Place snapshot definitions in the snapshots/ directory, one snapshot per file, and materialize them in a dedicated snapshot schema.",
+      "Use source() (or ref()) in the snapshot SELECT so lineage and environment resolution stay correct, and keep the SELECT to only the columns worth historizing.",
+      "For the check strategy, list only business-meaningful columns in check_cols instead of defaulting to 'all' on wide tables."
+    ],
+    "designRecommendations": [
+      "Snapshot mutable sources, not immutable event logs (which are already append-only history).",
+      "Encapsulate current-version and point-in-time logic in downstream models so consumers do not reimplement the SCD2 validity predicate.",
+      "Decide run cadence based on the granularity of change the business needs to observe, since fidelity cannot exceed run frequency."
+    ],
+    "namingConventions": [
+      "Name snapshots after the source entity plus a _snapshot suffix (orders_snapshot, subscriptions_snapshot) for clarity.",
+      "Keep the dbt-managed meta-columns (dbt_valid_from/to, dbt_scd_id, dbt_updated_at) unaliased in downstream models so the SCD2 pattern is recognizable.",
+      "Name downstream point-in-time models descriptively (dim_customers_history, fct_subscriptions_monthly)."
+    ],
+    "documentationStandards": [
+      "Document each snapshot's unique_key, strategy, and (for check) which columns are tracked and why.",
+      "Record the intended run cadence and its rationale, since it directly bounds history fidelity.",
+      "Note whether invalidate_hard_deletes is enabled and how deletions should be interpreted downstream."
+    ],
+    "testingStrategies": [
+      "Test that unique_key is unique among currently-open rows (where dbt_valid_to is null).",
+      "Add a singular test asserting no overlapping validity windows for the same key.",
+      "Validate downstream point-in-time joins against known historical facts so the reconstructed history is trustworthy."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Running snapshots too infrequently (or missing scheduled runs).",
+      "whyItHappens": "Teams treat snapshots like ordinary models and run them ad hoc, not realizing snapshots only capture the source state at run time.",
+      "impact": "Changes that occur and revert between runs are lost forever, and missed runs leave permanent, unrecoverable gaps in history.",
+      "correctApproach": "Schedule dbt snapshot as its own reliable, sufficiently frequent orchestrated step, sized to the granularity of change the business needs to observe."
+    },
+    {
+      "mistake": "Forgetting invalidate_hard_deletes on sources where rows can be deleted.",
+      "whyItHappens": "The default leaves vanished rows open, and developers assume deletions are handled automatically.",
+      "impact": "Deleted records keep dbt_valid_to = NULL and appear perpetually current, so history and current-version queries misrepresent reality.",
+      "correctApproach": "Set invalidate_hard_deletes=true so records absent from the source get their validity window closed, correctly reflecting deletions."
+    },
+    {
+      "mistake": "Using the timestamp strategy with an unreliable updated_at, or check_cols='all' on a wide/evolving table.",
+      "whyItHappens": "updated_at seems present so it is trusted, or check_cols='all' feels safest for catching every change.",
+      "impact": "An unreliable timestamp misses real changes; check_cols='all' fires spurious versions when columns are added or on no-op writes, bloating history.",
+      "correctApproach": "Verify updated_at is bumped on every meaningful change before trusting the timestamp strategy; with check, list only the business-meaningful columns rather than 'all'."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Detecting changes in a snapshot",
+      "optionA": "timestamp strategy (updated_at column)",
+      "optionB": "check strategy (check_cols)",
+      "explanation": "The timestamp strategy flags a change when the source's updated_at is newer than the recorded version, comparing a single column - efficient and unambiguous, but only as trustworthy as the timestamp itself. The check strategy compares actual column values (a chosen list or 'all'), so it needs no timestamp but is heavier and, with 'all', sensitive to schema changes and no-op writes. Use timestamp when a reliable updated_at exists; use check (with an explicit column list) when it does not."
+    },
+    {
+      "feature": "Preserving history from a source table",
+      "optionA": "dbt snapshot (SCD Type 2, dbt-managed diffing)",
+      "optionB": "Full periodic copies / manual SCD2 MERGE",
+      "explanation": "A dbt snapshot captures only changes as validity-windowed versions and manages the diffing/versioning declaratively, giving compact, auditable history integrated into the dbt DAG. Full periodic copies store the entire table every run (simple but storage-heavy and coarse-grained), while hand-written SCD2 MERGE logic is flexible but error-prone and inconsistent across tables. Snapshots are the standard choice for historizing mutable sources; full copies suit tiny tables or coarse audit needs, and custom MERGE only when snapshot semantics genuinely do not fit."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is a dbt snapshot and what problem does it solve?",
+        "answer": "A dbt snapshot captures the history of a mutable source table - one that gets overwritten in place - by implementing Slowly Changing Dimension Type 2. Instead of losing old values when the source updates, dbt records each version of each row with validity windows (dbt_valid_from/dbt_valid_to), so you can reconstruct what a record looked like at any past point in time.",
+        "explanation": "Emphasize the core problem: mutable sources overwrite history. Mention snapshots live in the snapshots/ directory and are run with dbt snapshot."
+      },
+      {
+        "question": "What do dbt_valid_from and dbt_valid_to represent, and how do you find the current version?",
+        "answer": "They mark the window during which a particular version of a record was the current truth: dbt_valid_from is when that version became active and dbt_valid_to is when it was superseded. A NULL dbt_valid_to means the version is currently active, so you find the current version with a filter like 'where dbt_valid_to is null'.",
+        "explanation": "These validity columns are what make point-in-time queries possible. Also mention dbt_scd_id (per-version surrogate key) and dbt_updated_at."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "Explain the difference between the timestamp and check strategies.",
+        "answer": "The timestamp strategy detects a change by comparing an updated_at column - if the source row's updated_at is newer than the recorded version's, dbt records a new version. It is efficient (one column) and preferred when a reliable timestamp exists. The check strategy compares the values of specified columns (check_cols, or 'all') and records a new version when any of them changes; it is used when there is no trustworthy updated_at, at the cost of multi-column comparison.",
+        "explanation": "Stress the reliability trade-off: timestamp depends on a trustworthy updated_at, while check='all' is sensitive to added columns and no-op writes."
+      },
+      {
+        "question": "How often should snapshots run, and why does cadence matter?",
+        "answer": "Snapshots should run on a scheduled, sufficiently frequent basis because a snapshot only captures the source's state at the moment it runs - it records at most one change per key per run. If a value changes multiple times (or changes and reverts) between runs, the intermediate states are lost. Missed runs create permanent, unrecoverable gaps. Cadence therefore bounds the fidelity of the history you can capture.",
+        "explanation": "Connect to the fact that snapshots are periodic diffs, not continuous CDC, so run frequency is a real design decision tied to business granularity needs."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "What happens to a record that is deleted from the source, and how do you handle it?",
+        "answer": "By default, when a row disappears from the source, dbt does nothing to it in the snapshot - its version stays open with dbt_valid_to = NULL, so it appears perpetually current, misrepresenting history. To reflect deletions you set invalidate_hard_deletes=true in the snapshot config; then dbt detects rows absent from the source and closes them by setting dbt_valid_to to the run time. The trade-off is dbt must detect absences each run.",
+        "explanation": "Shows awareness of a classic gotcha and the exact config that fixes it, plus the cost implication of detecting deletes."
+      },
+      {
+        "question": "How would you write a point-in-time query against a snapshot, and what boundary pitfalls exist?",
+        "answer": "Select the version whose validity window contains the target date: 'where target_date >= dbt_valid_from and (target_date < dbt_valid_to or dbt_valid_to is null)'. Treat NULL dbt_valid_to as the current version. Pitfalls include off-by-one boundary logic (mixing >= and > inconsistently) which can double-count or miss the boundary date, and forgetting to handle NULL valid_to, which drops the current version from historical results.",
+        "explanation": "Demonstrates the canonical SCD2 predicate and awareness of inclusive/exclusive boundary correctness and NULL handling."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your team runs dbt snapshot only during the weekly full build. An analyst complains that a customer whose subscription plan changed twice last week shows only one plan change in the history, and the intermediate plan is missing entirely. What happened and how do you fix it?",
+        "thinkingProcess": "A snapshot is a periodic diff that only sees the source's state at run time and records at most one change per key per run. Between two weekly runs the plan went A -> B -> C; the run only saw C, so it recorded a single A-to-C transition and lost B. This is a cadence problem, not a bug.",
+        "expectedAnswer": "Explain that snapshots capture only observed state, so intermediate changes between runs are lost. Fix it by increasing run cadence (e.g. daily or more frequently) so each meaningful change is observed, sized to the granularity the business needs. Note that history already missed cannot be recovered, and if true sub-run fidelity is required, a real change-data-capture pipeline is needed rather than snapshots."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a solution to preserve full history of a mutable orders table (status flips through a lifecycle, orders can be deleted) so the business can do time-in-status analytics and reconstruct order state as of any past date.",
+        "designApproach": "Create a snapshot in snapshots/orders_snapshot.sql with unique_key='order_id'. Use the timestamp strategy on the source's updated_at if it is reliable, otherwise the check strategy on the status (and other relevant) columns. Set invalidate_hard_deletes=true so deleted orders are closed. Materialize in a dedicated snapshot schema, schedule dbt snapshot as its own frequent orchestrated step before dependents, and build downstream models encapsulating the SCD2 point-in-time predicate for consumers.",
+        "tradeOffs": "The timestamp strategy is cheaper but depends on a trustworthy updated_at; check is robust but heavier and schema-sensitive. Higher cadence gives finer history but more cost; invalidate_hard_deletes adds absence-detection work. Snapshots grow unbounded on high churn, so plan for storage and possible pruning.",
+        "scalingStrategy": "Partition/cluster the snapshot on order_id and dbt_valid_from for fast point-in-time joins, keep the snapshot SELECT narrow, monitor row growth and versions-per-run for anomalies, and push reusable current/point-in-time logic into a downstream model rather than re-deriving it everywhere."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between SCD Type 1 and Type 2, and which does a snapshot implement?",
+      "Why can't you retroactively snapshot history you never captured?",
+      "What does dbt_scd_id represent and why is it useful?",
+      "When would you snapshot a source versus just modeling an already-immutable event log?",
+      "What security and data-retention concerns do snapshots raise for PII?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "A dbt snapshot captures the history of a mutable source table as Slowly Changing Dimension Type 2 - defined in snapshots/ with a {% snapshot %} block, a unique_key, and a timestamp or check strategy - so each version of every row is preserved with dbt_valid_from/dbt_valid_to windows and run via dbt snapshot.",
+    "keyConcepts": [
+      "Snapshots implement SCD Type 2: a new versioned row per change with validity windows, instead of overwriting.",
+      "Defined in snapshots/ within {% snapshot name %}...{% endsnapshot %}, configured with unique_key and a strategy.",
+      "timestamp strategy uses updated_at (efficient); check strategy compares check_cols (no timestamp needed).",
+      "dbt manages dbt_scd_id, dbt_updated_at, dbt_valid_from, dbt_valid_to; NULL dbt_valid_to = current version.",
+      "Snapshots are periodic diffs (not CDC): they capture only the state observed at each dbt snapshot run."
+    ],
+    "formulas": [],
+    "commands": [
+      "dbt snapshot",
+      "dbt snapshot --select orders_snapshot",
+      "dbt build",
+      "-- current: where dbt_valid_to is null",
+      "-- point-in-time: date >= dbt_valid_from and (date < dbt_valid_to or dbt_valid_to is null)"
+    ],
+    "interviewPoints": [
+      "Snapshots preserve history of mutable (overwritten) source tables via SCD2.",
+      "unique_key matches versions; wrong key corrupts history.",
+      "timestamp (updated_at) vs check (check_cols) strategies - reliability vs no-timestamp trade-off.",
+      "NULL dbt_valid_to marks the current version; validity windows enable point-in-time queries.",
+      "invalidate_hard_deletes=true closes rows deleted from the source; run cadence bounds fidelity."
+    ],
+    "quickNotes": [
+      "Prefer timestamp strategy when a reliable updated_at exists; otherwise use check with explicit columns.",
+      "Run snapshots frequently and reliably - missed runs create permanent history gaps.",
+      "Enable invalidate_hard_deletes so deleted records are closed, not left perpetually current.",
+      "check_cols='all' can fire spurious versions when columns are added - list meaningful columns instead.",
+      "Snapshot tables retain historical PII indefinitely - govern access and retention."
+    ]
+  },
+  "keyTakeaways": [
+    "dbt snapshots preserve the history of mutable source tables (which overwrite in place) by implementing Slowly Changing Dimension Type 2 - each change becomes a new versioned row with dbt_valid_from/dbt_valid_to windows, and a NULL dbt_valid_to marks the current version.",
+    "Define a snapshot in the snapshots/ directory inside a {% snapshot %} block with a config specifying a stable, unique unique_key and a change-detection strategy; dbt automatically manages dbt_scd_id, dbt_updated_at, and the validity columns.",
+    "Choose the timestamp strategy (compare a reliable updated_at column - efficient) when a trustworthy timestamp exists, and the check strategy (compare check_cols, or 'all') when it does not, understanding the reliability and cost trade-offs of each.",
+    "Snapshots are periodic diffs, not continuous CDC: they capture only the state observed at each dbt snapshot run and record at most one change per key per run, so run cadence directly bounds history fidelity and missed runs leave permanent gaps.",
+    "Handle the classic gotchas - set invalidate_hard_deletes=true so deleted source rows are closed rather than left perpetually current, use the correct point-in-time predicate (NULL valid_to = current) for historical queries, and govern the retained historical PII."
+  ]
+}

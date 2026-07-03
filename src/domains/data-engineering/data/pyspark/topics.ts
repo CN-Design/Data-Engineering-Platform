@@ -17,7 +17,7 @@ export const pysparkTopics: Topic[] = [
         "Training machine learning models on massive datasets using Spark MLlib",
         "Processing real-time clickstreams using Spark Structured Streaming"
       ],
-      "diagram": "User Application (Driver)\n         ↓ (Splits query into Tasks)\n  [ Cluster Manager ] (YARN/K8s/Mesos)\n   ↙     ↓     ↘\n[Exec 1] [Exec 2] [Exec 3] (Executors process partitions in RAM)",
+      "diagram": "User Application (Driver)\n         \u2193 (Splits query into Tasks)\n  [ Cluster Manager ] (YARN/K8s/Mesos)\n   \u2199     \u2193     \u2198\n[Exec 1] [Exec 2] [Exec 3] (Executors process partitions in RAM)",
       "detailedExample": {
         "input": "A large, complex dataset (e.g., 1TB of log files) requiring distributed processing and analysis.",
         "processing": "Spark distributes the dataset across a cluster, performing parallel computations like filtering and aggregation using its in-memory processing capabilities.",
@@ -57,9 +57,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Fast in-memory processing engine.",
-        "✓ Built on lazy evaluation and DAG optimization.",
-        "✓ Features high-level APIs (SQL, Streaming, MLlib)."
+        "\u2713 Fast in-memory processing engine.",
+        "\u2713 Built on lazy evaluation and DAG optimization.",
+        "\u2713 Features high-level APIs (SQL, Streaming, MLlib)."
       ],
       "cheatSheet": {
         "definition": "Apache Spark is a distributed general-purpose cluster-computing framework.",
@@ -85,7 +85,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Spark Architecture Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Spark Architecture Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark application submitted to a cluster manager (e.g., YARN) with a dataset to process.",
         "processing": "The Driver program coordinates with the Cluster Manager to launch Executors on worker nodes, which then perform tasks on partitions of the data.",
@@ -132,9 +132,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Spark Architecture simplifies distributed operations.",
@@ -160,7 +160,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Driver Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Driver Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark script containing transformations and actions (e.g., `df.filter(...).count()`).",
         "processing": "The Driver program (JVM/Python process) translates the script into a DAG of RDD operations, schedules tasks, and coordinates with the Cluster Manager and Executors.",
@@ -207,9 +207,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Driver simplifies distributed operations.",
@@ -235,7 +235,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Executor Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Executor Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A task (e.g., a `map` or `reduce` operation) assigned by the Driver, along with a partition of data.",
         "processing": "The Executor (JVM process on a worker node) runs the assigned task on its allocated data partition, performing computations and storing intermediate results.",
@@ -282,9 +282,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Executor simplifies distributed operations.",
@@ -310,7 +310,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Cluster Manager Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Cluster Manager Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark application submission request specifying resources (e.g., CPU, memory) for the Driver and Executors.",
         "processing": "The Cluster Manager (e.g., YARN, Mesos, Kubernetes) allocates resources on the cluster, launches the Driver, and then launches Executors as requested by the Driver.",
@@ -357,9 +357,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Cluster Manager simplifies distributed operations.",
@@ -385,7 +385,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ SparkSession Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ SparkSession Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Python script requiring interaction with Spark functionalities like DataFrame creation or reading data.",
         "processing": "`SparkSession.builder.appName(\"MyApp\").getOrCreate()` initializes the entry point, providing access to all Spark features, including SparkContext and SQLContext.",
@@ -432,9 +432,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "SparkSession simplifies distributed operations.",
@@ -460,7 +460,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ SparkContext Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ SparkContext Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A legacy Spark application or a need for RDD-level operations, typically accessed via `SparkSession.sparkContext`.",
         "processing": "`SparkContext` establishes the connection to the Spark cluster and is responsible for creating RDDs and broadcasting variables.",
@@ -507,9 +507,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "SparkContext simplifies distributed operations.",
@@ -535,7 +535,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Creating DataFrames Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Creating DataFrames Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Python list of tuples or a Pandas DataFrame, representing structured data.",
         "processing": "`spark.createDataFrame([(1, \"Alice\"), (2, \"Bob\")], [\"id\", \"name\"])` converts the input into a distributed, immutable collection of rows with named columns.",
@@ -582,9 +582,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Creating DataFrames simplifies distributed operations.",
@@ -610,7 +610,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Reading Data Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Reading Data Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A CSV file located in HDFS or S3 (e.g., `s3://my-bucket/data.csv`).",
         "processing": "`spark.read.csv(\"s3://my-bucket/data.csv\", header=True, inferSchema=True)` reads the data, infers its schema, and distributes it across the cluster.",
@@ -657,9 +657,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Reading Data simplifies distributed operations.",
@@ -685,7 +685,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Writing Data Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Writing Data Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame (e.g., `processed_df`) containing transformed data.",
         "processing": "`processed_df.write.parquet(\"hdfs://path/to/output\", mode=\"overwrite\")` serializes the DataFrame's contents into Parquet format and saves it to the specified distributed file system.",
@@ -732,9 +732,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Writing Data simplifies distributed operations.",
@@ -760,7 +760,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ select() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ select() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `df` containing customer data with columns `customer_id`, `name`, `email`, and `registration_date`.",
         "processing": "The `select()` transformation is applied to `df` to choose only the `customer_id` and `name` columns.",
@@ -807,9 +807,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "select() simplifies distributed operations.",
@@ -835,7 +835,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ filter() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ filter() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `sales_df` with columns `product_id`, `region`, `amount`, and `sale_date`.",
         "processing": "The `filter()` transformation is used to select rows where `region` is 'EMEA' and `amount` is greater than 1000.",
@@ -882,9 +882,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "filter() simplifies distributed operations.",
@@ -910,7 +910,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ withColumn() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ withColumn() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `transactions_df` with columns `item_count` and `price_per_item`.",
         "processing": "A new column `total_cost` is added to `transactions_df` by multiplying `item_count` and `price_per_item` using `withColumn()`.",
@@ -957,9 +957,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "withColumn() simplifies distributed operations.",
@@ -985,7 +985,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ drop() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ drop() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `user_data_df` containing `user_id`, `username`, `password_hash`, and `last_login`.",
         "processing": "The `drop()` transformation is applied to `user_data_df` to remove the sensitive `password_hash` column.",
@@ -1032,9 +1032,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "drop() simplifies distributed operations.",
@@ -1060,7 +1060,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ distinct() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ distinct() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `events_df` with columns `event_type`, `user_id`, and `timestamp`, where `event_type` might have duplicates.",
         "processing": "The `distinct()` transformation is applied to `events_df` to retrieve only the unique combinations of all columns.",
@@ -1107,9 +1107,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "distinct() simplifies distributed operations.",
@@ -1135,7 +1135,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ show() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ show() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `logs_df` containing millions of application log entries.",
         "processing": "The `show(5)` action is called on `logs_df` to display the first 5 rows of the DataFrame to the console.",
@@ -1182,9 +1182,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "show() simplifies distributed operations.",
@@ -1210,7 +1210,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ collect() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ collect() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A small DataFrame `config_df` with `key` and `value` columns, holding configuration parameters.",
         "processing": "The `collect()` action is executed on `config_df` to retrieve all rows as a list of `Row` objects to the driver program.",
@@ -1257,9 +1257,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "collect() simplifies distributed operations.",
@@ -1285,7 +1285,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ count() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ count() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `sensor_readings_df` representing billions of IoT sensor data points.",
         "processing": "The `count()` action is performed on `sensor_readings_df` to determine the total number of records.",
@@ -1332,9 +1332,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "count() simplifies distributed operations.",
@@ -1360,7 +1360,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ take() Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ take() Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A large DataFrame `customer_orders_df` with millions of customer order details.",
         "processing": "The `take(10)` action is called on `customer_orders_df` to fetch the first 10 rows to the driver as a list of `Row` objects.",
@@ -1407,9 +1407,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "take() simplifies distributed operations.",
@@ -1435,7 +1435,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Joins Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Joins Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Two DataFrames: `employees_df` (employee_id, name, department_id) and `departments_df` (department_id, department_name, location).",
         "processing": "An inner join is performed between `employees_df` and `departments_df` using the common `department_id` column.",
@@ -1482,9 +1482,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Joins simplifies distributed operations.",
@@ -1510,7 +1510,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Aggregations Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Aggregations Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with columns 'category' and 'revenue', representing sales data.",
         "processing": "Calculate the total sum of 'revenue' across the entire DataFrame using `df.agg(F.sum('revenue').alias('total_revenue'))`.",
@@ -1557,9 +1557,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Aggregations simplifies distributed operations.",
@@ -1585,7 +1585,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Group By Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Group By Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` containing 'department' and 'salary' for employees.",
         "processing": "Group the DataFrame by 'department' and compute the average 'salary' for each department using `df.groupBy('department').agg(F.avg('salary').alias('avg_salary'))`.",
@@ -1632,9 +1632,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Group By simplifies distributed operations.",
@@ -1660,7 +1660,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Sort Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Sort Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with 'name' and 'score' columns for students.",
         "processing": "Sort the DataFrame by the 'score' column in descending order using `df.sort(F.col('score').desc())`.",
@@ -1707,9 +1707,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Sort simplifies distributed operations.",
@@ -1735,7 +1735,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Union Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Union Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Two PySpark DataFrames, `df_q1_sales` and `df_q2_sales`, both having identical schemas ('product_id', 'amount', 'date').",
         "processing": "Combine both DataFrames vertically into a single DataFrame using `df_q1_sales.union(df_q2_sales)`.",
@@ -1782,9 +1782,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Union simplifies distributed operations.",
@@ -1810,7 +1810,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Temporary Views Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Temporary Views Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `customer_data` containing customer IDs and names.",
         "processing": "Register `customer_data` as a temporary SQL view named `customers_view` using `customer_data.createOrReplaceTempView('customers_view')`.",
@@ -1857,9 +1857,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Temporary Views simplifies distributed operations.",
@@ -1885,7 +1885,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ SQL Queries Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ SQL Queries Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A temporary view `products_view` containing 'product_name', 'category', and 'price' columns.",
         "processing": "Execute a SQL query `SELECT product_name, price FROM products_view WHERE category = 'Electronics'` using `spark.sql()`.",
@@ -1932,9 +1932,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "SQL Queries simplifies distributed operations.",
@@ -1960,7 +1960,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Spark SQL Functions Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Spark SQL Functions Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with a 'timestamp_col' column containing date-time strings.",
         "processing": "Use `F.date_format(F.col('timestamp_col'), 'yyyy-MM-dd')` to extract and format the date part into a new 'event_date' column.",
@@ -2007,9 +2007,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Spark SQL Functions simplifies distributed operations.",
@@ -2035,7 +2035,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Window Specification Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Window Specification Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with 'region', 'city', and 'sales_amount' columns.",
         "processing": "Define a window specification partitioned by 'region' and ordered by 'sales_amount' in descending order using `Window.partitionBy('region').orderBy(F.col('sales_amount').desc())`.",
@@ -2082,9 +2082,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Window Specification simplifies distributed operations.",
@@ -2110,7 +2110,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Ranking Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Ranking Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with 'employee_id', 'department', and 'salary' columns.",
         "processing": "Apply `F.rank()` over a window partitioned by 'department' and ordered by 'salary' descending to assign a rank to employees within each department.",
@@ -2157,9 +2157,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Ranking simplifies distributed operations.",
@@ -2185,7 +2185,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Running Totals Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Running Totals Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with 'order_date' and 'daily_revenue' columns, sorted by date.",
         "processing": "Calculate a running total of 'daily_revenue' using `F.sum('daily_revenue').over(Window.orderBy('order_date').rowsBetween(Window.unboundedPreceding(), Window.currentRow()))`.",
@@ -2232,9 +2232,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Running Totals simplifies distributed operations.",
@@ -2260,7 +2260,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Working with CSV Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Working with CSV Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A CSV file named 'users.csv' containing 'id,name,age' data.",
         "processing": "Read 'users.csv' into a PySpark DataFrame, inferring the schema and specifying the header option.",
@@ -2307,9 +2307,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Working with CSV simplifies distributed operations.",
@@ -2335,7 +2335,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Working with JSON Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Working with JSON Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A JSON file 'events.json' with semi-structured data, e.g., `{\"id\":1, \"details\":{\"type\":\"click\", \"timestamp\":\"...\"}}`.",
         "processing": "Load 'events.json' into a PySpark DataFrame, automatically inferring the nested schema.",
@@ -2382,9 +2382,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Working with JSON simplifies distributed operations.",
@@ -2410,7 +2410,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Working with Parquet Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Working with Parquet Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df_sales` containing structured sales transaction data.",
         "processing": "Write `df_sales` to a Parquet file, leveraging its columnar storage and schema evolution capabilities.",
@@ -2457,9 +2457,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Working with Parquet simplifies distributed operations.",
@@ -2485,7 +2485,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Working with Delta Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Working with Delta Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df_updates` with new and updated customer records, and an existing Delta table `customers_delta`.",
         "processing": "Perform an `upsert` operation using `DeltaTable.merge()` on `customers_delta`, matching on customer ID.",
@@ -2532,9 +2532,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Working with Delta simplifies distributed operations.",
@@ -2560,7 +2560,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Python UDF Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Python UDF Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame with a 'product_name' column containing mixed-case strings.",
         "processing": "Define a Python function to convert a string to title case, register it as a UDF, and apply it to 'product_name'.",
@@ -2607,9 +2607,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Python UDF simplifies distributed operations.",
@@ -2635,7 +2635,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Pandas UDF Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Pandas UDF Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame with 'category' and 'price' columns, requiring a group-wise median calculation.",
         "processing": "Define a Pandas function to calculate the median of a Series, register it as a Pandas UDF (e.g., `Grouped Map`), and apply it grouped by 'category'.",
@@ -2682,9 +2682,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Pandas UDF simplifies distributed operations.",
@@ -2710,7 +2710,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ DAG Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ DAG Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A sequence of PySpark DataFrame transformations: `read_csv -> filter -> join -> select`.",
         "processing": "Spark constructs a Logical Plan (DAG) representing these operations and their dependencies without immediate execution.",
@@ -2757,9 +2757,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "DAG simplifies distributed operations.",
@@ -2785,7 +2785,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Catalyst Optimizer Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Catalyst Optimizer Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame query involving multiple joins, filters, and aggregations.",
         "processing": "The Catalyst Optimizer applies rule-based and cost-based optimizations, such as predicate pushdown and join reordering, to the logical plan.",
@@ -2832,9 +2832,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Catalyst Optimizer simplifies distributed operations.",
@@ -2860,7 +2860,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Tungsten Engine Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Tungsten Engine Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "An optimized physical execution plan generated by the Catalyst Optimizer, ready for execution.",
         "processing": "The Tungsten Engine performs whole-stage code generation, efficient memory management, and CPU cache-aware computations.",
@@ -2907,9 +2907,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Tungsten Engine simplifies distributed operations.",
@@ -2935,7 +2935,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Repartition Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Repartition Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df_logs` with 200 partitions, but subsequent operations require fewer, larger partitions.",
         "processing": "Call `df_logs.repartition(10)` to redistribute the data across 10 partitions, involving a shuffle operation.",
@@ -2982,9 +2982,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Repartition simplifies distributed operations.",
@@ -3010,7 +3010,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Coalesce Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Coalesce Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame with 100 partitions, resulting from a large data load that created many small files.",
         "processing": "Apply `df.coalesce(10)` to reduce the number of partitions to 10, which avoids a full shuffle by moving data only to existing partitions.",
@@ -3057,9 +3057,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Coalesce simplifies distributed operations.",
@@ -3085,7 +3085,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Partition Pruning Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Partition Pruning Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Parquet table partitioned by `event_date` and `country`, containing billions of records across many directories.",
         "processing": "Query the table with `spark.sql(\"SELECT * FROM events WHERE event_date = '2023-01-01' AND country = 'US'\")`. Spark's optimizer identifies and reads only the relevant partition directories.",
@@ -3132,9 +3132,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Partition Pruning simplifies distributed operations.",
@@ -3160,7 +3160,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Caching Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Caching Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `df_cleaned` resulting from complex transformations on raw data, which will be used multiple times in subsequent analyses.",
         "processing": "Call `df_cleaned.cache()` followed by an action (e.g., `df_cleaned.count()`) to materialize and store the DataFrame in memory.",
@@ -3207,9 +3207,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Caching simplifies distributed operations.",
@@ -3235,7 +3235,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Persistence Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Persistence Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame `df_intermediate` that is computationally expensive to generate and needs to be reused across several stages, potentially exceeding available memory.",
         "processing": "Use `df_intermediate.persist(StorageLevel.DISK_ONLY)` to store the DataFrame reliably on disk, or `StorageLevel.MEMORY_AND_DISK` to spill to disk if memory is insufficient.",
@@ -3282,9 +3282,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Persistence simplifies distributed operations.",
@@ -3310,7 +3310,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Broadcast Join Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Broadcast Join Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A large DataFrame `orders` (billions of rows) and a small DataFrame `products` (thousands of rows) that needs to be joined on `product_id`.",
         "processing": "Spark automatically (or explicitly via `broadcast(products)`) sends the `products` DataFrame to all executor nodes, then performs a local hash join on each executor.",
@@ -3357,9 +3357,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Broadcast Join simplifies distributed operations.",
@@ -3385,7 +3385,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ AQE Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ AQE Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A complex Spark SQL query involving multiple joins and aggregations where intermediate shuffle sizes are unknown or potentially skewed.",
         "processing": "With AQE enabled (`spark.sql.adaptive.enabled=true`), Spark dynamically optimizes the query plan during execution, adjusting join strategies, coalescing shuffle partitions, and handling skew.",
@@ -3432,9 +3432,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "AQE simplifies distributed operations.",
@@ -3460,7 +3460,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ What is Shuffle? Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ What is Shuffle? Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A DataFrame undergoing a `groupBy()` aggregation or a `join()` operation where keys are initially distributed across different partitions on various executor nodes.",
         "processing": "Spark exchanges data across the network between different executor nodes to bring all rows with the same key to the same partition for processing.",
@@ -3507,9 +3507,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "What is Shuffle? simplifies distributed operations.",
@@ -3535,7 +3535,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Shuffle Optimization Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Shuffle Optimization Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark job with frequent shuffles, leading to high network I/O and slow performance, potentially due to too many small shuffle files or data skew.",
         "processing": "Techniques like increasing `spark.sql.shuffle.partitions`, enabling AQE, pre-partitioning data, or using `repartitionByRange` are applied to manage shuffle behavior.",
@@ -3582,9 +3582,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Shuffle Optimization simplifies distributed operations.",
@@ -3610,7 +3610,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Storage Memory Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Storage Memory Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark application running on a cluster where `spark.memory.fraction` allocates a portion of the JVM heap for Spark's unified memory manager.",
         "processing": "Data cached using `df.cache()` or `df.persist()` is stored within the Storage Memory region of the executor's JVM heap.",
@@ -3657,9 +3657,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Storage Memory simplifies distributed operations.",
@@ -3685,7 +3685,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Execution Memory Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Execution Memory Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark job performing operations like joins, aggregations, or sorts that require temporary buffers and data structures for intermediate computations.",
         "processing": "These operations utilize the Execution Memory region of the executor's JVM heap for their intermediate computations, such as hash tables for joins or sort buffers.",
@@ -3732,9 +3732,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Execution Memory simplifies distributed operations.",
@@ -3760,7 +3760,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Structured Streaming Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Structured Streaming Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A directory continuously receives new JSON files representing sensor readings, each containing a timestamp and a value.",
         "processing": "PySpark reads these files as a stream, applies a schema, and calculates a tumbling window count of readings every 10 seconds.",
@@ -3807,9 +3807,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Structured Streaming simplifies distributed operations.",
@@ -3835,7 +3835,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Watermarking Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Watermarking Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A stream of click events with an event-time timestamp column, arriving potentially out-of-order or delayed.",
         "processing": "A watermark of '1 minute' is applied to the event-time column, allowing events up to 1 minute late to be included in their correct 5-minute tumbling window.",
@@ -3882,9 +3882,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Watermarking simplifies distributed operations.",
@@ -3910,7 +3910,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Checkpointing Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Checkpointing Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A stateful Structured Streaming query aggregating user sessions from a Kafka topic.",
         "processing": "A checkpoint directory is configured to persist the query's progress (offsets) and intermediate state (session aggregates) to HDFS/S3.",
@@ -3957,9 +3957,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Checkpointing simplifies distributed operations.",
@@ -3985,7 +3985,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Lazy Evaluation Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Lazy Evaluation Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame with a chain of transformations defined, such as `df.filter(...).select(...).groupBy(...).agg(...)`.",
         "processing": "PySpark builds a logical execution plan for these transformations without immediately computing any results or loading data.",
@@ -4032,9 +4032,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Lazy Evaluation simplifies distributed operations.",
@@ -4060,7 +4060,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Wide vs Narrow Transformations Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Wide vs Narrow Transformations Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark DataFrame `df` with multiple partitions.",
         "processing": "`df.filter()` is a narrow transformation as it processes data within existing partitions; `df.groupBy().agg()` is wide, requiring data shuffle across partitions.",
@@ -4107,9 +4107,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Wide vs Narrow Transformations simplifies distributed operations.",
@@ -4135,7 +4135,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Shuffle Internals Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Shuffle Internals Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A PySpark `df.join(another_df)` operation where both DataFrames are large and require key-based redistribution.",
         "processing": "Mappers write partitioned data to local disk, then reducers fetch and merge these partitions over the network to form the joined result.",
@@ -4182,9 +4182,9 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Shuffle Internals simplifies distributed operations.",
@@ -4196,7 +4196,7 @@ export const pysparkTopics: Topic[] = [
   },
   {
     "id": "pyspark-advanced-21",
-    "title": "Broadcast Joins",
+    "title": "Broadcast Joins: Internals & Tuning",
     "category": "pyspark",
     "difficulty": "advanced",
     "concept": {
@@ -4210,7 +4210,7 @@ export const pysparkTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Broadcast Joins Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Broadcast Joins Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Joining a large `orders_df` (millions of rows) with a significantly smaller `products_df` (thousands of rows).",
         "processing": "The `products_df` is collected by the driver and then efficiently sent to all executor nodes, allowing each executor to perform the join locally.",
@@ -4257,15 +4257,246 @@ export const pysparkTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Broadcast Joins simplifies distributed operations.",
         "mostAskedQuestion": "Explain the performance impact of Broadcast Joins.",
         "commonMistake": "Forgetting to verify the partition size.",
         "bestPractice": "Always index keys."
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-22",
+    "title": "Submitting Jobs: spark-submit & Deploy Modes",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-23",
+    "title": "Reading the Spark UI: Jobs, Stages & the SQL Tab",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-24",
+    "title": "Data Skew: Detection & Salting",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-25",
+    "title": "The Small-Files Problem & Compaction",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-26",
+    "title": "Delta Lake MERGE & Upserts",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-27",
+    "title": "Executor Memory Tuning & Debugging OOM",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "pyspark-advanced-28",
+    "title": "Spark Configuration & Resource Sizing",
+    "category": "pyspark",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
       }
     }
   }

@@ -1,0 +1,418 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Dynamic DAGs and dynamic task mapping let an Airflow pipeline decide its own shape at runtime: instead of hard-coding a fixed number of tasks, the workflow expands into as many parallel task instances as the data requires when the DAG actually runs.",
+      "Dynamic Task Mapping (introduced in Airflow 2.3) is the modern, first-class way to do this. You call .expand() (or .expand_kwargs()) on a task and Airflow creates one mapped task instance per element of the input list, each with its own logs, retries, and UI entry.",
+      "This is distinct from the older pattern of generating whole DAG files dynamically (dynamic DAG generation), where Python code in the dags folder programmatically creates many DAG objects. Both solve 'I don't know the count until later,' but at different granularities: mapping expands tasks within one DAG, generation produces many DAGs."
+    ],
+    "learningObjectives": [
+      "Explain the difference between dynamic DAG generation (many DAG files) and dynamic task mapping (many task instances within one DAG).",
+      "Use .expand() and .expand_kwargs() with the TaskFlow API to fan out a task over a runtime-computed list and collect results with a reduce step.",
+      "Understand how the scheduler expands mapped tasks, how map indexes work, and the operational limits (max_map_length, pool slots) that keep dynamic fan-out safe in production."
+    ],
+    "formalDefinition": "Dynamic Task Mapping is an Airflow feature in which a single task definition is expanded at DAG-parse-and-schedule time into N mapped task instances, one per element of an upstream-produced iterable, using the .expand() / .expand_kwargs() API. The number N is not known when the DAG is authored; it is resolved when the upstream task returns its output during a specific DAG run. Dynamic DAG generation, by contrast, is the practice of executing Python at parse time in the dags directory to construct multiple DAG objects programmatically from an external source (a config file, a database, or a variable).",
+    "simpleExplanation": "Imagine a mail room where you don't know how many packages arrive until the truck shows up. With a static workflow you'd have to pre-write 'handle package 1, handle package 2, ...' and guess the count. Dynamic task mapping is like a supervisor who counts the packages when the truck arrives and instantly assigns exactly that many workers, one per package, all working in parallel. When they finish, one person tallies the totals. You wrote the instructions once; Airflow decides how many copies to run based on the actual data.",
+    "historicalContext": "Before Airflow 2.3 (April 2022), the only way to vary task count was to generate DAG files dynamically or to abuse SubDAGs, both of which were fragile: SubDAGs caused deadlocks and scheduler overhead, and dynamically generated tasks had to be known at parse time. Airflow 2.3 introduced Dynamic Task Mapping (AIP-42), giving a native map/reduce style .expand() that resolves counts at runtime. Airflow 2.4 added .expand_kwargs() for mapping over dictionaries, and later versions improved the UI (mapped task grids), added map-index-aware logging, and integrated mapping with Datasets and dynamic task grouping. SubDAGs were deprecated in favor of TaskGroups and mapping.",
+    "whyItMatters": {
+      "business": "Pipelines that must process a variable number of files, partitions, tenants, or regions each day can do so without redeploying code. A retailer processing one file per store can add or remove stores freely; the pipeline adapts automatically, keeping data fresh and reducing manual engineering toil.",
+      "engineering": "Engineers write one task and one reduce step instead of copy-pasting near-identical tasks or maintaining brittle generation scripts. Each mapped instance gets isolated logs, retries, and monitoring, so debugging a single failed partition is trivial.",
+      "scalability": "Fan-out is bounded by pools and max_map_length rather than by hard-coded task counts, so the same DAG scales from processing 3 items to 3,000 as data grows, limited only by worker capacity.",
+      "cost": "Parallelizing over exactly the number of items that exist avoids both under-provisioning (slow serial runs) and over-provisioning (idle pre-created tasks). Combined with pools, it lets you cap concurrency to control cluster cost.",
+      "reliability": "Because each mapped instance is independent, a failure in one partition retries or fails in isolation without blocking the others, and the reduce step can be made to tolerate partial failures, improving overall pipeline resilience."
+    },
+    "coreComponents": [
+      {
+        "name": ".expand() (partial + expand)",
+        "definition": "The core mapping API: a task's constant arguments are set with .partial() and the argument(s) to fan out over are passed to .expand(), producing one mapped instance per element.",
+        "purpose": "Turn a single task into N parallel instances driven by an upstream list whose length is unknown until runtime.",
+        "responsibilities": "Receive an iterable (often another task's return value), create a mapped task instance per element, assign each a map index, and pass the corresponding element as the argument.",
+        "examples": "process_file.expand(path=list_files()) creates one process_file instance per file path returned by list_files."
+      },
+      {
+        "name": ".expand_kwargs()",
+        "definition": "A variant of expand that maps over a list of dictionaries, where each dict supplies multiple keyword arguments to one mapped instance.",
+        "purpose": "Fan out when each instance needs several parameters (e.g., both a path and a region), not just a single value.",
+        "responsibilities": "Consume a list of kwarg dicts and expand one task instance per dict, unpacking the dict into the task's parameters.",
+        "examples": "load.expand_kwargs([{'table':'orders','region':'us'}, {'table':'orders','region':'eu'}])."
+      },
+      {
+        "name": "Reduce task (fan-in)",
+        "definition": "A downstream task that receives the collected outputs of all mapped instances as a single list, completing the map/reduce pattern.",
+        "purpose": "Aggregate, validate, or summarize the results produced by the fanned-out tasks.",
+        "responsibilities": "Wait for all upstream mapped instances to finish, receive their return values as a list, and produce a single consolidated result.",
+        "examples": "summarize(results=process_file.output) sums row counts across all processed files."
+      },
+      {
+        "name": "Dynamic DAG generation (factory pattern)",
+        "definition": "Python code in the dags folder that loops over a config source and instantiates multiple DAG objects, each registered in the global namespace.",
+        "purpose": "Produce many similar DAGs (e.g., one per client) from a single template without hand-writing each file.",
+        "responsibilities": "Read a config source at parse time, build DAG objects in a loop, and assign each a unique dag_id in globals().",
+        "examples": "for cfg in load_configs(): globals()[cfg['id']] = build_dag(cfg)."
+      },
+      {
+        "name": "Map index & mapped task instance",
+        "definition": "Each expanded instance is a mapped task instance identified by an integer map_index (0..N-1), tracked and displayed separately in the UI.",
+        "purpose": "Provide per-element isolation of logs, state, retries, and rendering for the fanned-out work.",
+        "responsibilities": "Persist state per (dag_id, task_id, run_id, map_index), surface each instance in the grid view, and allow independent clearing/retrying.",
+        "examples": "In the UI, process_file [0], process_file [1], ... each show their own logs and status."
+      }
+    ],
+    "internalWorking": [
+      "When the DAG is parsed, a mapped task is registered as a single abstract task with an 'expand' input that references an upstream task's output (an XComArg) or a static iterable; the concrete count is not yet known.",
+      "During scheduling, once the upstream task that produces the iterable has completed, the scheduler resolves its return value (stored in XCom) to determine the length N and materializes N mapped task instances, each with a distinct map_index.",
+      "Each mapped instance is scheduled independently: it pulls its specific element (by map_index) from the upstream XCom, runs with its own try_number/retries, writes its own logs, and stores its own return value in XCom keyed by map_index.",
+      "A downstream reduce task that references the mapped task's .output collects all per-index XCom return values into a single Python list and receives it as an ordinary argument once every mapped instance has reached a terminal success state.",
+      "Guardrails apply throughout: the core.max_map_length config caps N to prevent runaway fan-out, pools cap how many mapped instances run concurrently, and if the upstream returns an empty list the mapped task is skipped rather than run zero times."
+    ],
+    "architectureFlow": "Upstream task returns a runtime list (e.g., list of file paths) -> Scheduler reads that XCom value and resolves count N -> N mapped task instances materialized, each assigned map_index 0..N-1 -> Mapped instances run in parallel (bounded by pool / max_active_tis_per_dag) -> Each writes its result to XCom keyed by map_index -> Reduce task collects all results as a list and aggregates -> Final output persisted / downstream Datasets updated.",
+    "dataFlowWalkthrough": [
+      "1. A DAG must process however many CSV files landed in a bucket today; the count varies daily and is unknown at author time.",
+      "2. The first task list_files() lists the bucket and returns ['a.csv','b.csv','c.csv'] (3 today, could be 300 tomorrow); this list is stored in XCom.",
+      "3. process_file.expand(path=list_files()) causes the scheduler to create 3 mapped instances: process_file[0] gets 'a.csv', [1] gets 'b.csv', [2] gets 'c.csv', all runnable in parallel subject to the pool.",
+      "4. Each mapped instance downloads and transforms its file, returns a per-file row count, and writes that number to XCom under its map_index.",
+      "5. summarize(counts=process_file.output) waits for all three, receives [1200, 980, 1500], sums to 3680 rows, and writes a run summary; if tomorrow there are 300 files, the identical code fans out into 300 instances with no changes."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Dynamic Task Mapping",
+        "meaning": "Airflow's native map/reduce feature that expands one task into N mapped instances at runtime based on an upstream iterable, via .expand().",
+        "importance": "It is the modern, supported way to vary task count by data and is the primary subject of this lesson."
+      },
+      {
+        "term": ".partial() / .expand()",
+        "meaning": ".partial() fixes constant arguments; .expand() supplies the iterable argument(s) to fan out over, together defining a mapped task.",
+        "importance": "This pair is the exact syntax you use; knowing which arguments are constant vs mapped is essential to correct expansion."
+      },
+      {
+        "term": "map_index",
+        "meaning": "The zero-based integer identifying each expanded instance of a mapped task within a DAG run.",
+        "importance": "It is how Airflow tracks per-element state, logs, and XCom, enabling isolated retries and debugging."
+      },
+      {
+        "term": "Reduce / fan-in",
+        "meaning": "A downstream task that consumes the collected list of all mapped instances' outputs to produce one aggregate result.",
+        "importance": "It completes the map/reduce pattern and is where you validate counts and combine partial results."
+      },
+      {
+        "term": "max_map_length",
+        "meaning": "An Airflow config (default 1024) that caps how many mapped instances a single expand can create.",
+        "importance": "It is a critical safety limit preventing an accidental huge list from spawning thousands of tasks and overwhelming the scheduler."
+      },
+      {
+        "term": "Dynamic DAG generation",
+        "meaning": "Creating multiple DAG objects programmatically at parse time from a config source, one dag_id per iteration.",
+        "importance": "It solves the different problem of 'many similar DAGs' and must not be confused with mapping (many tasks in one DAG)."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Mapping resolves at runtime, generation resolves at parse time",
+        "explanation": "Dynamic task mapping's count is determined during a DAG run when the upstream task returns its list, so it adapts to today's data. Dynamic DAG generation runs at parse time (every time the scheduler parses the dags folder), so the set of DAGs changes only when the underlying config changes and the file is re-parsed. This timing difference dictates when you can use each: use mapping when the count depends on run-time data; use generation when you need distinct DAGs whose set is known at parse time."
+      },
+      {
+        "concept": "Chained and multi-argument mapping",
+        "explanation": "You can chain mapping (the output of one mapped task feeds another mapped task) and use .expand() with multiple iterables, which produces a Cartesian product of instances (m x n). This is powerful but dangerous: expanding over two lists of 100 creates 10,000 instances. Prefer .expand_kwargs() with an explicitly built list of dicts when you want a controlled 1:1 pairing rather than a cross product."
+      },
+      {
+        "concept": "Empty lists, guardrails, and idempotency",
+        "explanation": "If the upstream iterable is empty, the mapped task is marked skipped rather than failing, so downstream logic must handle zero-element runs. max_map_length caps fan-out and pools cap concurrency; without them a mis-sized list can flood the scheduler. Each mapped instance should be idempotent (safe to retry) because instances retry independently, and partial failures are common in large fan-outs."
+      },
+      {
+        "concept": "Why SubDAGs were replaced",
+        "explanation": "The old SubDAG operator ran a child DAG inside a task and was a frequent source of deadlocks, doubled scheduling overhead, and confusing pool behavior. TaskGroups (for visual/logical grouping) plus Dynamic Task Mapping (for runtime fan-out) cover every legitimate SubDAG use case without those pathologies, which is why SubDAGs are deprecated and mapping is the recommended pattern."
+      }
+    ],
+    "variationsAndTypes": [
+      "**.expand(single iterable):** Fan out over one list; each instance receives one element as a single argument.",
+      "**.expand(multiple iterables):** Cross-product expansion (m x n instances); powerful but easy to explode, use deliberately.",
+      "**.expand_kwargs(list of dicts):** 1:1 expansion where each instance gets multiple named parameters from a dict, avoiding accidental cross products.",
+      "**Chained mapping (map of a map):** The output of one mapped task feeds another mapped task for multi-stage per-element pipelines.",
+      "**Dynamic task groups:** Combine mapping with TaskGroups to fan out a whole group of tasks per element (e.g., extract+transform+load per region).",
+      "**Dynamic DAG generation (factory):** A separate technique that emits many DAG objects at parse time from a config source, one dag_id each."
+    ],
+    "advantages": [
+      "**Runtime adaptivity:** Task count follows the data automatically; no redeploy when the number of items changes.",
+      "**Per-instance isolation:** Each mapped instance has its own logs, retries, and UI entry, making failures easy to locate and re-run.",
+      "**Native and supported:** Replaces fragile SubDAGs/generation hacks with a first-class map/reduce API integrated with pools, Datasets, and the UI.",
+      "**Bounded parallelism:** Works cleanly with pools and max_map_length to cap concurrency and protect the scheduler and downstreams."
+    ],
+    "disadvantages": [
+      "**Scheduler pressure at high fan-out:** Thousands of mapped instances create scheduling and metadata-database load; very large N needs tuning or a different tool.",
+      "**Cross-product footguns:** Multi-iterable .expand() can silently create an enormous number of instances.",
+      "**Runtime-only visibility:** Because count is resolved at run time, you cannot see the exact instance count in the UI until the upstream task completes.",
+      "**Generation pitfalls:** Dynamic DAG generation runs on every parse, so slow or unsafe code in the dags folder degrades the whole scheduler."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use dynamic task mapping when the number of parallel work items (files, partitions, tenants, regions, API pages) is unknown until the DAG runs and each item is processed by the same logic. Use dynamic DAG generation when you need genuinely separate DAGs (distinct schedules, owners, or SLAs) whose set is defined by config known at parse time, such as one ingestion DAG per client.",
+      "whenToAvoid": "Avoid mapping when fan-out would be extreme (tens of thousands+) such that the scheduler and metadata DB struggle; push that scale into a data engine (Spark) invoked by a single task instead. Avoid dynamic DAG generation when the config is huge or slow to load, since it runs on every parse and can cripple scheduler performance; and avoid multi-iterable expand unless you truly want a cross product."
+    },
+    "realWorldAnalogy": "Dynamic task mapping is like a car wash that opens exactly as many wash bays as there are cars in line right now: three cars, three bays; thirty cars, thirty bays (up to the number the facility can physically support). One manager then tallies the day's total at the end. Dynamic DAG generation is different: it's like a franchise that stamps out a whole new, independent car-wash location from the same blueprint for each city on a list. Mapping scales bays inside one location by demand; generation scales locations from a template.",
+    "commonMisconceptions": [
+      {
+        "myth": "Dynamic task mapping and dynamic DAG generation are the same thing.",
+        "reality": "Mapping expands one task into many instances within a single DAG at runtime; generation creates many separate DAG objects at parse time. They operate at different granularities and resolve at different phases."
+      },
+      {
+        "myth": ".expand() over two lists pairs them element-by-element.",
+        "reality": "Passing multiple iterables to .expand() creates a Cartesian product (m x n instances), not a zip. Use .expand_kwargs() with pre-zipped dicts for 1:1 pairing."
+      },
+      {
+        "myth": "You can fan out to any number of instances safely.",
+        "reality": "core.max_map_length caps the count (default 1024) and pools cap concurrency; huge fan-outs still pressure the scheduler and metadata database, so extreme parallelism belongs inside a data engine, not thousands of Airflow tasks."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Cap fan-out with core.max_map_length and cap concurrency with pools and max_active_tis_per_dag so a large list does not spawn more instances than workers can handle. For very high parallelism, delegate the inner work to a distributed engine (Spark/Dask) run from a single mapped stage.",
+      "reliability": "Make each mapped instance idempotent so independent retries are safe; set sensible retries/retry_delay per task; ensure the reduce step tolerates and reports partial failures rather than assuming every index succeeded.",
+      "faultTolerance": "Because instances are isolated, a single failed map_index can be cleared and re-run without touching the others; design the reduce task to detect missing indexes and either fail loudly or proceed on a documented policy.",
+      "monitoring": "Track the fan-out count per run, per-instance duration distribution, and failure rate by map_index; alert on runs whose count spikes unexpectedly (a sign of a bad upstream list) and on reduce-step gaps indicating dropped indexes.",
+      "security": "Validate and sanitize the runtime list (e.g., file paths, table names) before expanding to avoid injecting untrusted values into downstream commands; restrict which configs the dynamic-generation factory may read.",
+      "costOptimization": "Use pools to bound concurrent mapped instances to the cheapest sufficient worker footprint; skip empty runs cheaply; avoid cross-product expansion that multiplies cost unnecessarily.",
+      "performance": "Keep the upstream list-producing task fast and its XCom small (list of ids/paths, not big payloads); very large XComs should use a custom backend (e.g., S3) so mapping metadata stays lightweight."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Dynamic task mapping with .expand() and a reduce step (TaskFlow API)",
+        "overview": "Process a runtime-determined list of files in parallel, one mapped task instance per file, then reduce the per-file row counts into a single total. The count is decided when list_files runs, so the same DAG handles 3 files today or 300 tomorrow.",
+        "code": "from __future__ import annotations\nfrom airflow.decorators import dag, task\nimport pendulum\n\n@dag(\n    schedule=\"@daily\",\n    start_date=pendulum.datetime(2024, 1, 1, tz=\"UTC\"),\n    catchup=False,\n    tags=[\"dynamic-mapping\"],\n)\ndef dynamic_file_processing():\n    @task\n    def list_files() -> list[str]:\n        # In reality: list an S3 prefix; count is unknown until now\n        return [\"orders_a.csv\", \"orders_b.csv\", \"orders_c.csv\"]\n\n    @task\n    def process_file(path: str) -> int:\n        # Each mapped instance handles exactly one file\n        rows = {\"orders_a.csv\": 1200, \"orders_b.csv\": 980, \"orders_c.csv\": 1500}[path]\n        print(f\"processing {path}: {rows} rows\")\n        return rows\n\n    @task\n    def summarize(counts: list[int]) -> int:\n        total = sum(counts)\n        print(f\"processed {len(counts)} files, {total} total rows\")\n        return total\n\n    files = list_files()\n    counts = process_file.expand(path=files)   # fan-out: one instance per file\n    summarize(counts)                          # fan-in: reduce\n\ndynamic_file_processing()\n",
+        "language": "python",
+        "breakdown": "list_files returns the runtime list; its length (3) is unknown at author time. process_file.expand(path=files) tells the scheduler to create one mapped instance per element, each receiving its own path. Each instance runs independently with its own logs and returns an int stored in XCom under its map_index. summarize(counts) is the reduce step: it receives the collected list [1200, 980, 1500] and sums it. Swapping list_files to return 300 paths fans out into 300 instances with zero code changes.",
+        "expectedOutput": "process_file[0..2] log 'processing ... rows' individually; summarize logs 'processed 3 files, 3680 total rows' and returns 3680. In the Grid view, process_file shows three mapped instances [0], [1], [2].",
+        "commonIssues": "Passing a huge list can hit core.max_map_length (default 1024) and error; returning a giant payload from list_files bloats XCom; forgetting that .expand takes the iterable while constant args go in .partial() leads to TypeErrors; an empty list marks process_file as skipped, which summarize must handle.",
+        "optimizationTips": "Keep the mapped iterable small (paths/ids, not data); bound concurrency with a pool via process_file.partial(pool='files_pool').expand(...); make process_file idempotent so a single failed index can be cleared and retried without side effects."
+      },
+      {
+        "title": ".expand_kwargs() for multi-argument mapping and dynamic DAG generation",
+        "overview": "Two techniques side by side: expand_kwargs to fan out with several parameters per instance (avoiding accidental cross products), and a DAG factory that generates one DAG per client config at parse time.",
+        "code": "from __future__ import annotations\nfrom airflow.decorators import dag, task\nfrom airflow.models.dag import DAG\nfrom airflow.operators.empty import EmptyOperator\nimport pendulum\n\n# --- 1. expand_kwargs: 1:1 mapping over dicts (not a cross product) ---\n@dag(schedule=\"@daily\", start_date=pendulum.datetime(2024, 1, 1, tz=\"UTC\"), catchup=False)\ndef load_by_region():\n    @task\n    def build_jobs() -> list[dict]:\n        return [\n            {\"table\": \"orders\", \"region\": \"us\"},\n            {\"table\": \"orders\", \"region\": \"eu\"},\n            {\"table\": \"orders\", \"region\": \"apac\"},\n        ]\n\n    @task\n    def load(table: str, region: str) -> str:\n        print(f\"loading {table} for {region}\")\n        return f\"{table}:{region}\"\n\n    load.expand_kwargs(build_jobs())\n\nload_by_region()\n\n# --- 2. Dynamic DAG generation: one DAG per client, resolved at parse time ---\nCLIENT_CONFIGS = [\n    {\"client\": \"acme\", \"schedule\": \"@daily\"},\n    {\"client\": \"globex\", \"schedule\": \"@hourly\"},\n]\n\ndef build_client_dag(cfg: dict) -> DAG:\n    with DAG(\n        dag_id=f\"ingest_{cfg['client']}\",\n        schedule=cfg[\"schedule\"],\n        start_date=pendulum.datetime(2024, 1, 1, tz=\"UTC\"),\n        catchup=False,\n        tags=[\"generated\", cfg[\"client\"]],\n    ) as dag:\n        EmptyOperator(task_id=\"start\") >> EmptyOperator(task_id=\"finish\")\n    return dag\n\nfor _cfg in CLIENT_CONFIGS:\n    globals()[f\"ingest_{_cfg['client']}\"] = build_client_dag(_cfg)\n",
+        "language": "python",
+        "breakdown": "expand_kwargs takes a list of dicts and unpacks each into the load task's parameters, giving exactly three instances (one per dict) rather than the nine a two-iterable .expand() would produce. The factory section runs at parse time: the loop reads CLIENT_CONFIGS and registers each DAG object in globals() with a unique dag_id, so Airflow discovers ingest_acme and ingest_globex as separate DAGs with their own schedules.",
+        "expectedOutput": "load_by_region shows three mapped 'load' instances logging 'loading orders for us/eu/apac'. The scheduler discovers two additional DAGs, ingest_acme (@daily) and ingest_globex (@hourly), each visible separately in the DAGs list.",
+        "commonIssues": "Using .expand() with two lists when you meant 1:1 creates a cross product; forgetting globals()[...] = ... means generated DAGs never register; slow or failing code at module top level (the factory) breaks parsing for the whole file; reusing the same dag_id overwrites DAGs silently.",
+        "optimizationTips": "Prefer expand_kwargs for controlled multi-arg fan-out; keep the config source for generation small and fast to load (cache it) since it runs on every parse; give generated DAGs deterministic, unique dag_ids and tags so they are easy to filter and manage."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A marketplace ingests a variable number of partner sales files each night, ranging from a handful to several hundred depending on how many partners uploaded. A static DAG with a fixed number of tasks either wastes slots on quiet nights or cannot keep up on busy ones, and manually editing the DAG for each partner change is unsustainable.",
+    "inputData": "An S3 prefix s3://landing/sales/{{ ds }}/ containing between 5 and 400 CSV files per night, each a partner's daily sales; file names encode the partner id; each file is 10-200 MB.",
+    "architecture": "A single Airflow DAG: list_files (S3 list) produces the runtime list, validate_file.expand() fans out one validation+load instance per file bounded by a pool, and reconcile (reduce) aggregates per-file row counts, checks totals against a control file, and publishes a Dataset to trigger downstream analytics.",
+    "processingSteps": [
+      "1. list_files lists the night's S3 prefix and returns the list of object keys; the length is whatever landed tonight and is stored as a small XCom.",
+      "2. load_file.partial(pool='sales_load').expand(key=list_files()) creates one mapped instance per key; the pool caps concurrency (e.g., 20) so the warehouse and workers are not overwhelmed regardless of file count.",
+      "3. Each mapped instance downloads its file, validates schema, loads it into a partitioned staging table, and returns its row count keyed by map_index.",
+      "4. reconcile(counts=load_file.output) collects all per-file counts, sums them, compares to the partner control totals, and flags discrepancies; it tolerates and reports any failed indexes rather than assuming all succeeded.",
+      "5. On success, reconcile updates an Airflow Dataset (sales_staging) whose update triggers the downstream transformation DAG."
+    ],
+    "output": "All available partner files for the date are validated and loaded into partitioned staging, a reconciliation summary (files loaded, total rows, discrepancies) is written, and a Dataset event is emitted to trigger downstream processing.",
+    "monitoring": "Track the nightly fan-out count (alert if it deviates sharply from the trailing average, indicating missing or duplicated uploads), per-instance load duration, pool utilization, and reconcile discrepancy counts.",
+    "errorHandling": "Each load_file instance retries transient S3/warehouse errors independently; a permanently bad file fails only its own map_index and is surfaced in reconcile's discrepancy report and a dead-letter list; the Dataset is only updated when reconcile passes its checks, preventing downstream from consuming an incomplete load.",
+    "finalResult": "The one DAG scales automatically from 5 to 400 files without any code change, isolates and re-runs individual failed files, and gates downstream analytics on a validated, reconciled load, demonstrating that dynamic task mapping matches parallelism to the data while keeping the pipeline reliable and cheap."
+  },
+  "industryUseCases": [
+    {
+      "company": "Multi-tenant SaaS analytics platforms",
+      "problem": "Each night a different, growing set of customer tenants must be processed, and the tenant count changes as customers sign up or churn.",
+      "solution": "A single DAG lists active tenants at runtime and uses .expand() to fan out an identical extract-transform-load task per tenant, bounded by a pool.",
+      "benefits": "New tenants are picked up automatically with no redeploy, each tenant's run is isolated for easy debugging, and concurrency is capped to protect shared infrastructure."
+    },
+    {
+      "company": "Retail and e-commerce data teams",
+      "problem": "A variable number of store or partner files land daily and must be processed in parallel within tight overnight SLAs.",
+      "solution": "list_files -> process_file.expand() -> reconcile map/reduce pattern that scales to the number of files present and gates downstream via a Dataset.",
+      "benefits": "Meets SLAs by parallelizing exactly the files that exist, avoids idle pre-created tasks on light nights, and isolates per-file failures for targeted re-runs."
+    },
+    {
+      "company": "ML/feature engineering platforms",
+      "problem": "A dataset must be processed per partition (date, region, or feature group) where the number of partitions varies per run.",
+      "solution": "Compute the partition list at runtime and map a processing task over it, then reduce partition-level metrics into a run-level quality report.",
+      "benefits": "Uniform per-partition processing with independent retries, automatic scaling to partition count, and a clean aggregation point for data-quality validation."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Fan-out scales with the runtime list up to core.max_map_length; concurrency is throttled by pools and max_active_tis_per_dag. For extreme parallelism, keep the number of Airflow tasks modest and push the heavy per-item work into a distributed engine (Spark job) launched by one mapped stage, so Airflow orchestrates rather than executes the parallelism.",
+    "faultTolerance": "Every mapped instance is an independent task instance with its own retries and state, so a single failed map_index can be cleared and re-run without disturbing successful ones; the reduce step is designed to detect missing indexes and apply an explicit partial-failure policy.",
+    "highAvailability": "Runs on the standard Airflow HA setup (multiple schedulers, a highly available metadata database, and a distributed executor such as Celery or Kubernetes); mapped instances are just task instances, so they benefit from the same scheduler failover and worker redundancy.",
+    "disasterRecovery": "Because inputs are the runtime list and each instance is idempotent, a lost run can be re-triggered for the same logical date and will re-derive the same fan-out; staging tables are partition-overwrite so replays are safe, and Dataset events gate downstream until a full reconciled load exists.",
+    "performanceOptimization": "Keep the list-producing task and its XCom small (ids/paths only), use a custom XCom backend for any large payloads, bound concurrency with pools sized to downstream capacity, and prefer expand_kwargs over multi-iterable expand to avoid combinatorial explosion.",
+    "costOptimization": "Match parallelism to actual item count so light runs are cheap and heavy runs use only the necessary workers; cap concurrency to the cheapest sufficient pool size; skip empty runs; and avoid cross-product expansion that multiplies task (and thus compute) count.",
+    "securityConsiderations": "Validate the runtime list before expanding to prevent injecting untrusted paths, table names, or shell arguments into downstream tasks; restrict the config sources a DAG factory may read; and apply least-privilege connections so a compromised mapped instance cannot exceed its scope.",
+    "monitoringAndObservability": "Emit and dashboard the per-run fan-out count, per-index duration and success rate, pool saturation, and reconcile discrepancies; alert on abnormal counts (bad upstream list), on indexes stuck in retry, and on reduce-step gaps that indicate dropped results.",
+    "dataQualityValidation": "Use the reduce task as a natural quality gate: verify processed-item count equals expected count, totals reconcile against control figures, and no map_index is silently missing; only then emit the Dataset event that unblocks downstream.",
+    "loggingAndAlerting": "Rely on per-map_index isolated logs to pinpoint the exact failing element; tag logs with the element identity (path/tenant) for correlation; alert on rising per-index failure rates, fan-out anomalies, and reconciliation mismatches."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Keep the mapped iterable small:** Return ids/paths from the list step, not large payloads, so XCom and scheduler metadata stay light.",
+      "**Always add a reduce/validation step:** Aggregate outputs and verify counts so partial failures and dropped indexes are caught, not silently ignored.",
+      "**Bound concurrency with pools:** Use .partial(pool=...) so a large fan-out cannot overwhelm workers or downstream systems.",
+      "**Prefer .expand_kwargs() for multi-arg fan-out:** It gives explicit 1:1 pairing and avoids accidental cross products."
+    ],
+    "engineeringStandards": [
+      "Make every mapped task idempotent, since instances retry independently and runs may be replayed.",
+      "Set core.max_map_length deliberately and never rely on unbounded expansion for correctness.",
+      "Keep DAG-factory code at module top level fast and side-effect-free, because it runs on every scheduler parse."
+    ],
+    "designRecommendations": [
+      "Use mapping for 'N items of the same work within one DAG' and generation for 'N distinct DAGs from a template'; do not conflate them.",
+      "Push extreme parallelism into a data engine invoked by one task rather than spawning tens of thousands of mapped instances.",
+      "Gate downstream on a Dataset emitted only after the reduce/validation step passes."
+    ],
+    "namingConventions": [
+      "Name the list task by what it produces (list_files, active_tenants) and the mapped task by the per-item verb (process_file, load_partition).",
+      "Give generated DAGs deterministic unique dag_ids that encode their source (ingest_<client>) plus a 'generated' tag.",
+      "Name the reduce task by its aggregate role (reconcile, summarize) so the map/reduce shape is obvious in the UI."
+    ],
+    "documentationStandards": [
+      "Document what drives the fan-out count and its expected range so operators can spot anomalies.",
+      "Record the pool, max_map_length, and idempotency assumptions for each mapped stage.",
+      "For generation, document the config source, parse-time cost, and how new DAGs are added."
+    ],
+    "testingStrategies": [
+      "Unit-test the mapped task in isolation with representative single elements, including edge cases (empty, malformed).",
+      "Test the empty-list path to confirm downstream handles a skipped mapped task gracefully.",
+      "Test the reduce step with partial/failed indexes to verify the partial-failure policy behaves as documented."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Using .expand() with two iterables expecting a zip, getting a cross product.",
+      "whyItHappens": "Developers assume element-wise pairing like Python's zip, unaware that multiple iterables produce a Cartesian product.",
+      "impact": "The instance count explodes (m x n), possibly hitting max_map_length or flooding the scheduler and running the wrong combinations.",
+      "correctApproach": "Pre-zip the parameters into a list of dicts and use .expand_kwargs() for explicit 1:1 mapping, reserving multi-iterable .expand() for intentional cross products."
+    },
+    {
+      "mistake": "Returning large data from the list-producing task and passing it through XCom.",
+      "whyItHappens": "It seems convenient to pass full records into the mapped task rather than references.",
+      "impact": "XCom (in the metadata DB) bloats, slowing the scheduler and the UI and risking database pressure at scale.",
+      "correctApproach": "Return lightweight identifiers (paths, ids, keys); have each mapped instance fetch its own data, and use a custom XCom backend (e.g., S3) for any unavoidable large payloads."
+    },
+    {
+      "mistake": "Confusing dynamic task mapping with dynamic DAG generation.",
+      "whyItHappens": "Both address 'unknown count,' so engineers reach for the wrong tool.",
+      "impact": "Generating many DAGs when you needed mapped tasks (or vice versa) leads to parse-time performance problems or an inability to adapt to run-time data.",
+      "correctApproach": "Use mapping when the count depends on run-time data within one DAG; use generation only for genuinely separate DAGs whose set is known at parse time."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Dynamic Task Mapping vs Dynamic DAG Generation",
+      "optionA": "Task Mapping (.expand within one DAG)",
+      "optionB": "DAG Generation (many DAG files/objects)",
+      "explanation": "Mapping expands a single task into N instances at run time based on upstream data, ideal for 'N items of the same work.' Generation builds N distinct DAG objects at parse time from config, ideal for 'N separate pipelines' with their own schedules and owners. Different granularity, different resolution phase."
+    },
+    {
+      "feature": ".expand() vs .expand_kwargs()",
+      "optionA": ".expand() (one or more iterables)",
+      "optionB": ".expand_kwargs() (list of dicts)",
+      "explanation": "expand maps a single argument per iterable; with multiple iterables it produces a cross product. expand_kwargs maps a list of kwarg dicts, giving explicit 1:1 multi-argument instances. Use expand for simple single-arg fan-out and expand_kwargs when each instance needs several controlled parameters."
+    },
+    {
+      "feature": "Dynamic Task Mapping vs SubDAGs (deprecated)",
+      "optionA": "Task Mapping + TaskGroups",
+      "optionB": "SubDAGs (legacy)",
+      "explanation": "SubDAGs ran a child DAG inside a task and caused deadlocks, scheduling overhead, and confusing pool behavior. Task mapping provides runtime fan-out and TaskGroups provide visual/logical grouping, together covering all SubDAG use cases natively and safely, which is why SubDAGs are deprecated."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is Dynamic Task Mapping in Airflow?",
+        "answer": "It is a feature (from Airflow 2.3) that expands a single task into multiple mapped instances at runtime using .expand(), one instance per element of an upstream-produced iterable. The number of instances is decided when the DAG runs, based on the data, not when the DAG is written.",
+        "explanation": "Interviewers want the core idea: one task definition, many runtime instances driven by data, following a map/reduce pattern with a downstream fan-in."
+      },
+      {
+        "question": "How is dynamic task mapping different from dynamic DAG generation?",
+        "answer": "Task mapping creates many instances of one task within a single DAG at run time. Dynamic DAG generation runs Python at parse time in the dags folder to create many separate DAG objects, each with its own dag_id. Mapping adapts to run-time data; generation produces distinct DAGs from parse-time config.",
+        "explanation": "A strong answer highlights the granularity (task vs DAG) and the timing (run time vs parse time)."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How do .partial() and .expand() work together?",
+        "answer": ".partial() fixes the constant arguments that are the same for every instance, and .expand() supplies the iterable argument(s) to fan out over. Airflow then creates one mapped instance per element, passing the corresponding element while keeping the partial arguments constant.",
+        "explanation": "This tests practical syntax knowledge and the distinction between constant and mapped arguments."
+      },
+      {
+        "question": "What happens if the upstream iterable for .expand() is empty, and how do you guard fan-out size?",
+        "answer": "If the iterable is empty, the mapped task is marked skipped (it runs zero instances), so downstream logic must handle that. Fan-out size is guarded by core.max_map_length (default 1024), which caps instance count, and by pools / max_active_tis_per_dag, which cap concurrency.",
+        "explanation": "Interviewers look for awareness of the empty-list behavior and the production guardrails that prevent runaway expansion."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How does the scheduler resolve a mapped task's instance count, and where does the data flow?",
+        "answer": "At parse time the mapped task is a single abstract task referencing an upstream output (XComArg). During a run, once the upstream task completes and writes its list to XCom, the scheduler reads that value to determine N and materializes N mapped instances, each pulling its element by map_index from XCom, running independently, and writing its result to XCom under its map_index; the reduce task then collects all indexed results into a list.",
+        "explanation": "This probes understanding of parse-time vs run-time resolution and the XCom-by-map_index mechanics that make isolation and reduce work."
+      },
+      {
+        "question": "Why can passing two iterables to .expand() be dangerous, and what is the safer alternative?",
+        "answer": "Multiple iterables produce a Cartesian product, so two lists of 100 create 10,000 instances, which can hit max_map_length or overwhelm the scheduler and run unintended combinations. The safer approach is to build a single list of kwarg dicts representing the exact intended pairings and use .expand_kwargs(), giving controlled 1:1 expansion.",
+        "explanation": "A senior answer names the cross-product footgun explicitly and gives the expand_kwargs remedy."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your nightly pipeline must process an unpredictable number of partner files (5 to 400). Some files occasionally fail validation, and downstream analytics must not run on an incomplete load. Design the DAG.",
+        "thinkingProcess": "The count is unknown until runtime, so mapping fits: a list task then process_file.expand(). Failures must be isolated, so each mapped instance needs its own retries and idempotency. Downstream must be gated, so add a reduce/validation step that reconciles counts and only then emits a Dataset. Concurrency must be bounded to protect the warehouse, so use a pool.",
+        "expectedAnswer": "list_files -> load_file.partial(pool='sales').expand(key=list_files()) -> reconcile(counts=load_file.output). Each load_file instance is idempotent with retries; reconcile checks that processed count and totals match control figures, reports failed indexes, and only emits the sales Dataset when validation passes, which triggers the downstream DAG. The pool caps concurrency regardless of file count."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design an Airflow-based ingestion platform that processes a variable, sometimes very large, number of per-tenant partitions each run while protecting shared infrastructure and providing per-partition observability.",
+        "designApproach": "Use a single DAG that computes the active partition list at runtime and maps a processing task over it with .expand(), bounded by a dedicated pool. Keep the mapped iterable to ids only; each instance fetches its own data. For very high partition counts, have each mapped stage submit a Spark job so Airflow orchestrates while the engine executes the heavy parallelism. End with a reduce task that validates counts and emits a Dataset to gate downstream.",
+        "tradeOffs": "Pure mapping gives simple per-partition isolation and observability but pressures the scheduler at extreme counts; delegating to Spark scales further but adds a second system to operate. Pools protect infrastructure but cap throughput; sizing them is a cost-vs-speed decision.",
+        "scalingStrategy": "Scale within a run via pool size and max_map_length up to scheduler/DB limits; beyond that, shift per-item work into the distributed engine and keep Airflow task counts modest. Scale the platform horizontally with multiple schedulers and a Kubernetes/Celery executor, monitoring fan-out count, pool saturation, and metadata-DB load to decide where to scale next."
+      }
+    ],
+    "followUpQuestions": [
+      "How do you fan out an entire TaskGroup per element rather than a single task?",
+      "What is core.max_map_length and how do you choose its value?",
+      "How does dynamic task mapping interact with pools and max_active_tis_per_dag?",
+      "How would you use a custom XCom backend to support large mapped payloads?",
+      "When would you replace mapping with a single task that launches a Spark job, and why?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Dynamic Task Mapping expands one task into N runtime instances via .expand()/.expand_kwargs() driven by an upstream list, following a map/reduce pattern; dynamic DAG generation instead builds many separate DAG objects at parse time.",
+    "keyConcepts": [
+      "Mapping = many task instances in one DAG, resolved at run time.",
+      "Generation = many DAG objects, resolved at parse time.",
+      ".partial() fixes constants; .expand() supplies the iterable.",
+      "Multiple iterables in .expand() = cross product; use .expand_kwargs() for 1:1.",
+      "Guard fan-out with max_map_length and concurrency with pools; add a reduce step."
+    ],
+    "formulas": [],
+    "commands": [
+      "process.expand(x=upstream_task_output)  # one instance per element",
+      "process.partial(const=1, pool='p').expand(x=items)  # constants + bounded fan-out",
+      "load.expand_kwargs([{'a':1,'b':2},{'a':3,'b':4}])  # 1:1 multi-arg mapping",
+      "airflow config get-value core max_map_length",
+      "airflow tasks list <dag_id> --tree   # inspect DAG structure"
+    ],
+    "interviewPoints": [
+      "Mapping (task, run time) vs generation (DAG, parse time).",
+      "partial fixes constants; expand supplies the iterable.",
+      "Multiple iterables = Cartesian product; expand_kwargs = controlled 1:1.",
+      "Empty list -> mapped task skipped; guard size with max_map_length + pools.",
+      "Always add a reduce/validation step and make instances idempotent."
+    ],
+    "quickNotes": [
+      "Keep the mapped iterable to ids/paths, not big payloads.",
+      "SubDAGs are deprecated; use mapping + TaskGroups instead.",
+      "Bound concurrency with .partial(pool=...).",
+      "Gate downstream via a Dataset emitted after reduce/validation.",
+      "For extreme parallelism, delegate to Spark from one task."
+    ]
+  },
+  "keyTakeaways": [
+    "Dynamic Task Mapping (.expand()/.expand_kwargs(), Airflow 2.3+) expands one task into N instances at run time based on an upstream list, following a native map/reduce pattern with per-instance isolation.",
+    "It is different from dynamic DAG generation, which builds many separate DAG objects at parse time; mapping adapts to run-time data within a single DAG.",
+    ".partial() fixes constant arguments and .expand() supplies the iterable; multiple iterables produce a Cartesian product, so use .expand_kwargs() for controlled 1:1 multi-argument fan-out.",
+    "Protect production with guardrails: cap count via core.max_map_length, cap concurrency via pools, keep XCom payloads small, make instances idempotent, and add a reduce/validation step that gates downstream (often via a Dataset).",
+    "For extreme parallelism, keep Airflow task counts modest and delegate the heavy per-item work to a distributed engine, letting Airflow orchestrate rather than execute the fan-out."
+  ]
+}

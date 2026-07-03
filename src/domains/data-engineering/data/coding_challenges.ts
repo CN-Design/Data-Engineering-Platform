@@ -14029,5 +14029,1285 @@ export const codingChallenges: CodingChallenge[] = [
         "How is this different from full event retention for replay/audit?"
       ]
     }
+  },
+  {
+    "id": "de-c-51",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Average: Integer Division Truncation",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A daily metrics pipeline computes the average order value from a list of integer amounts. Analysts complain the reported average is always a whole number and looks too low. The pipeline uses `data`, a list of integer amounts, and returns the average. Fix `solve(data)` so it returns a correct floating-point average rounded to 2 decimals.",
+    "initialCode": "def solve(data):\n    total = 0\n    for amount in data:\n        total += amount\n    # BUG: integer division truncates the fractional part\n    avg = total // len(data)\n    return round(avg, 2)",
+    "solutionCode": "def solve(data):\n    total = 0\n    for amount in data:\n        total += amount\n    # FIX: use true division (/) instead of floor division (//)\n    # so the fractional part is preserved before rounding\n    avg = total / len(data)\n    return round(avg, 2)",
+    "testCases": [
+      {
+        "input": "[10, 20, 25]",
+        "expected": "18.33"
+      },
+      {
+        "input": "[1, 2]",
+        "expected": "1.5"
+      },
+      {
+        "input": "[100, 100, 100]",
+        "expected": "100.0"
+      },
+      {
+        "input": "[7, 8, 9, 11]",
+        "expected": "8.75"
+      }
+    ],
+    "hint": "1. Look closely at the division operator used to compute the average.\n2. `//` performs floor division and drops the fractional part.\n3. Use `/` for true division so `round` can keep 2 decimals.",
+    "difficulty": "easy",
+    "exampleInput": "[10, 20, 25]",
+    "exampleOutput": "18.33",
+    "constraints": "1 <= len(data) <= 10^5; amounts are non-negative integers.",
+    "hints": [
+      "Floor division and true division are different operators in Python 3.",
+      "Round only after computing the true average."
+    ],
+    "bruteForce": "Sum all values and divide with true division; O(n).",
+    "optimized": "Same single pass; the only change is the division operator.",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    },
+    "discussion": {
+      "whyAsked": "Integer-vs-float division is one of the most common silent data bugs in aggregation pipelines.",
+      "mistakes": "Using `//` for averages, or rounding an already-truncated value.",
+      "followUps": [
+        "How would you handle an empty input list safely?",
+        "How does this bug behave differently in Python 2 vs 3?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-52",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Aggregation: None Values Break the Sum",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A revenue rollup sums the `amount` field across a list of transaction dicts. Some upstream rows have `amount` set to None (missing data). The job crashes or produces wrong totals. Fix `solve(data)` so it ignores None amounts and returns the total sum as a float.",
+    "initialCode": "def solve(data):\n    total = 0.0\n    for row in data:\n        # BUG: None amounts are added, causing a TypeError / wrong total\n        total += row['amount']\n    return total",
+    "solutionCode": "def solve(data):\n    total = 0.0\n    for row in data:\n        amount = row['amount']\n        # FIX: skip rows where amount is missing (None)\n        # before adding to the running total\n        if amount is None:\n            continue\n        total += amount\n    return total",
+    "testCases": [
+      {
+        "input": "[{'amount': 10.0}, {'amount': None}, {'amount': 5.5}]",
+        "expected": "15.5"
+      },
+      {
+        "input": "[{'amount': None}, {'amount': None}]",
+        "expected": "0.0"
+      },
+      {
+        "input": "[{'amount': 1.0}, {'amount': 2.0}, {'amount': 3.0}]",
+        "expected": "6.0"
+      },
+      {
+        "input": "[{'amount': 100.25}, {'amount': None}, {'amount': 0.75}]",
+        "expected": "101.0"
+      }
+    ],
+    "hint": "1. What happens when you add None to a number?\n2. Guard each row before accumulating.\n3. Use `if amount is None: continue`.",
+    "difficulty": "easy",
+    "exampleInput": "[{'amount': 10.0}, {'amount': None}, {'amount': 5.5}]",
+    "exampleOutput": "15.5",
+    "constraints": "0 <= len(data) <= 10^5; amount is a float or None.",
+    "hints": [
+      "None cannot participate in arithmetic.",
+      "Treat missing values as skipped, not as zero-crashing."
+    ],
+    "bruteForce": "Filter None then sum; O(n).",
+    "optimized": "Single pass with an inline guard; O(n).",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    },
+    "discussion": {
+      "whyAsked": "Null handling is the single most frequent source of aggregation failures in ETL.",
+      "mistakes": "Coercing None to 0 silently, or letting the TypeError crash the job.",
+      "followUps": [
+        "When should missing values be treated as 0 vs excluded?",
+        "How would you count how many rows were dropped for observability?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-53",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Filter: Mutating a Dict While Iterating",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A cleanup step removes inactive users from a dict keyed by user id (value is the status string). The job intermittently raises `RuntimeError: dictionary changed size during iteration`. Fix `solve(data)` so it returns a new dict containing only users whose status is 'active'.",
+    "initialCode": "def solve(data):\n    # BUG: deleting keys while iterating the same dict\n    for user_id in data:\n        if data[user_id] != 'active':\n            del data[user_id]\n    return data",
+    "solutionCode": "def solve(data):\n    # FIX: build a new dict instead of mutating during iteration.\n    # This avoids 'dictionary changed size during iteration' and\n    # keeps the operation idempotent.\n    result = {}\n    for user_id, status in data.items():\n        if status == 'active':\n            result[user_id] = status\n    return result",
+    "testCases": [
+      {
+        "input": "{'u1': 'active', 'u2': 'inactive', 'u3': 'active'}",
+        "expected": "{'u1': 'active', 'u3': 'active'}"
+      },
+      {
+        "input": "{'a': 'inactive', 'b': 'inactive'}",
+        "expected": "{}"
+      },
+      {
+        "input": "{'x': 'active'}",
+        "expected": "{'x': 'active'}"
+      },
+      {
+        "input": "{'p': 'active', 'q': 'active', 'r': 'inactive'}",
+        "expected": "{'p': 'active', 'q': 'active'}"
+      }
+    ],
+    "hint": "1. You cannot resize a dict while looping over it.\n2. Build a fresh dict for the survivors.\n3. Iterate `data.items()` and copy only the ones you keep.",
+    "difficulty": "medium",
+    "exampleInput": "{'u1': 'active', 'u2': 'inactive', 'u3': 'active'}",
+    "exampleOutput": "{'u1': 'active', 'u3': 'active'}",
+    "constraints": "0 <= len(data) <= 10^5; values are status strings.",
+    "hints": [
+      "Iterating and deleting from the same collection is undefined behavior.",
+      "A filtered copy is safer and idempotent."
+    ],
+    "bruteForce": "Collect keys to delete first, then delete; O(n).",
+    "optimized": "Build a filtered dict in one pass; O(n).",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n)"
+    },
+    "discussion": {
+      "whyAsked": "Mutation-during-iteration bugs are hard to reproduce and common in cleanup jobs.",
+      "mistakes": "Deleting in-place, or snapshotting keys but still mutating unsafely.",
+      "followUps": [
+        "Why is a filtered copy also better for reruns?",
+        "How would `list(data.keys())` change the behavior?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-54",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Join: Wrong Key Drops Rows",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "An enrichment step joins orders to customers. `data` is a dict with keys 'orders' (list of dicts with 'order_id' and 'cust_id') and 'customers' (list of dicts with 'id' and 'name'). The output is missing customer names because the join uses the wrong key. Fix `solve(data)` to return a list of dicts `{'order_id', 'name'}`, one per order, using the correct join key. Use 'UNKNOWN' when no match.",
+    "initialCode": "def solve(data):\n    # BUG: indexes customers by 'name' instead of their id,\n    # so the lookup by cust_id never matches\n    cust_by_key = {c['name']: c['name'] for c in data['customers']}\n    result = []\n    for o in data['orders']:\n        name = cust_by_key.get(o['cust_id'], 'UNKNOWN')\n        result.append({'order_id': o['order_id'], 'name': name})\n    return result",
+    "solutionCode": "def solve(data):\n    # FIX: index customers by their 'id' field so the join key\n    # (order.cust_id -> customer.id) actually matches\n    cust_by_id = {c['id']: c['name'] for c in data['customers']}\n    result = []\n    for o in data['orders']:\n        name = cust_by_id.get(o['cust_id'], 'UNKNOWN')\n        result.append({'order_id': o['order_id'], 'name': name})\n    return result",
+    "testCases": [
+      {
+        "input": "{'orders': [{'order_id': 1, 'cust_id': 'c1'}, {'order_id': 2, 'cust_id': 'c2'}], 'customers': [{'id': 'c1', 'name': 'Ada'}, {'id': 'c2', 'name': 'Bo'}]}",
+        "expected": "[{'order_id': 1, 'name': 'Ada'}, {'order_id': 2, 'name': 'Bo'}]"
+      },
+      {
+        "input": "{'orders': [{'order_id': 3, 'cust_id': 'c9'}], 'customers': [{'id': 'c1', 'name': 'Ada'}]}",
+        "expected": "[{'order_id': 3, 'name': 'UNKNOWN'}]"
+      },
+      {
+        "input": "{'orders': [], 'customers': [{'id': 'c1', 'name': 'Ada'}]}",
+        "expected": "[]"
+      },
+      {
+        "input": "{'orders': [{'order_id': 5, 'cust_id': 'c1'}], 'customers': [{'id': 'c1', 'name': 'Ada'}, {'id': 'c1', 'name': 'Dup'}]}",
+        "expected": "[{'order_id': 5, 'name': 'Dup'}]"
+      }
+    ],
+    "hint": "1. Check which field the lookup dict is keyed on.\n2. The order references cust_id, which maps to customer.id.\n3. Build `{c['id']: c['name']}`.",
+    "difficulty": "medium",
+    "exampleInput": "{'orders': [{'order_id': 1, 'cust_id': 'c1'}], 'customers': [{'id': 'c1', 'name': 'Ada'}]}",
+    "exampleOutput": "[{'order_id': 1, 'name': 'Ada'}]",
+    "constraints": "Join is left-outer on cust_id == id.",
+    "hints": [
+      "A join fails silently when the key columns don't align.",
+      "Map from the foreign key on the fact side to the primary key on the dimension side."
+    ],
+    "bruteForce": "Nested loop over customers per order; O(n*m).",
+    "optimized": "Hash-index customers by id, then single pass over orders; O(n+m).",
+    "complexity": {
+      "time": "O(n+m)",
+      "space": "O(m)"
+    },
+    "discussion": {
+      "whyAsked": "Wrong join keys cause silent row drops that are hard to notice without row-count checks.",
+      "mistakes": "Assuming names are unique, or not handling unmatched orders.",
+      "followUps": [
+        "How would you detect dropped rows in production?",
+        "What if a customer id appears twice?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-55",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the GroupBy: Last Group Gets Dropped",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A streaming summarizer receives records pre-sorted by 'key' and sums 'val' per key, flushing a group only when the key changes. The final group is always missing from the output. `data` is a list of dicts with 'key' and 'val'. Fix `solve(data)` to return a list of `{'key', 'total'}` in first-seen order, including the last group.",
+    "initialCode": "def solve(data):\n    result = []\n    cur_key = None\n    cur_total = 0\n    for row in data:\n        if row['key'] != cur_key:\n            if cur_key is not None:\n                result.append({'key': cur_key, 'total': cur_total})\n            cur_key = row['key']\n            cur_total = 0\n        cur_total += row['val']\n    # BUG: the final group is never appended after the loop ends\n    return result",
+    "solutionCode": "def solve(data):\n    result = []\n    cur_key = None\n    cur_total = 0\n    for row in data:\n        if row['key'] != cur_key:\n            if cur_key is not None:\n                result.append({'key': cur_key, 'total': cur_total})\n            cur_key = row['key']\n            cur_total = 0\n        cur_total += row['val']\n    # FIX: flush the final accumulated group after the loop,\n    # since no key-change event triggers its emission\n    if cur_key is not None:\n        result.append({'key': cur_key, 'total': cur_total})\n    return result",
+    "testCases": [
+      {
+        "input": "[{'key': 'a', 'val': 1}, {'key': 'a', 'val': 2}, {'key': 'b', 'val': 5}]",
+        "expected": "[{'key': 'a', 'total': 3}, {'key': 'b', 'total': 5}]"
+      },
+      {
+        "input": "[{'key': 'x', 'val': 10}]",
+        "expected": "[{'key': 'x', 'total': 10}]"
+      },
+      {
+        "input": "[]",
+        "expected": "[]"
+      },
+      {
+        "input": "[{'key': 'a', 'val': 1}, {'key': 'b', 'val': 2}, {'key': 'c', 'val': 3}]",
+        "expected": "[{'key': 'a', 'total': 1}, {'key': 'b', 'total': 2}, {'key': 'c', 'total': 3}]"
+      }
+    ],
+    "hint": "1. Groups are flushed only on a key change.\n2. The last group never sees a change event.\n3. Emit the pending group after the loop.",
+    "difficulty": "medium",
+    "exampleInput": "[{'key': 'a', 'val': 1}, {'key': 'a', 'val': 2}, {'key': 'b', 'val': 5}]",
+    "exampleOutput": "[{'key': 'a', 'total': 3}, {'key': 'b', 'total': 5}]",
+    "constraints": "Input is sorted by key; 0 <= len(data) <= 10^5.",
+    "hints": [
+      "Boundary-triggered emission always misses the trailing boundary.",
+      "Handle the empty-input case so nothing spurious is appended."
+    ],
+    "bruteForce": "Accumulate into a dict then emit; O(n).",
+    "optimized": "Single streaming pass with a final flush; O(n), O(1) working set.",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    },
+    "discussion": {
+      "whyAsked": "Off-by-one group flushing is a classic streaming/chunking bug.",
+      "mistakes": "Forgetting the trailing flush, or appending on empty input.",
+      "followUps": [
+        "How would this change if input weren't sorted?",
+        "How do windowed aggregations handle the final partial window?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-56",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Dedup: Keep the Latest Record",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A dedup step collapses change-data-capture events to one record per 'id', and should keep the record with the highest 'ts' (latest). Downstream users report stale values. `data` is a list of dicts with 'id', 'ts', and 'value'. Fix `solve(data)` to keep the latest record per id, returned as a list sorted by id ascending.",
+    "initialCode": "def solve(data):\n    latest = {}\n    for row in data:\n        rid = row['id']\n        # BUG: 'not in' keeps the FIRST record seen, ignoring ts,\n        # so older records win\n        if rid not in latest:\n            latest[rid] = row\n    return [latest[k] for k in sorted(latest)]",
+    "solutionCode": "def solve(data):\n    latest = {}\n    for row in data:\n        rid = row['id']\n        # FIX: keep the record only if it has a strictly greater ts\n        # than the one already stored, so the latest wins\n        if rid not in latest or row['ts'] > latest[rid]['ts']:\n            latest[rid] = row\n    return [latest[k] for k in sorted(latest)]",
+    "testCases": [
+      {
+        "input": "[{'id': 1, 'ts': 10, 'value': 'old'}, {'id': 1, 'ts': 20, 'value': 'new'}]",
+        "expected": "[{'id': 1, 'ts': 20, 'value': 'new'}]"
+      },
+      {
+        "input": "[{'id': 2, 'ts': 5, 'value': 'a'}, {'id': 1, 'ts': 9, 'value': 'b'}]",
+        "expected": "[{'id': 1, 'ts': 9, 'value': 'b'}, {'id': 2, 'ts': 5, 'value': 'a'}]"
+      },
+      {
+        "input": "[{'id': 1, 'ts': 30, 'value': 'x'}, {'id': 1, 'ts': 10, 'value': 'y'}]",
+        "expected": "[{'id': 1, 'ts': 30, 'value': 'x'}]"
+      },
+      {
+        "input": "[{'id': 3, 'ts': 1, 'value': 'z'}]",
+        "expected": "[{'id': 3, 'ts': 1, 'value': 'z'}]"
+      }
+    ],
+    "hint": "1. The condition only stores the first occurrence.\n2. Compare timestamps to decide the winner.\n3. Replace when `row['ts'] > stored ts`.",
+    "difficulty": "medium",
+    "exampleInput": "[{'id': 1, 'ts': 10, 'value': 'old'}, {'id': 1, 'ts': 20, 'value': 'new'}]",
+    "exampleOutput": "[{'id': 1, 'ts': 20, 'value': 'new'}]",
+    "constraints": "ts values are comparable integers; 0 <= len(data) <= 10^5.",
+    "hints": [
+      "Dedup requires a tiebreak rule, not just first-seen.",
+      "Latest-wins means compare on the ordering column."
+    ],
+    "bruteForce": "Sort by (id, ts) and take last per id; O(n log n).",
+    "optimized": "Single pass keeping max ts per id; O(n).",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(k)"
+    },
+    "discussion": {
+      "whyAsked": "CDC dedup with the wrong tiebreak silently serves stale data.",
+      "mistakes": "First-seen wins, or using >= and keeping an arbitrary duplicate on ties.",
+      "followUps": [
+        "How would you break ties when two records share the same ts?",
+        "Why is stable ordering important for reproducibility?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-57",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Backfill: Non-Idempotent Accumulation on Rerun",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A daily aggregation upserts per-category totals into a running state, but the job is re-run for the same batch during backfills. Because it ADDS to existing totals, rerunning double-counts. `data` is a dict with 'state' (existing per-category totals) and 'batch' (list of dicts with 'category' and 'amount' for the current partition). The correct semantics: the output for each category in the batch should REPLACE the state (idempotent overwrite), and categories not in the batch keep their state value. Fix `solve(data)` to return the updated state dict.",
+    "initialCode": "def solve(data):\n    state = dict(data['state'])\n    for row in data['batch']:\n        cat = row['category']\n        # BUG: adds to the existing total, so a rerun of the same\n        # batch double-counts (non-idempotent)\n        state[cat] = state.get(cat, 0) + row['amount']\n    return state",
+    "solutionCode": "def solve(data):\n    state = dict(data['state'])\n    # FIX: first compute the batch total per category, then OVERWRITE\n    # the state for those categories. Overwriting is idempotent, so\n    # rerunning the same partition yields the same result.\n    batch_totals = {}\n    for row in data['batch']:\n        cat = row['category']\n        batch_totals[cat] = batch_totals.get(cat, 0) + row['amount']\n    for cat, total in batch_totals.items():\n        state[cat] = total\n    return state",
+    "testCases": [
+      {
+        "input": "{'state': {'a': 100}, 'batch': [{'category': 'a', 'amount': 5}, {'category': 'a', 'amount': 3}]}",
+        "expected": "{'a': 8}"
+      },
+      {
+        "input": "{'state': {'a': 100, 'b': 50}, 'batch': [{'category': 'a', 'amount': 10}]}",
+        "expected": "{'a': 10, 'b': 50}"
+      },
+      {
+        "input": "{'state': {}, 'batch': [{'category': 'x', 'amount': 7}]}",
+        "expected": "{'x': 7}"
+      },
+      {
+        "input": "{'state': {'a': 1}, 'batch': []}",
+        "expected": "{'a': 1}"
+      }
+    ],
+    "hint": "1. Reruns should not change the result the second time.\n2. Adding to prior state is not idempotent.\n3. Compute the batch total per category, then overwrite state.",
+    "difficulty": "hard",
+    "exampleInput": "{'state': {'a': 100}, 'batch': [{'category': 'a', 'amount': 5}, {'category': 'a', 'amount': 3}]}",
+    "exampleOutput": "{'a': 8}",
+    "constraints": "Overwrite semantics per category present in batch; untouched categories retained.",
+    "hints": [
+      "Idempotency means f(f(x)) == f(x) for the same input batch.",
+      "Aggregate the batch first, then replace rather than increment."
+    ],
+    "bruteForce": "Two passes: aggregate batch, then overwrite; O(n).",
+    "optimized": "Same two-phase approach; O(n) and idempotent by construction.",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(k)"
+    },
+    "discussion": {
+      "whyAsked": "Backfills and retries make idempotency essential; increment-based upserts double-count.",
+      "mistakes": "Incrementing existing state, or overwriting per-row so only the last row survives instead of the batch sum.",
+      "followUps": [
+        "How do MERGE/UPSERT statements achieve idempotency?",
+        "What role do partition keys and watermarks play here?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-58",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fix the Off-by-One Date Window",
+    "type": "data-engineering",
+    "track": "Fix-the-Pipeline",
+    "runnable": true,
+    "question": "A report sums 'amount' for events whose 'date' (an ISO string 'YYYY-MM-DD') falls within an inclusive window [start, end]. QA notices events dated exactly on the end date are being excluded. `data` is a dict with 'events' (list of dicts with 'date' and 'amount'), 'start', and 'end'. Fix `solve(data)` to return the inclusive total over [start, end].",
+    "initialCode": "def solve(data):\n    start = data['start']\n    end = data['end']\n    total = 0\n    for e in data['events']:\n        d = e['date']\n        # BUG: exclusive upper bound (d < end) drops events on the end date;\n        # window should be inclusive on both ends\n        if start <= d < end:\n            total += e['amount']\n    return total",
+    "solutionCode": "def solve(data):\n    start = data['start']\n    end = data['end']\n    total = 0\n    for e in data['events']:\n        d = e['date']\n        # FIX: use <= on the upper bound so the window is inclusive\n        # of the end date. ISO 'YYYY-MM-DD' strings sort chronologically,\n        # so lexical comparison is safe here.\n        if start <= d <= end:\n            total += e['amount']\n    return total",
+    "testCases": [
+      {
+        "input": "{'events': [{'date': '2026-01-01', 'amount': 5}, {'date': '2026-01-03', 'amount': 7}], 'start': '2026-01-01', 'end': '2026-01-03'}",
+        "expected": "12"
+      },
+      {
+        "input": "{'events': [{'date': '2025-12-31', 'amount': 9}, {'date': '2026-01-02', 'amount': 4}], 'start': '2026-01-01', 'end': '2026-01-03'}",
+        "expected": "4"
+      },
+      {
+        "input": "{'events': [{'date': '2026-01-03', 'amount': 100}], 'start': '2026-01-03', 'end': '2026-01-03'}",
+        "expected": "100"
+      },
+      {
+        "input": "{'events': [], 'start': '2026-01-01', 'end': '2026-01-31'}",
+        "expected": "0"
+      }
+    ],
+    "hint": "1. The requirement is an inclusive window on both ends.\n2. `d < end` excludes the end date itself.\n3. Change the upper bound to `d <= end`.",
+    "difficulty": "hard",
+    "exampleInput": "{'events': [{'date': '2026-01-03', 'amount': 100}], 'start': '2026-01-03', 'end': '2026-01-03'}",
+    "exampleOutput": "100",
+    "constraints": "Dates are ISO 'YYYY-MM-DD' strings; window is inclusive of both endpoints.",
+    "hints": [
+      "Inclusive vs exclusive bounds are a classic off-by-one source.",
+      "ISO date strings compare correctly lexicographically."
+    ],
+    "bruteForce": "Scan all events and test the bound; O(n).",
+    "optimized": "Same single pass; the fix is the comparison operator; O(n).",
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    },
+    "discussion": {
+      "whyAsked": "Date-window boundary errors are among the most common reporting discrepancies.",
+      "mistakes": "Using exclusive upper bounds when the spec is inclusive, or comparing non-ISO date formats lexically.",
+      "followUps": [
+        "Why does lexical comparison work for ISO dates but not 'M/D/YYYY'?",
+        "How would you handle timezones or datetime granularity?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-59",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Broadcast Join vs Shuffle Join",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A large fact table of orders is joined to a tiny dimension table of countries. The naive plan triggers a full sort-merge shuffle join. Implement solve(data) that returns the correct joined result so we can reason about replacing the shuffle join with a broadcast join. data is a dict with keys 'orders' (list of [order_id, country_code, amount]) and 'countries' (list of [country_code, country_name]). Return a list of [order_id, country_name, amount] for every order whose country_code exists in countries, preserving order input order. Model the broadcast-join result: build a lookup dict from the small side and probe it.",
+    "initialCode": "def solve(data):\n    # naive: cross every order against every country row (shuffle join)\n    orders = data['orders']\n    countries = data['countries']\n    result = []\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    orders = data['orders']\n    countries = data['countries']\n    # Broadcast the small dimension: build an in-memory dict once (map-side join)\n    lookup = {code: name for code, name in countries}\n    result = []\n    for order_id, code, amount in orders:\n        # Probe the broadcast map -> no shuffle of the large fact table\n        if code in lookup:\n            result.append([order_id, lookup[code], amount])\n    return result",
+    "testCases": [
+      {
+        "input": "{'orders': [[1, 'US', 100], [2, 'IN', 50], [3, 'XX', 10]], 'countries': [['US', 'United States'], ['IN', 'India']]}",
+        "expected": "[[1, 'United States', 100], [2, 'India', 50]]"
+      },
+      {
+        "input": "{'orders': [[10, 'FR', 5]], 'countries': [['FR', 'France'], ['DE', 'Germany']]}",
+        "expected": "[[10, 'France', 5]]"
+      },
+      {
+        "input": "{'orders': [], 'countries': [['US', 'United States']]}",
+        "expected": "[]"
+      },
+      {
+        "input": "{'orders': [[7, 'JP', 999], [8, 'JP', 1]], 'countries': [['JP', 'Japan']]}",
+        "expected": "[[7, 'Japan', 999], [8, 'Japan', 1]]"
+      }
+    ],
+    "hint": "1. The dimension table is tiny, so avoid shuffling the big side.\n2. Build a dict from country_code to country_name.\n3. Iterate the orders once and probe the dict.",
+    "difficulty": "easy",
+    "exampleInput": "{'orders': [[1, 'US', 100], [2, 'IN', 50], [3, 'XX', 10]], 'countries': [['US', 'United States'], ['IN', 'India']]}",
+    "exampleOutput": "[[1, 'United States', 100], [2, 'India', 50]]",
+    "constraints": "0 <= len(orders) <= 1e9 conceptually; len(countries) small enough to fit in memory (< a few hundred MB).",
+    "hints": [
+      "A join where one side is tiny does not need a shuffle of the huge side.",
+      "The small side can be materialized as a hash map and probed row-by-row."
+    ],
+    "bruteForce": "Sort-merge or hash shuffle join: Spark hashes both tables on country_code, shuffles ALL order rows across the network into join partitions, then merges. Shuffling the billion-row fact table is expensive network + disk I/O and can spill. Slow because the huge side is moved even though the dimension is tiny.",
+    "optimized": "Broadcast hash join: send the small countries table to every executor (spark.sql.autoBroadcastJoinThreshold, or broadcast(df)). Each task probes the in-memory map locally, so the large fact table is never shuffled. Turn on AQE (spark.sql.adaptive.enabled) so Spark can auto-convert to broadcast when it sees the small side at runtime.",
+    "complexity": {
+      "time": "O(n + m)",
+      "space": "O(m) for the broadcast map"
+    },
+    "discussion": {
+      "whyAsked": "Broadcast join is the single most common Spark join optimization and tests whether a candidate recognizes an asymmetric join.",
+      "mistakes": "Broadcasting a side that is too large (OOM on driver/executors), or forgetting to raise autoBroadcastJoinThreshold when the small side is just over the default 10MB.",
+      "followUps": [
+        "What happens if the broadcast side exceeds the executor memory?",
+        "How does AQE decide to switch a shuffle join into a broadcast join at runtime?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-60",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Column Pruning / Projection Pushdown",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A job reads wide Parquet rows with many columns but only two are needed downstream. The naive code reads every column. Implement solve(data) that returns only the projected columns so we can reason about column pruning. data is a dict with 'rows' (list of dicts, each a full wide record) and 'columns' (list of column names to keep). Return a list of dicts containing ONLY the requested columns, in the same row order. Model projection pushdown: never carry columns you will not use.",
+    "initialCode": "def solve(data):\n    # naive: return every column then drop later\n    rows = data['rows']\n    cols = data['columns']\n    result = []\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    rows = data['rows']\n    cols = data['columns']\n    result = []\n    for row in rows:\n        # Projection pushdown: select only needed columns at read time\n        projected = {c: row[c] for c in cols if c in row}\n        result.append(projected)\n    return result",
+    "testCases": [
+      {
+        "input": "{'rows': [{'a': 1, 'b': 2, 'c': 3}, {'a': 4, 'b': 5, 'c': 6}], 'columns': ['a', 'c']}",
+        "expected": "[{'a': 1, 'c': 3}, {'a': 4, 'c': 6}]"
+      },
+      {
+        "input": "{'rows': [{'x': 10, 'y': 20, 'z': 30}], 'columns': ['y']}",
+        "expected": "[{'y': 20}]"
+      },
+      {
+        "input": "{'rows': [], 'columns': ['a']}",
+        "expected": "[]"
+      },
+      {
+        "input": "{'rows': [{'a': 1, 'b': 2}], 'columns': ['a', 'missing']}",
+        "expected": "[{'a': 1}]"
+      }
+    ],
+    "hint": "1. Only keep the columns in the requested list.\n2. Preserve the order of the requested columns.\n3. Skip columns that are absent from a row.",
+    "difficulty": "easy",
+    "exampleInput": "{'rows': [{'a': 1, 'b': 2, 'c': 3}, {'a': 4, 'b': 5, 'c': 6}], 'columns': ['a', 'c']}",
+    "exampleOutput": "[{'a': 1, 'c': 3}, {'a': 4, 'c': 6}]",
+    "constraints": "Rows may have dozens of columns; only a small subset is needed. Column names are unique per row.",
+    "bruteForce": "df.select('*') then use two columns downstream. With row-oriented reads or select('*') on Parquet, Spark reads and deserializes every column's pages from disk, wasting I/O and memory on columns that are immediately discarded.",
+    "optimized": "Push the projection into the scan: df.select('a','c') lets the Parquet/ORC reader skip the byte ranges for unused columns (columnar formats store columns separately). The Catalyst optimizer's column pruning rule does this automatically when you select early instead of select('*'). Less I/O, smaller shuffle payloads, less GC.",
+    "hints": [
+      "Columnar file formats let you read individual columns without touching the rest.",
+      "Select the needed columns as early as possible so pruning pushes into the scan."
+    ],
+    "complexity": {
+      "time": "O(n * k) where k = kept columns",
+      "space": "O(n * k)"
+    },
+    "discussion": {
+      "whyAsked": "Projection pushdown is a free win that many pipelines miss by carrying wide DataFrames end to end.",
+      "mistakes": "Calling select('*') or building the projection after an expensive shuffle instead of right after the scan.",
+      "followUps": [
+        "Why does column pruning help more on Parquet than on CSV?",
+        "How does projection interact with predicate pushdown in the same scan?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-61",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Partition Pruning / Predicate Pushdown",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A table is physically partitioned by 'dt' (date). A query filters on a single date but the naive scan reads all partitions. Implement solve(data) that returns rows matching the filter so we can reason about partition pruning. data is a dict with 'partitions' (dict mapping dt -> list of row dicts) and 'filter_dt' (the requested date). Return the list of row dicts only from the matching partition, in order. Model partition pruning: touch only the partition that satisfies the predicate.",
+    "initialCode": "def solve(data):\n    # naive: scan every partition, then filter\n    partitions = data['partitions']\n    filter_dt = data['filter_dt']\n    result = []\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    partitions = data['partitions']\n    filter_dt = data['filter_dt']\n    # Partition pruning: jump straight to the one matching partition, skip the rest\n    matched = partitions.get(filter_dt, [])\n    # Predicate is on the partition column, so no per-row scan of other dates\n    return list(matched)",
+    "testCases": [
+      {
+        "input": "{'partitions': {'2024-01-01': [{'id': 1}, {'id': 2}], '2024-01-02': [{'id': 3}]}, 'filter_dt': '2024-01-01'}",
+        "expected": "[{'id': 1}, {'id': 2}]"
+      },
+      {
+        "input": "{'partitions': {'2024-01-01': [{'id': 1}], '2024-01-02': [{'id': 2}]}, 'filter_dt': '2024-01-02'}",
+        "expected": "[{'id': 2}]"
+      },
+      {
+        "input": "{'partitions': {'2024-01-01': [{'id': 1}]}, 'filter_dt': '2024-12-31'}",
+        "expected": "[]"
+      },
+      {
+        "input": "{'partitions': {}, 'filter_dt': '2024-01-01'}",
+        "expected": "[]"
+      }
+    ],
+    "hint": "1. The data is keyed by partition value.\n2. A filter on the partition column can target one key directly.\n3. Return an empty list when the partition is absent.",
+    "difficulty": "medium",
+    "exampleInput": "{'partitions': {'2024-01-01': [{'id': 1}, {'id': 2}], '2024-01-02': [{'id': 3}]}, 'filter_dt': '2024-01-01'}",
+    "exampleOutput": "[{'id': 1}, {'id': 2}]",
+    "constraints": "There can be thousands of partitions; only one matches the equality predicate on the partition column.",
+    "bruteForce": "Full table scan then WHERE dt = X: Spark lists and opens every partition directory, reads all files, and filters row by row. On a table with years of daily partitions this reads terabytes to return one day.",
+    "optimized": "Partition pruning: when the filter is on the partition column, Catalyst prunes the file list so only the matching partition directory is scanned. Combine with predicate pushdown so non-partition filters are pushed into the Parquet reader (row-group min/max stats skip whole row groups). Keep the filter as a literal on the partition column (avoid wrapping it in a UDF, which blocks pruning).",
+    "hints": [
+      "Filtering on the partition column lets Spark skip entire directories.",
+      "Non-partition predicates can still be pushed into the file reader via row-group statistics."
+    ],
+    "complexity": {
+      "time": "O(rows in matched partition)",
+      "space": "O(rows in matched partition)"
+    },
+    "discussion": {
+      "whyAsked": "Partition pruning is the difference between a 2-second query and a 2-hour query on large partitioned tables.",
+      "mistakes": "Wrapping the partition column in a function (e.g., to_date(dt)) which prevents static pruning, or filtering after a join that has already scanned everything.",
+      "followUps": [
+        "How does dynamic partition pruning help a star-schema join?",
+        "Why can a UDF on the partition column disable pruning?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-62",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Pre-Aggregation with reduceByKey",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A job sums amounts per key. The naive approach uses groupByKey which shuffles every raw record. Implement solve(data) that returns the per-key sum so we can reason about reduceByKey-style map-side pre-aggregation. data is a list of [key, value] pairs. Return a dict mapping each key to the sum of its values. Model reduceByKey: combine values locally before the shuffle.",
+    "initialCode": "def solve(data):\n    # naive: groupByKey then sum (shuffles all raw values)\n    result = {}\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    # reduceByKey: fold values into a running sum per key (map-side combine)\n    result = {}\n    for key, value in data:\n        # Combine before the shuffle so only partial sums cross the network\n        result[key] = result.get(key, 0) + value\n    return result",
+    "testCases": [
+      {
+        "input": "[['a', 1], ['b', 2], ['a', 3]]",
+        "expected": "{'a': 4, 'b': 2}"
+      },
+      {
+        "input": "[['x', 10], ['x', 20], ['x', 30]]",
+        "expected": "{'x': 60}"
+      },
+      {
+        "input": "[]",
+        "expected": "{}"
+      },
+      {
+        "input": "[['k', -5], ['k', 5], ['m', 7]]",
+        "expected": "{'k': 0, 'm': 7}"
+      }
+    ],
+    "hint": "1. Fold each value into a running total for its key.\n2. Use a dict as the accumulator.\n3. Only partial sums should conceptually cross the shuffle boundary.",
+    "difficulty": "medium",
+    "exampleInput": "[['a', 1], ['b', 2], ['a', 3]]",
+    "exampleOutput": "{'a': 4, 'b': 2}",
+    "constraints": "Billions of input pairs but a modest number of distinct keys. Values may be negative.",
+    "bruteForce": "rdd.groupByKey().mapValues(sum): groupByKey shuffles EVERY raw value to the reducer holding that key, so the full dataset crosses the network and a hot key can OOM the reducer holding its giant list.",
+    "optimized": "rdd.reduceByKey(add) (or DataFrame groupBy().agg(sum), which uses partial aggregation): each partition computes local partial sums first, so only one partial value per key per partition is shuffled. Dramatically less network traffic and no giant per-key lists. This is a map-side combine.",
+    "hints": [
+      "Combining values on the map side shrinks what must be shuffled.",
+      "groupByKey moves raw values; reduceByKey moves partial aggregates."
+    ],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(distinct keys)"
+    },
+    "discussion": {
+      "whyAsked": "Choosing reduceByKey over groupByKey is a classic RDD-era interview question that still maps to DataFrame partial aggregation.",
+      "mistakes": "Using groupByKey for associative reductions, causing skewed reducer OOM and huge shuffle writes.",
+      "followUps": [
+        "When can you NOT use reduceByKey (non-associative aggregations)?",
+        "How does DataFrame partial aggregation achieve the same map-side combine?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-63",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Replace UDF with Built-in Expression",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A transformation uppercases a string column via a Python UDF, forcing row-by-row serialization out of the JVM. Implement solve(data) that returns the transformed values so we can reason about replacing the UDF with a native Spark expression. data is a list of strings. Return a list where each string is upper-cased and stripped of surrounding whitespace. Model the built-in expression: a vectorized, Catalyst-visible operation.",
+    "initialCode": "def solve(data):\n    # naive: python UDF applied per row\n    result = []\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    result = []\n    for s in data:\n        # Native expression equivalent: trim() + upper() run in the JVM, no py serde\n        result.append(s.strip().upper())\n    return result",
+    "testCases": [
+      {
+        "input": "['  hello ', 'World', 'aBc']",
+        "expected": "['HELLO', 'WORLD', 'ABC']"
+      },
+      {
+        "input": "['spark']",
+        "expected": "['SPARK']"
+      },
+      {
+        "input": "[]",
+        "expected": "[]"
+      },
+      {
+        "input": "['  mix ED  ', ' x']",
+        "expected": "['MIX ED', 'X']"
+      }
+    ],
+    "hint": "1. Strip surrounding whitespace, then upper-case.\n2. Preserve internal spaces.\n3. This maps to trim() and upper() built-ins.",
+    "difficulty": "medium",
+    "exampleInput": "['  hello ', 'World', 'aBc']",
+    "exampleOutput": "['HELLO', 'WORLD', 'ABC']",
+    "constraints": "Large string column; transformation is expressible with built-in functions.",
+    "bruteForce": "df.withColumn('u', my_python_udf(col('s'))): each row is serialized from the JVM to a Python worker, transformed, and serialized back. This crosses the JVM/Python boundary per row, is opaque to Catalyst (no pushdown, no codegen), and is often 10-100x slower.",
+    "optimized": "Use native functions: df.withColumn('u', upper(trim(col('s')))). These run inside the JVM with whole-stage codegen, are visible to Catalyst for optimization, and avoid Python serialization entirely. If a UDF is unavoidable, prefer a Pandas/Arrow UDF to vectorize the boundary crossing.",
+    "hints": [
+      "Python UDFs are a black box to the optimizer and pay a per-row serde cost.",
+      "Built-in SQL functions participate in whole-stage codegen."
+    ],
+    "complexity": {
+      "time": "O(total chars)",
+      "space": "O(n)"
+    },
+    "discussion": {
+      "whyAsked": "UDF overhead is a top cause of slow PySpark jobs and shows whether a candidate knows the JVM/Python boundary.",
+      "mistakes": "Reaching for a UDF when a built-in (regexp_replace, upper, coalesce) already exists, killing codegen and pushdown.",
+      "followUps": [
+        "When is a Pandas UDF preferable to a plain Python UDF?",
+        "Why can a Python UDF prevent predicate pushdown?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-64",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "mapPartitions Batching",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "A job calls an expensive per-record setup (imagine opening a DB connection) inside map, once per row. Implement solve(data) that returns the results so we can reason about mapPartitions batching. data is a dict with 'partitions' (list of partitions, each a list of ints). For each partition, multiply every element by a factor equal to (len of that partition), then flatten all partitions into one output list preserving order. Model mapPartitions: do the per-partition setup ONCE and process the whole batch.",
+    "initialCode": "def solve(data):\n    # naive: map over every element, recomputing setup per record\n    partitions = data['partitions']\n    result = []\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    partitions = data['partitions']\n    result = []\n    for part in partitions:\n        # mapPartitions: compute the expensive setup ONCE per partition\n        factor = len(part)\n        # Then process every record in the batch reusing that setup\n        for x in part:\n            result.append(x * factor)\n    return result",
+    "testCases": [
+      {
+        "input": "{'partitions': [[1, 2], [3, 4, 5]]}",
+        "expected": "[2, 4, 9, 12, 15]"
+      },
+      {
+        "input": "{'partitions': [[10]]}",
+        "expected": "[10]"
+      },
+      {
+        "input": "{'partitions': [[], [1, 1]]}",
+        "expected": "[2, 2]"
+      },
+      {
+        "input": "{'partitions': []}",
+        "expected": "[]"
+      }
+    ],
+    "hint": "1. Do the per-partition setup once, outside the inner loop.\n2. The factor depends on the partition size.\n3. Flatten partitions in order.",
+    "difficulty": "hard",
+    "exampleInput": "{'partitions': [[1, 2], [3, 4, 5]]}",
+    "exampleOutput": "[2, 4, 9, 12, 15]",
+    "constraints": "Per-partition setup (connection, model load) is expensive; per-record work is cheap.",
+    "bruteForce": "rdd.map(f) where f opens a resource each call: the expensive setup (DB connection, model deserialization) runs once PER RECORD. With millions of rows per partition this dominates runtime and can exhaust connection pools.",
+    "optimized": "rdd.mapPartitions(lambda it: process_batch(it)): the setup runs once per partition, then the whole iterator is processed reusing that resource. Amortizes connection/model cost over thousands of rows and enables batched external calls (e.g., bulk inserts). Return an iterator/generator to keep memory bounded.",
+    "hints": [
+      "Expensive per-record setup should be hoisted to per-partition scope.",
+      "mapPartitions hands you the whole partition iterator at once."
+    ],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n) output"
+    },
+    "discussion": {
+      "whyAsked": "mapPartitions is the go-to pattern for amortizing setup cost and batching external I/O.",
+      "mistakes": "Opening a connection inside map (per row) or materializing the entire partition into a list when a generator would keep memory flat.",
+      "followUps": [
+        "How would you batch REST/DB calls inside mapPartitions?",
+        "What are the memory risks of collecting the partition into a list?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-65",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Caching a Reused Dataset",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "An expensive-to-compute DataFrame is used in three downstream actions, and the naive lineage recomputes it three times. Implement solve(data) that returns the derived results so we can reason about cache()/persist(). data is a list of ints representing the base dataset. Compute a 'filtered' base (keep even numbers) ONCE, then return a dict with keys 'count' (number of evens), 'sum' (sum of evens), and 'max' (max even, or None if empty). Model caching: compute the base once and reuse it for all three actions.",
+    "initialCode": "def solve(data):\n    # naive: recompute the filtered base for each metric\n    # ...fill in...\n    return {}",
+    "solutionCode": "def solve(data):\n    # Compute the expensive base ONCE and cache it (persist in memory)\n    evens = [x for x in data if x % 2 == 0]\n    # Reuse the cached base for all three actions instead of recomputing lineage\n    return {\n        'count': len(evens),\n        'sum': sum(evens),\n        'max': max(evens) if evens else None,\n    }",
+    "testCases": [
+      {
+        "input": "[1, 2, 3, 4, 5, 6]",
+        "expected": "{'count': 3, 'sum': 12, 'max': 6}"
+      },
+      {
+        "input": "[1, 3, 5]",
+        "expected": "{'count': 0, 'sum': 0, 'max': None}"
+      },
+      {
+        "input": "[2]",
+        "expected": "{'count': 1, 'sum': 2, 'max': 2}"
+      },
+      {
+        "input": "[]",
+        "expected": "{'count': 0, 'sum': 0, 'max': None}"
+      }
+    ],
+    "hint": "1. Filter the evens exactly once.\n2. Derive count, sum, and max from that single list.\n3. Handle the empty case for max.",
+    "difficulty": "medium",
+    "exampleInput": "[1, 2, 3, 4, 5, 6]",
+    "exampleOutput": "{'count': 3, 'sum': 12, 'max': 6}",
+    "constraints": "The base transformation is expensive and is consumed by multiple actions.",
+    "bruteForce": "Recompute base.count(), base.agg(sum), base.agg(max) each triggering the full lineage: without caching, every action re-reads the source and re-runs the filter/joins from scratch, so an expensive base is computed N times.",
+    "optimized": "base.cache() (or persist(StorageLevel.MEMORY_AND_DISK)) before the first action, then run all actions against the cached DataFrame. The lineage executes once; later actions read the materialized cache. Call an action (or count) to force materialization, and unpersist() when done to free memory. For very large bases prefer MEMORY_AND_DISK to avoid recompute on eviction.",
+    "hints": [
+      "A DataFrame reused by multiple actions is a caching candidate.",
+      "Materialize the cache once, then all downstream actions reuse it."
+    ],
+    "complexity": {
+      "time": "O(n) once instead of O(n) per action",
+      "space": "O(evens) cached"
+    },
+    "discussion": {
+      "whyAsked": "Understanding lazy evaluation and when caching pays off is fundamental to Spark performance tuning.",
+      "mistakes": "Caching everything (wasting memory / causing eviction), or never caching a base reused across many actions and recomputing lineage repeatedly.",
+      "followUps": [
+        "When does caching hurt rather than help?",
+        "What is the difference between cache() and persist(MEMORY_AND_DISK)?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-66",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Salting a Skewed Key Aggregation",
+    "type": "data-engineering",
+    "track": "Optimize Spark",
+    "runnable": true,
+    "question": "One key holds the vast majority of records, so a plain groupBy overloads a single reducer (data skew). Implement solve(data) that returns the correct per-key sum so we can reason about salting the hot key. data is a dict with 'pairs' (list of [key, value]) and 'salt_buckets' (int number of salt buckets used for the two-stage aggregation). Return a dict mapping key to total sum. Model the salting technique: partial-aggregate within salted sub-keys, then combine the partials back to the original key. The final numeric result must be identical to a plain groupBy.",
+    "initialCode": "def solve(data):\n    # naive: single-stage groupBy, hot key lands on one reducer\n    pairs = data['pairs']\n    result = {}\n    # ...fill in...\n    return result",
+    "solutionCode": "def solve(data):\n    pairs = data['pairs']\n    buckets = data['salt_buckets'] if data['salt_buckets'] > 0 else 1\n    # Stage 1: append a salt bucket to each key so the hot key spreads across reducers\n    stage1 = {}\n    for i, (key, value) in enumerate(pairs):\n        salt = i % buckets  # deterministic salt for reproducibility\n        salted_key = (key, salt)\n        stage1[salted_key] = stage1.get(salted_key, 0) + value\n    # Stage 2: strip the salt and combine the partial sums back to the real key\n    result = {}\n    for (key, _salt), partial in stage1.items():\n        result[key] = result.get(key, 0) + partial\n    return result",
+    "testCases": [
+      {
+        "input": "{'pairs': [['hot', 1], ['hot', 1], ['hot', 1], ['hot', 1], ['cold', 5]], 'salt_buckets': 2}",
+        "expected": "{'hot': 4, 'cold': 5}"
+      },
+      {
+        "input": "{'pairs': [['a', 10], ['a', 20], ['b', 3]], 'salt_buckets': 4}",
+        "expected": "{'a': 30, 'b': 3}"
+      },
+      {
+        "input": "{'pairs': [], 'salt_buckets': 3}",
+        "expected": "{}"
+      },
+      {
+        "input": "{'pairs': [['k', 7]], 'salt_buckets': 1}",
+        "expected": "{'k': 7}"
+      }
+    ],
+    "hint": "1. Attach a salt bucket to each key in stage one.\n2. Aggregate within (key, salt) so the hot key spreads across reducers.\n3. Strip the salt and re-aggregate to the original key in stage two.",
+    "difficulty": "hard",
+    "exampleInput": "{'pairs': [['hot', 1], ['hot', 1], ['hot', 1], ['hot', 1], ['cold', 5]], 'salt_buckets': 2}",
+    "exampleOutput": "{'hot': 4, 'cold': 5}",
+    "constraints": "One or few keys dominate the distribution. The final result must equal a plain groupBy exactly.",
+    "bruteForce": "df.groupBy('key').agg(sum): all rows for the hot key hash to ONE reducer partition. That task processes most of the data while others sit idle, causing straggler tasks, spill, and sometimes OOM. Wall-clock time is bounded by the single overloaded task.",
+    "optimized": "Two-stage salted aggregation: append a random salt 0..N-1 to the key, groupBy(key, salt).agg(sum) so the hot key's load spreads over N partitions in parallel, then strip the salt and groupBy(key).agg(sum) to combine partials. Also enable AQE skew join handling (spark.sql.adaptive.skewJoin.enabled) which auto-splits skewed partitions. Salting balances the reducers and removes the straggler.",
+    "hints": [
+      "Skew means one partition does most of the work; spread the hot key out.",
+      "A two-stage aggregate (salt then de-salt) preserves the exact totals."
+    ],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(distinct keys * buckets)"
+    },
+    "discussion": {
+      "whyAsked": "Data skew is one of the hardest real-world Spark problems and salting is the canonical fix.",
+      "mistakes": "Forgetting the second de-salting stage (wrong totals), salting every key uniformly (wasted parallelism on cold keys), or ignoring AQE skew handling.",
+      "followUps": [
+        "How do you detect skew from the Spark UI?",
+        "How does AQE's adaptive skew join differ from manual salting?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-67",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Daily Batch ELT DAG with Retries and Alerting",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG named 'daily_sales_elt' that runs a straightforward daily ELT pipeline. It should: (1) extract raw sales from a source system, (2) load the raw data into the warehouse, (3) run a dbt transformation, and (4) run a data-quality check. Schedule it to run once per day at 02:00 UTC. Every task must have retries (2) with a 5-minute retry delay. Turn OFF catchup so the DAG does not backfill historical runs when first deployed. On any task failure, an email alert must be sent. Model the dependencies as a strict linear chain: extract -> load -> dbt_run -> quality_check.",
+    "initialCode": "from airflow import DAG\nfrom airflow.operators.python import PythonOperator\nfrom datetime import datetime, timedelta\n\n# TODO: define default_args with retries=2, retry_delay=5min, email_on_failure=True\ndefault_args = {\n    # TODO\n}\n\n# TODO: instantiate the DAG with schedule='0 2 * * *' and catchup=False\nwith DAG(\n    dag_id='daily_sales_elt',\n    # TODO\n) as dag:\n\n    def extract(**context):\n        pass  # TODO: extract raw sales\n\n    def load(**context):\n        pass  # TODO: load raw into warehouse\n\n    def dbt_run(**context):\n        pass  # TODO: run dbt models\n\n    def quality_check(**context):\n        pass  # TODO: assert row counts / not-null\n\n    # TODO: create tasks and wire the linear dependency chain\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.operators.python import PythonOperator\nfrom datetime import datetime, timedelta\n\n# Shared defaults applied to every task in the DAG.\n# retries + retry_delay give resilience against transient failures\n# (network blips, warehouse contention). email_on_failure fires the\n# alert when a task exhausts its retries.\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 2,\n    'retry_delay': timedelta(minutes=5),\n    'email': ['data-alerts@example.com'],\n    'email_on_failure': True,\n    'email_on_retry': False,\n}\n\nwith DAG(\n    dag_id='daily_sales_elt',\n    description='Daily extract -> load -> dbt -> quality check ELT',\n    default_args=default_args,\n    start_date=datetime(2024, 1, 1),\n    schedule='0 2 * * *',  # every day at 02:00 UTC\n    catchup=False,          # do NOT backfill history on first deploy\n    max_active_runs=1,      # one daily run at a time keeps the chain serial\n    tags=['elt', 'daily', 'sales'],\n) as dag:\n\n    def extract(**context):\n        # Pull raw sales for the logical date; write to a landing area.\n        ds = context['ds']\n        print(f'Extracting raw sales for {ds}')\n\n    def load(**context):\n        # Load the landed raw file into the warehouse raw schema.\n        ds = context['ds']\n        print(f'Loading raw sales for {ds} into warehouse')\n\n    def dbt_run(**context):\n        # Kick off dbt transformations that build staging + marts.\n        print('Running dbt build for sales models')\n\n    def quality_check(**context):\n        # Assert the marts are non-empty and key columns are not null.\n        print('Running data-quality assertions on sales marts')\n\n    extract_task = PythonOperator(task_id='extract', python_callable=extract)\n    load_task = PythonOperator(task_id='load', python_callable=load)\n    dbt_task = PythonOperator(task_id='dbt_run', python_callable=dbt_run)\n    qc_task = PythonOperator(task_id='quality_check', python_callable=quality_check)\n\n    # Strict linear chain: each step depends on the previous succeeding.\n    extract_task >> load_task >> dbt_task >> qc_task\n",
+    "testCases": [],
+    "hint": "1. Put retries, retry_delay, and email_on_failure in default_args so every task inherits them.\n2. Use schedule='0 2 * * *' for daily 02:00 UTC and set catchup=False.\n3. Wire the chain with the >> operator: extract >> load >> dbt_run >> quality_check.",
+    "difficulty": "easy",
+    "exampleInput": "Scheduler triggers a run for logical date 2024-06-01 at 2024-06-02T02:00:00 UTC.",
+    "exampleOutput": "Tasks run in order and finish 'success'; warehouse marts for 2024-06-01 are populated and pass the quality check. On failure of any task after 2 retries, an email alert is sent.",
+    "constraints": "Airflow 2.x. Daily schedule at 02:00 UTC. Every task retries twice with 5-minute delay. catchup must be False. Dependencies must be a strict linear chain.",
+    "hints": [
+      "Set defaults once in default_args instead of repeating retries on each operator.",
+      "catchup=False prevents a flood of historical runs the moment the DAG is unpaused."
+    ],
+    "bruteForce": "A naive version hard-codes retries on each operator (or omits them), leaves catchup at its default True, and puts no alerting. On first deploy it silently backfills every day since start_date, and transient failures kill the whole pipeline with nobody notified.",
+    "optimized": "Centralize retries/retry_delay/email in default_args, disable catchup, cap max_active_runs=1 so daily runs stay serial, and add email_on_failure alerting. This is robust to transient errors, avoids accidental backfills, and surfaces failures to the team.",
+    "complexity": {
+      "time": "O(tasks) scheduling per run",
+      "space": "n/a"
+    },
+    "discussion": {
+      "whyAsked": "Tests whether a candidate knows the canonical ELT shape and the operational hygiene (retries, alerting, catchup) that separates a demo DAG from a production one.",
+      "mistakes": "Leaving catchup=True and triggering an unwanted backfill; forgetting retries; not centralizing config in default_args.",
+      "followUps": [
+        "How would you make the quality_check fail the DAG hard vs. soft-warn?",
+        "How would you replace the email alert with a Slack/PagerDuty callback?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-68",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Idempotent Incremental Load with Data-Interval Watermark",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG 'orders_incremental' that incrementally loads new/updated orders each hour. It MUST be idempotent: re-running any interval produces the same warehouse state (no duplicates). Use the run's data interval (data_interval_start / data_interval_end) as the watermark to select source rows, then delete-and-insert (or MERGE) the target partition for that interval. Enable catchup=True so that when deployed with a start_date in the past, Airflow backfills every missing hourly interval. Give it retries and a sensible retry delay.",
+    "initialCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    # TODO: retries, retry_delay\n}\n\nwith DAG(\n    dag_id='orders_incremental',\n    schedule='@hourly',\n    start_date=datetime(2024, 1, 1),\n    # TODO: enable catchup for backfill\n    default_args=default_args,\n) as dag:\n\n    @task\n    def extract_window(**context):\n        # TODO: read data_interval_start / data_interval_end from context\n        pass\n\n    @task\n    def merge_partition(window):\n        # TODO: idempotent delete+insert for [start, end)\n        pass\n\n    # TODO: wire extract_window -> merge_partition\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 3,\n    'retry_delay': timedelta(minutes=2),\n}\n\nwith DAG(\n    dag_id='orders_incremental',\n    description='Hourly idempotent incremental load keyed on the data interval',\n    schedule='@hourly',\n    start_date=datetime(2024, 1, 1),\n    catchup=True,          # backfill every missing hourly interval on deploy\n    max_active_runs=4,     # allow a few backfill intervals in parallel\n    default_args=default_args,\n    tags=['incremental', 'idempotent'],\n) as dag:\n\n    @task\n    def extract_window(**context):\n        # The data interval IS the watermark. Airflow guarantees each\n        # scheduled run owns a distinct [start, end) window, so keying on\n        # it makes reruns deterministic instead of relying on wall-clock\n        # 'now', which would produce different rows each execution.\n        start = context['data_interval_start']\n        end = context['data_interval_end']\n        rows = f\"SELECT * FROM src.orders WHERE updated_at >= '{start}' AND updated_at < '{end}'\"\n        print('Extracting with query:', rows)\n        return {'start': start.isoformat(), 'end': end.isoformat()}\n\n    @task\n    def merge_partition(window):\n        # Idempotency: first DELETE the target slice for this exact\n        # interval, then INSERT the freshly extracted rows. Re-running the\n        # same interval yields identical final state (no duplicates).\n        start, end = window['start'], window['end']\n        print(f\"DELETE FROM dw.orders WHERE updated_at >= '{start}' AND updated_at < '{end}'\")\n        print(f\"INSERT INTO dw.orders SELECT ... WHERE updated_at >= '{start}' AND updated_at < '{end}'\")\n        # Equivalent alternative on engines that support it: a MERGE on the\n        # primary key scoped to the same interval.\n\n    window = extract_window()\n    merge_partition(window)\n",
+    "testCases": [],
+    "hint": "1. Read context['data_interval_start'] and ['data_interval_end']; never use datetime.now().\n2. Make writes idempotent with delete-then-insert (or MERGE) scoped to that interval.\n3. Set catchup=True so historical intervals are backfilled from start_date.",
+    "difficulty": "medium",
+    "exampleInput": "Deployed on 2024-06-10 with start_date=2024-01-01; scheduler enqueues one run per missing hour, each with its own data_interval_start/end.",
+    "exampleOutput": "Each hourly partition in dw.orders is populated exactly once even after reruns/backfills; total rows equal the source with no duplicates.",
+    "constraints": "Airflow 2.x. Hourly schedule. Must be idempotent (no dupes on rerun). Watermark must come from the data interval, not wall-clock time. catchup=True for backfill.",
+    "hints": [
+      "Idempotency almost always means delete-then-insert or MERGE scoped to a deterministic key.",
+      "The data interval is stable across reruns; datetime.now() is not."
+    ],
+    "bruteForce": "A fragile design uses INSERT with a WHERE updated_at > (max in target) computed at runtime, or filters on datetime.now(). Reruns and backfills then double-insert rows or skip records, and the output depends on when the task happened to run.",
+    "optimized": "Key the extract on data_interval_start/end and make the load a delete+insert (or MERGE) over that same window. Enable catchup for deterministic backfill and cap max_active_runs so parallel backfill intervals do not overwhelm the warehouse. Result: exactly-once effect per interval, safe to rerun.",
+    "complexity": {
+      "time": "O(rows in interval) per run",
+      "space": "O(rows in interval) staged"
+    },
+    "discussion": {
+      "whyAsked": "Idempotency and correct use of the data interval are the single most important production concepts for incremental pipelines.",
+      "mistakes": "Using datetime.now() as the watermark; append-only INSERTs that duplicate on rerun; leaving catchup off when backfill is required.",
+      "followUps": [
+        "How would you handle late-arriving updates outside the interval?",
+        "How would you switch to a high-watermark table if the source has no reliable updated_at?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-69",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Sensor-Driven DAG Waiting on an Upstream Partition",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG 'events_ingest' that must not start processing until an upstream daily file lands in object storage. Use a sensor to wait for the file s3://landing/events/{{ ds }}/_SUCCESS. Configure the sensor to poke on an interval, respect a timeout so it doesn't hang forever, and run in 'reschedule' mode so it frees the worker slot while waiting. After the sensor succeeds, process the partition and write to the warehouse. Add retries. Schedule daily; catchup=False.",
+    "initialCode": "from airflow import DAG\nfrom airflow.decorators import task\n# TODO: import the right sensor\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    # TODO retries\n}\n\nwith DAG(\n    dag_id='events_ingest',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n) as dag:\n\n    # TODO: sensor waiting for s3://landing/events/{{ ds }}/_SUCCESS\n    #       poke_interval, timeout, mode='reschedule'\n\n    @task\n    def process_partition(**context):\n        pass  # TODO\n\n    # TODO: wire sensor >> process_partition\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom airflow.providers.amazon.aws.sensors.s3 import S3KeySensor\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 2,\n    'retry_delay': timedelta(minutes=5),\n}\n\nwith DAG(\n    dag_id='events_ingest',\n    description='Wait for upstream _SUCCESS marker, then ingest the daily partition',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n    tags=['sensor', 'ingest'],\n) as dag:\n\n    # Wait for the upstream marker before doing any work. The {{ ds }}\n    # template resolves to the run's logical date so each run watches its\n    # own partition.\n    wait_for_file = S3KeySensor(\n        task_id='wait_for_events_success',\n        bucket_name='landing',\n        bucket_key='events/{{ ds }}/_SUCCESS',\n        aws_conn_id='aws_default',\n        poke_interval=300,      # check every 5 minutes\n        timeout=6 * 60 * 60,    # give up after 6 hours instead of hanging forever\n        mode='reschedule',      # release the worker slot between pokes\n    )\n\n    @task\n    def process_partition(**context):\n        # The marker exists, so the partition is complete and safe to read.\n        ds = context['ds']\n        print(f'Processing events partition for {ds} and loading to warehouse')\n\n    wait_for_file >> process_partition()\n",
+    "testCases": [],
+    "hint": "1. Use S3KeySensor (or the equivalent for your store) keyed on 'events/{{ ds }}/_SUCCESS'.\n2. Set poke_interval and timeout; use mode='reschedule' to free the worker while waiting.\n3. Only run process_partition after the sensor succeeds: sensor >> process_partition().",
+    "difficulty": "medium",
+    "exampleInput": "Daily run for ds=2024-06-01; upstream job writes s3://landing/events/2024-06-01/_SUCCESS at ~04:30 UTC.",
+    "exampleOutput": "Sensor pokes until the marker appears, then process_partition runs and loads the 2024-06-01 events into the warehouse. If the marker never appears within 6h, the sensor times out and fails (alerting can fire).",
+    "constraints": "Airflow 2.x. Must wait on an external marker before processing. Sensor needs poke_interval, a finite timeout, and mode='reschedule'. Daily schedule, catchup=False.",
+    "hints": [
+      "poke mode holds a worker slot the whole time; reschedule mode releases it between checks.",
+      "Always set a timeout so a missing upstream file surfaces as a failure, not a stuck task."
+    ],
+    "bruteForce": "A naive DAG starts processing on schedule regardless of upstream readiness, or uses a poke-mode sensor with no timeout. It either reads incomplete/absent data or ties up a worker slot indefinitely and can deadlock the pool.",
+    "optimized": "Gate processing behind an S3KeySensor keyed on the _SUCCESS marker, poke on an interval, cap with a timeout, and run in reschedule mode to free workers. Processing only begins on a proven-complete partition, and a missing file fails cleanly for alerting. Deferrable sensors are an even more scalable variant.",
+    "complexity": {
+      "time": "O(pokes) while waiting + O(rows) to process",
+      "space": "n/a"
+    },
+    "discussion": {
+      "whyAsked": "Cross-pipeline coordination via sensors is extremely common; interviewers check for timeout/mode awareness that avoids worker-slot exhaustion.",
+      "mistakes": "Omitting timeout; using poke mode and starving the pool; processing before the marker exists.",
+      "followUps": [
+        "When would you use a deferrable sensor instead of reschedule mode?",
+        "How would you replace time-based sensing with a Dataset/data-aware schedule?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-70",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Fan-out / Fan-in with TaskGroups Across Sources",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG 'multi_source_merge' that ingests three independent sources (crm, billing, web) in parallel and then merges them into a single unified table. Each source has its own extract -> validate steps; group each source's steps in a TaskGroup for clarity. All three groups fan out from a start marker and fan in to a single 'merge' task that runs only after every source's group completes. Add retries; schedule daily; catchup=False.",
+    "initialCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom airflow.utils.task_group import TaskGroup\nfrom airflow.operators.empty import EmptyOperator\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    # TODO retries\n}\n\nwith DAG(\n    dag_id='multi_source_merge',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n) as dag:\n\n    start = EmptyOperator(task_id='start')\n\n    # TODO: build one TaskGroup per source (crm, billing, web)\n    #       each with extract + validate\n\n    @task\n    def merge():\n        pass  # TODO merge all sources\n\n    # TODO: fan out start -> groups, fan in groups -> merge\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom airflow.utils.task_group import TaskGroup\nfrom airflow.operators.empty import EmptyOperator\nfrom airflow.operators.python import PythonOperator\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 2,\n    'retry_delay': timedelta(minutes=3),\n}\n\nwith DAG(\n    dag_id='multi_source_merge',\n    description='Parallel per-source ingest via TaskGroups, then a single merge',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n    tags=['taskgroup', 'fan-out', 'fan-in'],\n) as dag:\n\n    start = EmptyOperator(task_id='start')\n\n    def make_extract(source):\n        def _extract(**context):\n            print(f'Extracting {source} for {context[\"ds\"]}')\n        return _extract\n\n    def make_validate(source):\n        def _validate(**context):\n            print(f'Validating {source} for {context[\"ds\"]}')\n        return _validate\n\n    group_tails = []\n    for source in ['crm', 'billing', 'web']:\n        # Each source gets its own TaskGroup for a clean, collapsible UI\n        # and namespaced task ids (e.g. crm.extract, crm.validate).\n        with TaskGroup(group_id=source) as tg:\n            extract = PythonOperator(task_id='extract', python_callable=make_extract(source))\n            validate = PythonOperator(task_id='validate', python_callable=make_validate(source))\n            extract >> validate\n        # start fans OUT to every group; capture the group so we can fan IN.\n        start >> tg\n        group_tails.append(tg)\n\n    @task\n    def merge(**context):\n        # Runs only after all three groups finish; unifies the sources.\n        print('Merging crm + billing + web into the unified table')\n\n    merged = merge()\n    # Fan IN: merge depends on every source group completing.\n    for tg in group_tails:\n        tg >> merged\n",
+    "testCases": [],
+    "hint": "1. Wrap each source's extract+validate in its own TaskGroup(group_id=source).\n2. Fan out with start >> task_group for each source.\n3. Fan in with task_group >> merge for each, so merge waits on all groups.",
+    "difficulty": "medium",
+    "exampleInput": "Daily run for ds=2024-06-01 with crm, billing, and web extracts available.",
+    "exampleOutput": "The three TaskGroups run their extract->validate in parallel; once all succeed, merge produces the unified table for 2024-06-01. If one source's group fails, merge is not run.",
+    "constraints": "Airflow 2.x. Exactly three parallel source groups using TaskGroup. All must complete before the single merge. Daily schedule, catchup=False.",
+    "hints": [
+      "Setting start >> task_group applies the dependency to the group's roots automatically.",
+      "Default trigger_rule (all_success) makes merge wait for every upstream group to succeed."
+    ],
+    "bruteForce": "A naive DAG lists all extract/validate tasks flat with hand-wired edges and maybe runs sources sequentially. The graph is hard to read, easy to mis-wire, and loses the parallelism that makes multi-source ingest fast.",
+    "optimized": "Encapsulate each source in a TaskGroup, fan out from a start marker, and fan in to one merge. This runs sources concurrently, keeps the UI collapsible and readable, namespaces task ids, and guarantees merge only runs after all groups succeed via the default all_success trigger rule.",
+    "complexity": {
+      "time": "O(slowest source) wall-clock with parallelism",
+      "space": "n/a"
+    },
+    "discussion": {
+      "whyAsked": "Fan-out/fan-in with TaskGroups is the standard pattern for multi-source pipelines and tests dependency-wiring fluency.",
+      "mistakes": "Wiring sources sequentially and losing parallelism; forgetting to fan every group into merge so merge runs too early.",
+      "followUps": [
+        "How would you make merge run even if one source is optional/missing (trigger_rule)?",
+        "How does this compare to dynamic task mapping when the source list is not fixed?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-71",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Dynamic Task Mapping Over a Variable Input List",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG 'per_file_processor' that discovers a variable number of input files at runtime and processes each file as its own parallel mapped task instance (the count is not known when writing the DAG). Use dynamic task mapping (.expand) so Airflow creates one task instance per discovered file. After all mapped instances finish, run a single reduce/summary task that aggregates their results. Add retries; schedule daily; catchup=False.",
+    "initialCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    # TODO retries\n}\n\nwith DAG(\n    dag_id='per_file_processor',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n) as dag:\n\n    @task\n    def list_files():\n        # TODO: return a list of file paths discovered at runtime\n        pass\n\n    @task\n    def process(file):\n        # TODO: process a single file, return a per-file result\n        pass\n\n    @task\n    def summarize(results):\n        # TODO: aggregate all per-file results\n        pass\n\n    # TODO: map process over list_files(), then summarize the mapped results\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.decorators import task\nfrom datetime import datetime, timedelta\n\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 2,\n    'retry_delay': timedelta(minutes=2),\n}\n\nwith DAG(\n    dag_id='per_file_processor',\n    description='Discover N files at runtime and process each as a mapped task',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n    tags=['dynamic-mapping'],\n) as dag:\n\n    @task\n    def list_files(**context):\n        # The number of files is unknown at authoring time; it is decided\n        # at runtime. Returning a list here lets Airflow expand one\n        # 'process' instance per element.\n        ds = context['ds']\n        discovered = [f'incoming/{ds}/part-{i}.csv' for i in range(3)]  # runtime count\n        print('Discovered files:', discovered)\n        return discovered\n\n    @task\n    def process(file):\n        # One mapped instance runs per file, in parallel (subject to pools).\n        print('Processing', file)\n        return {'file': file, 'rows': 100}\n\n    @task\n    def summarize(results):\n        # Reduce step: receives the list of every mapped result.\n        total = sum(r['rows'] for r in results)\n        print(f'Processed {len(results)} files, {total} rows total')\n        return total\n\n    files = list_files()\n    # .expand fans out: Airflow creates one 'process' task instance per file.\n    processed = process.expand(file=files)\n    # Passing the mapped output to a normal task collapses (reduces) it.\n    summarize(processed)\n",
+    "testCases": [],
+    "hint": "1. Return the runtime list from list_files() (do not hard-code a count).\n2. Use process.expand(file=list_files()) to create one instance per element.\n3. Pass the mapped result into summarize(...) to reduce all instances into one aggregate.",
+    "difficulty": "hard",
+    "exampleInput": "Daily run for ds=2024-06-01 where list_files discovers 3 files at runtime (could be 0 or 500 on another day).",
+    "exampleOutput": "Three parallel 'process' mapped instances run (process[0..2]); summarize then reports 3 files and the total row count. On a day with more files, more mapped instances are created automatically.",
+    "constraints": "Airflow 2.x. Number of processing tasks must be determined at runtime via dynamic task mapping (.expand), not hard-coded. A single reduce task aggregates all mapped outputs. Daily schedule, catchup=False.",
+    "hints": [
+      "expand() over an XCom list creates mapped instances lazily at run time.",
+      "Feeding the mapped result into a plain task performs the reduce automatically."
+    ],
+    "bruteForce": "A naive DAG hard-codes a fixed number of process tasks (or loops at parse time over a static list). If the real file count differs, work is skipped or tasks sit empty, and the DAG must be edited whenever the input size changes.",
+    "optimized": "Use dynamic task mapping: list_files returns the runtime list and process.expand creates exactly one instance per file, all parallelizable. summarize reduces them. The graph adapts to any input size with no code changes and gives per-file isolation, retries, and observability.",
+    "complexity": {
+      "time": "O(N files) with parallelism",
+      "space": "O(N) mapped instances tracked"
+    },
+    "discussion": {
+      "whyAsked": "Dynamic task mapping is the modern Airflow answer to variable-width workloads; interviewers check you know expand/reduce and its limits.",
+      "mistakes": "Hard-coding the task count; expanding over a huge list and overwhelming the scheduler/pool; forgetting the reduce step consumes the mapped output.",
+      "followUps": [
+        "How would you cap concurrency of mapped instances (max_active_tis_per_dag / pools)?",
+        "How would you expand over multiple arguments with expand_kwargs?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-72",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "SLA, Failure Callback, and Branching for Late Data",
+    "type": "data-engineering",
+    "track": "Build-a-DAG",
+    "runnable": false,
+    "question": "Author an Airflow 2.x DAG 'sla_late_data' that must handle late-arriving upstream data gracefully. It should: (1) check whether today's data is present, (2) BRANCH with BranchPythonOperator - if present, run the normal processing path; if not, run a 'handle_late_data' path that logs/notifies and skips heavy processing. Attach an SLA to the processing task and an on_failure_callback (and sla_miss_callback) that notify a channel. Both branches converge on a final task using an appropriate trigger_rule so it runs regardless of which branch ran. Add retries; schedule daily; catchup=False.",
+    "initialCode": "from airflow import DAG\nfrom airflow.operators.python import PythonOperator, BranchPythonOperator\nfrom airflow.operators.empty import EmptyOperator\nfrom airflow.utils.trigger_rule import TriggerRule\nfrom datetime import datetime, timedelta\n\ndef notify_failure(context):\n    pass  # TODO on_failure_callback\n\ndef notify_sla_miss(*args, **kwargs):\n    pass  # TODO sla_miss_callback\n\ndefault_args = {\n    # TODO retries + on_failure_callback\n}\n\nwith DAG(\n    dag_id='sla_late_data',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n    # TODO: sla_miss_callback\n) as dag:\n\n    def choose_branch(**context):\n        # TODO: return 'process_data' or 'handle_late_data'\n        pass\n\n    # TODO: BranchPythonOperator, process_data (with sla=), handle_late_data,\n    #       and a converging 'finish' task with the right trigger_rule\n",
+    "solutionCode": "from airflow import DAG\nfrom airflow.operators.python import PythonOperator, BranchPythonOperator\nfrom airflow.operators.empty import EmptyOperator\nfrom airflow.utils.trigger_rule import TriggerRule\nfrom datetime import datetime, timedelta\n\n\ndef notify_failure(context):\n    # Fired when a task exhausts retries and fails. In real life this\n    # would post to Slack/PagerDuty; context has task/dag/exception info.\n    ti = context['task_instance']\n    print(f'FAILURE ALERT: {ti.dag_id}.{ti.task_id} failed for {context[\"ds\"]}')\n\n\ndef notify_sla_miss(dag, task_list, blocking_task_list, slas, blocking_tis):\n    # Fired when a task blows its SLA even if it later succeeds.\n    print(f'SLA MISS on {dag.dag_id}: {[s.task_id for s in slas]}')\n\n\ndefault_args = {\n    'owner': 'data-eng',\n    'retries': 2,\n    'retry_delay': timedelta(minutes=5),\n    'on_failure_callback': notify_failure,  # applied to every task\n}\n\nwith DAG(\n    dag_id='sla_late_data',\n    description='Branch on data readiness; alert on SLA miss and failures',\n    schedule='@daily',\n    start_date=datetime(2024, 1, 1),\n    catchup=False,\n    default_args=default_args,\n    sla_miss_callback=notify_sla_miss,\n    tags=['branching', 'sla', 'late-data'],\n) as dag:\n\n    def choose_branch(**context):\n        # Decide the path at runtime. Return the task_id(s) to follow;\n        # BranchPythonOperator skips all other downstream branches.\n        data_present = context['dag_run'].conf.get('data_present', True)\n        return 'process_data' if data_present else 'handle_late_data'\n\n    branch = BranchPythonOperator(\n        task_id='check_data',\n        python_callable=choose_branch,\n    )\n\n    def process(**context):\n        print('Running normal heavy processing')\n\n    # sla=timedelta(...) means: if this task is not done within N minutes\n    # of the run's start, sla_miss_callback fires (the task is not killed).\n    process_data = PythonOperator(\n        task_id='process_data',\n        python_callable=process,\n        sla=timedelta(hours=1),\n    )\n\n    def late(**context):\n        print('Data late/absent: notifying and skipping heavy processing')\n\n    handle_late_data = PythonOperator(\n        task_id='handle_late_data',\n        python_callable=late,\n    )\n\n    # Both branches converge here. Because one upstream branch is always\n    # SKIPPED, the default all_success rule would skip 'finish' too.\n    # NONE_FAILED_MIN_ONE_SUCCESS lets finish run as long as no upstream\n    # failed and at least one succeeded.\n    finish = EmptyOperator(\n        task_id='finish',\n        trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,\n    )\n\n    branch >> [process_data, handle_late_data] >> finish\n",
+    "testCases": [],
+    "hint": "1. Return the chosen task_id from the BranchPythonOperator callable; the other branch is auto-skipped.\n2. Attach sla=timedelta(...) to process_data and set sla_miss_callback on the DAG plus on_failure_callback in default_args.\n3. Give the converging task trigger_rule=NONE_FAILED_MIN_ONE_SUCCESS so a skipped branch doesn't skip it.",
+    "difficulty": "hard",
+    "exampleInput": "Daily run for ds=2024-06-01. Case A: data present -> process_data path. Case B: triggered with conf {\"data_present\": false} -> handle_late_data path.",
+    "exampleOutput": "Case A: check_data -> process_data -> finish (handle_late_data skipped). Case B: check_data -> handle_late_data -> finish (process_data skipped). If process_data exceeds its 1h SLA, sla_miss_callback notifies; any task failure triggers on_failure_callback.",
+    "constraints": "Airflow 2.x. Must branch via BranchPythonOperator. process_data needs an SLA. DAG needs sla_miss_callback and on_failure_callback. Converging task must use a trigger_rule that tolerates a skipped branch. Daily, catchup=False.",
+    "hints": [
+      "A BranchPythonOperator returns the task_id(s) to run; everything else downstream is skipped.",
+      "all_success propagates SKIPPED; use NONE_FAILED_MIN_ONE_SUCCESS at the join."
+    ],
+    "bruteForce": "A naive DAG always runs the heavy processing path and has no branch, no SLA, and no callbacks. When data is late it either fails hard or silently processes empty/partial data, and nobody is alerted; a join task with the default trigger rule would also be skipped by the skipped branch.",
+    "optimized": "Branch on data readiness so late data takes a lightweight handling path, attach an SLA plus sla_miss_callback and on_failure_callback for observability, and converge with NONE_FAILED_MIN_ONE_SUCCESS so the final task runs regardless of which branch executed. This degrades gracefully and always alerts on lateness/failure.",
+    "complexity": {
+      "time": "O(tasks on chosen branch)",
+      "space": "n/a"
+    },
+    "discussion": {
+      "whyAsked": "Branching, trigger rules, SLAs, and callbacks are where most real-world Airflow bugs live; this probes all four at once.",
+      "mistakes": "Leaving the join task on all_success so a skipped branch skips it; confusing SLA (notify, not kill) with timeout (kills the task); forgetting to register callbacks.",
+      "followUps": [
+        "What is the difference between an SLA miss and an execution_timeout?",
+        "How would you replace BranchPythonOperator with the @task.branch decorator?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-73",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Staging Model: Clean and Standardize Raw Customers",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Build a dbt staging model `stg_customers` on top of the raw source table `raw.jaffle_shop.customers`. The raw table has messy column names (`ID`, `FIRST_NAME`, `LAST_NAME`, `EMAIL`, `CREATED_AT`) with inconsistent casing and string timestamps. Your model must: (1) reference the raw table via `source()`, (2) rename columns to snake_case with a `customer_id` primary key, (3) cast `created_at` from a string to a timestamp, (4) trim and lowercase the email, and (5) materialize as a view. Add schema tests asserting `customer_id` is unique and not_null.",
+    "initialCode": "-- models/staging/jaffle_shop/stg_customers.sql\n{{ config(materialized='view') }}\n\nwith source as (\n    -- TODO: reference the raw customers source\n    select * from {{ source('jaffle_shop', 'customers') }}\n),\n\nrenamed as (\n    select\n        -- TODO: rename ID -> customer_id\n        -- TODO: rename first_name / last_name\n        -- TODO: lowercase + trim email\n        -- TODO: cast created_at to timestamp\n        *\n    from source\n)\n\nselect * from renamed",
+    "solutionCode": "-- models/staging/jaffle_shop/stg_customers.sql\n{{ config(materialized='view') }}\n\nwith source as (\n    -- Point at the raw landed table, never hard-code schema names\n    select * from {{ source('jaffle_shop', 'customers') }}\n),\n\nrenamed as (\n    select\n        id::integer                        as customer_id,      -- PK, cast to int\n        trim(first_name)                   as first_name,\n        trim(last_name)                    as last_name,\n        lower(trim(email))                 as email,            -- normalize for joins\n        cast(created_at as timestamp)      as created_at        -- string -> timestamp\n    from source\n)\n\nselect * from renamed\n\n-- models/staging/jaffle_shop/_stg_jaffle_shop.yml\n-- version: 2\n-- sources:\n--   - name: jaffle_shop\n--     schema: raw\n--     tables:\n--       - name: customers\n-- models:\n--   - name: stg_customers\n--     columns:\n--       - name: customer_id\n--         tests:\n--           - unique\n--           - not_null\n--       - name: email\n--         tests:\n--           - not_null",
+    "testCases": [],
+    "hint": "1. Use {{ source('jaffle_shop','customers') }} so lineage is tracked.\n2. Do renaming and casting in a single `renamed` CTE for readability.\n3. Normalize email with lower(trim(...)) so downstream joins match.",
+    "difficulty": "easy",
+    "exampleInput": "raw.jaffle_shop.customers:\nID | FIRST_NAME | LAST_NAME | EMAIL              | CREATED_AT\n1  | ' Alice'   | 'Ng '     | 'ALICE@X.COM'      | '2023-01-05 10:00:00'\n2  | 'Bob'      | 'Lee'     | ' bob@x.com '      | '2023-02-01 09:30:00'",
+    "exampleOutput": "stg_customers:\ncustomer_id | first_name | last_name | email        | created_at\n1           | Alice      | Ng        | alice@x.com  | 2023-01-05 10:00:00\n2           | Bob        | Lee       | bob@x.com    | 2023-02-01 09:30:00",
+    "constraints": "Staging models should be 1:1 with the source (no joins, no aggregation). Only rename, recast, and light cleaning are allowed. Materialize as a view to keep it cheap.",
+    "hints": [
+      "Keep staging thin: exactly one source, no business logic.",
+      "Casting and renaming here means every downstream model gets clean, typed columns for free."
+    ],
+    "bruteForce": "Query `raw.jaffle_shop.customers` directly in every mart with inline `lower(email)` and casts repeated everywhere. This duplicates cleaning logic, breaks lineage (no source() so dbt can't test freshness), and any raw schema change forces edits across dozens of models.",
+    "optimized": "Isolate all cleaning in one staging view referenced via source(). Downstream models ref('stg_customers') and inherit typed, deduped, normalized columns. Lineage and source freshness tests come for free, and a raw schema change is fixed in exactly one place.",
+    "complexity": {
+      "time": "view = compiled at query time (no storage cost)",
+      "space": "n/a (view, no materialized rows)"
+    },
+    "discussion": {
+      "whyAsked": "Staging models are the foundation of every dbt project; interviewers check that you understand the source()/ref() distinction and the one-model-per-source convention.",
+      "mistakes": "Adding joins or aggregations into staging; hard-coding raw schema names instead of source(); forgetting to cast string timestamps so downstream date math silently fails.",
+      "followUps": [
+        "How would you add source freshness checks to raw.jaffle_shop.customers?",
+        "When would you materialize a staging model as a table or ephemeral instead of a view?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-74",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Intermediate Model: Join Orders to Customers with Dedup",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Build an intermediate model `int_orders_joined` that enriches each order with customer attributes. Reference the staging models `stg_orders` and `stg_customers` via ref(). The `stg_orders` feed occasionally contains duplicate rows for the same `order_id` (from an at-least-once ingestion pipeline); keep only the latest row per `order_id` by `updated_at`. Left join to `stg_customers` on `customer_id` so orders with a missing customer are retained. Materialize as ephemeral. Add a test that `order_id` is unique after dedup.",
+    "initialCode": "-- models/intermediate/int_orders_joined.sql\n{{ config(materialized='ephemeral') }}\n\nwith orders as (\n    -- TODO: ref stg_orders and dedup to one row per order_id (latest updated_at)\n    select * from {{ ref('stg_orders') }}\n),\n\ncustomers as (\n    select * from {{ ref('stg_customers') }}\n)\n\n-- TODO: left join orders to customers on customer_id\nselect *\nfrom orders",
+    "solutionCode": "-- models/intermediate/int_orders_joined.sql\n{{ config(materialized='ephemeral') }}\n\nwith orders as (\n    select * from {{ ref('stg_orders') }}\n),\n\n-- Dedup: at-least-once ingestion can emit the same order_id twice.\n-- Rank rows per order_id by recency and keep the newest.\ndeduped_orders as (\n    select *\n    from (\n        select\n            *,\n            row_number() over (\n                partition by order_id\n                order by updated_at desc\n            ) as rn\n        from orders\n    ) ranked\n    where rn = 1\n),\n\ncustomers as (\n    select * from {{ ref('stg_customers') }}\n),\n\njoined as (\n    select\n        o.order_id,\n        o.customer_id,\n        o.order_status,\n        o.order_date,\n        o.amount,\n        c.first_name,\n        c.last_name,\n        c.email\n    from deduped_orders o\n    left join customers c\n        on o.customer_id = c.customer_id   -- left join keeps orphan orders\n)\n\nselect * from joined\n\n-- models/intermediate/_int.yml\n-- version: 2\n-- models:\n--   - name: int_orders_joined\n--     columns:\n--       - name: order_id\n--         tests:\n--           - unique\n--           - not_null\n--       - name: customer_id\n--         tests:\n--           - relationships:\n--               to: ref('stg_customers')\n--               field: customer_id\n--               config:\n--                 severity: warn   # orphan orders allowed but flagged",
+    "testCases": [],
+    "hint": "1. Use row_number() over (partition by order_id order by updated_at desc) then filter rn = 1.\n2. Prefer a left join so orders without a matching customer are not dropped.\n3. Ephemeral means it is inlined as a CTE into downstream models (no table created).",
+    "difficulty": "medium",
+    "exampleInput": "stg_orders (note duplicate order 100):\norder_id | customer_id | amount | updated_at\n100      | 1           | 50     | 2023-03-01\n100      | 1           | 55     | 2023-03-02   <- latest\n101      | 9           | 20     | 2023-03-03   <- customer 9 missing\n\nstg_customers:\ncustomer_id | first_name\n1           | Alice",
+    "exampleOutput": "int_orders_joined:\norder_id | customer_id | amount | first_name\n100      | 1           | 55     | Alice        <- kept latest\n101      | 9           | 20     | NULL         <- orphan retained via left join",
+    "constraints": "Dedup must be deterministic (tie-break on a stable key if updated_at ties). Do not use an inner join or you will silently drop orphan orders. Ephemeral models cannot be selected directly in the warehouse.",
+    "hints": [
+      "row_number() with a partition is the canonical dbt dedup pattern.",
+      "Choose left vs inner join based on whether orphan rows are a data-quality signal you want to keep."
+    ],
+    "bruteForce": "Do `select distinct *` to remove duplicates and an inner join to customers. distinct fails when the duplicate rows differ (e.g. amount 50 vs 55) and keeps both; the inner join silently drops orders whose customer is missing, quietly under-counting revenue.",
+    "optimized": "Deduplicate with row_number() partitioned by the business key ordered by recency, keeping rn = 1 for a deterministic latest row. Use a left join to preserve orphan orders and surface them with a warn-severity relationships test rather than dropping them.",
+    "complexity": {
+      "time": "one window sort per partition; ephemeral = inlined, no persisted rows",
+      "space": "n/a (ephemeral, compiled into downstream CTE)"
+    },
+    "discussion": {
+      "whyAsked": "Intermediate models test whether you can compose staging models, handle real-world duplicate ingestion, and choose join types intentionally.",
+      "mistakes": "Using select distinct for dedup; inner-joining and dropping orphans; non-deterministic dedup without a tie-breaker.",
+      "followUps": [
+        "How would you tie-break when two rows share the same updated_at?",
+        "When is ephemeral a bad choice compared to a view or table?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-75",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Mart Model: fct_orders with Computed Measures",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Build the mart fact table `fct_orders` at the grain of one row per order. Reference `int_orders_joined` and a payments staging model `stg_payments` (columns: `payment_id`, `order_id`, `payment_method`, `amount`, `status`). Compute per-order measures: total gross amount, amount by payment method (credit_card, bank_transfer, gift_card) using conditional aggregation, and a boolean `is_paid` flag when all payments are `success`. Materialize as a table. Add unique/not_null tests on `order_id` and a not_null test on the amount total.",
+    "initialCode": "-- models/marts/finance/fct_orders.sql\n{{ config(materialized='table') }}\n\nwith orders as (\n    select * from {{ ref('int_orders_joined') }}\n),\n\npayments as (\n    select * from {{ ref('stg_payments') }}\n),\n\npayment_agg as (\n    -- TODO: aggregate payments to one row per order_id\n    -- TODO: conditional sums per payment_method\n    -- TODO: is_paid flag = every payment succeeded\n    select order_id from payments group by order_id\n)\n\n-- TODO: join orders to payment_agg, one row per order\nselect * from orders",
+    "solutionCode": "-- models/marts/finance/fct_orders.sql\n{{ config(materialized='table') }}\n\nwith orders as (\n    select * from {{ ref('int_orders_joined') }}\n),\n\npayments as (\n    select * from {{ ref('stg_payments') }}\n),\n\n-- Collapse many payments -> one row per order with conditional measures\npayment_agg as (\n    select\n        order_id,\n        sum(amount)                                                   as total_amount,\n        sum(case when payment_method = 'credit_card'   then amount else 0 end) as credit_card_amount,\n        sum(case when payment_method = 'bank_transfer' then amount else 0 end) as bank_transfer_amount,\n        sum(case when payment_method = 'gift_card'     then amount else 0 end) as gift_card_amount,\n        -- is_paid only when NO payment is in a non-success state\n        bool_and(status = 'success')                                 as is_paid\n    from payments\n    group by order_id\n)\n\nselect\n    o.order_id,\n    o.customer_id,\n    o.order_date,\n    o.order_status,\n    coalesce(p.total_amount, 0)          as amount,          -- no payments -> 0\n    coalesce(p.credit_card_amount, 0)    as credit_card_amount,\n    coalesce(p.bank_transfer_amount, 0)  as bank_transfer_amount,\n    coalesce(p.gift_card_amount, 0)      as gift_card_amount,\n    coalesce(p.is_paid, false)           as is_paid\nfrom orders o\nleft join payment_agg p\n    on o.order_id = p.order_id\n\n-- models/marts/finance/_fct_orders.yml\n-- version: 2\n-- models:\n--   - name: fct_orders\n--     columns:\n--       - name: order_id\n--         tests:\n--           - unique\n--           - not_null\n--       - name: amount\n--         tests:\n--           - not_null\n--       - name: is_paid\n--         tests:\n--           - accepted_values:\n--               values: [true, false]",
+    "testCases": [],
+    "hint": "1. Aggregate payments to one row per order_id BEFORE joining to avoid fan-out.\n2. Use case-when inside sum() for per-method measures (conditional aggregation).\n3. coalesce measures to 0/false so orders with no payment rows are not NULL.",
+    "difficulty": "medium",
+    "exampleInput": "stg_payments:\npayment_id | order_id | payment_method | amount | status\np1         | 100      | credit_card    | 40     | success\np2         | 100      | gift_card      | 15     | success\np3         | 101      | bank_transfer  | 20     | failed",
+    "exampleOutput": "fct_orders:\norder_id | amount | credit_card_amount | gift_card_amount | is_paid\n100      | 55     | 40                 | 15               | true\n101      | 20     | 0                  | 0                | false",
+    "constraints": "Grain is strictly one row per order_id; aggregate payments first or the join fans out and doubles revenue. Measures must be additive. Orders with zero payments must appear with amount 0, not NULL.",
+    "hints": [
+      "Pre-aggregating the many-side before the join is the fix for fan-out.",
+      "Conditional aggregation (sum(case when...)) pivots categories into columns cleanly."
+    ],
+    "bruteForce": "Join orders directly to raw payments then group at the end. Joining before aggregating fans out one order into N payment rows, and any order-level column pulled through the join gets multiplied, inflating totals; grouping afterward is error-prone and easy to get wrong on non-additive columns.",
+    "optimized": "Aggregate payments to one row per order_id in a CTE using conditional sums and bool_and for is_paid, then left join that single row to orders and coalesce nulls. Grain is guaranteed one row per order and measures stay additive and correct.",
+    "complexity": {
+      "time": "one group-by over payments + one join; full table rebuild each run",
+      "space": "materialized table = one row per order stored"
+    },
+    "discussion": {
+      "whyAsked": "Fact tables are the payoff of a dbt project; interviewers probe grain discipline and the classic join-then-fan-out bug.",
+      "mistakes": "Fanning out by joining before aggregating; leaving measures NULL instead of 0; miscomputing is_paid as any-success instead of all-success.",
+      "followUps": [
+        "How would you handle refunds (negative payments) in the amount measure?",
+        "Would you add a dim_customers foreign-key relationships test here?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-76",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Incremental Model with unique_key and Late-Arriving Data",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Build an incremental model `fct_events` that processes a large append-mostly event stream from `stg_events` (columns: `event_id`, `user_id`, `event_type`, `event_at`, `loaded_at`). Configure it as incremental with `unique_key='event_id'`. On incremental runs, only process rows newer than what has been loaded, but account for late-arriving data by using a lookback window on `loaded_at` (not `event_at`) so records that landed late are still picked up. Use `merge` incremental strategy so updated events replace prior versions. Show the full-refresh vs incremental branch with is_incremental().",
+    "initialCode": "-- models/marts/fct_events.sql\n{{ config(\n    materialized='incremental',\n    unique_key='event_id',\n    incremental_strategy='merge'\n) }}\n\nwith source as (\n    select * from {{ ref('stg_events') }}\n)\n\nselect\n    event_id,\n    user_id,\n    event_type,\n    event_at,\n    loaded_at\nfrom source\n\n{% if is_incremental() %}\n-- TODO: filter to only new/late rows using a lookback window on loaded_at\n{% endif %}",
+    "solutionCode": "-- models/marts/fct_events.sql\n{{ config(\n    materialized='incremental',\n    unique_key='event_id',\n    incremental_strategy='merge',\n    on_schema_change='append_new_columns'\n) }}\n\nwith source as (\n    select * from {{ ref('stg_events') }}\n)\n\nselect\n    event_id,\n    user_id,\n    event_type,\n    event_at,\n    loaded_at\nfrom source\n\n{% if is_incremental() %}\n\n-- Late-arriving data: an event with an old event_at can be LOADED today.\n-- Filtering on event_at would miss it, so gate on loaded_at instead and\n-- subtract a lookback window to re-scan a safety margin. The merge on\n-- unique_key event_id makes reprocessing idempotent (no duplicates).\nwhere loaded_at >= (\n    select coalesce(max(loaded_at), '1900-01-01') - interval '3 days'\n    from {{ this }}\n)\n\n{% endif %}\n\n-- models/marts/_fct_events.yml\n-- version: 2\n-- models:\n--   - name: fct_events\n--     columns:\n--       - name: event_id\n--         tests:\n--           - unique      # merge on unique_key must keep this true\n--           - not_null\n--       - name: event_type\n--         tests:\n--           - not_null",
+    "testCases": [],
+    "hint": "1. Gate on loaded_at, not event_at, so late-landing rows are not skipped.\n2. Subtract a lookback interval from max(loaded_at) in {{ this }} to re-scan a safety window.\n3. merge + unique_key='event_id' makes reprocessing idempotent (upsert, no dupes).",
+    "difficulty": "hard",
+    "exampleInput": "Existing fct_events max(loaded_at) = 2023-06-10.\nNew stg_events batch:\nevent_id | event_at   | loaded_at\ne50      | 2023-06-09 | 2023-06-11   <- new\ne22      | 2023-06-01 | 2023-06-09   <- LATE (old event, loaded within lookback)\ne10      | 2023-05-01 | 2023-05-01   <- old, outside lookback, skipped",
+    "exampleOutput": "Incremental run picks up e50 (new) and e22 (within 3-day loaded_at lookback);\nmerge upserts them by event_id. e10 is skipped. Re-running the same batch\nproduces no duplicates because merge replaces on event_id.",
+    "constraints": "Must be idempotent: re-running the same window cannot create duplicates (hence merge on unique_key). Lookback window must exceed the maximum expected ingestion lag or late rows are permanently lost. {{ this }} may not exist on first run, so is_incremental() guards the filter.",
+    "hints": [
+      "The classic incremental bug is filtering on the event timestamp instead of the load timestamp.",
+      "A lookback window trades a little reprocessing cost for correctness on late data; merge makes that reprocessing free of duplicates."
+    ],
+    "bruteForce": "Full refresh every run (materialized table), or incremental filtering `where event_at > max(event_at)`. Full refresh is prohibitively slow on a huge event stream; filtering on event_at silently drops every late-arriving row because its event_at is older than the current max even though it just landed.",
+    "optimized": "Incremental with unique_key and merge strategy, gating on loaded_at minus a lookback window read from {{ this }}. This processes only recent partitions, still captures late data within the lag window, and merge upserts by event_id so reruns are idempotent. is_incremental() keeps full-refresh working.",
+    "complexity": {
+      "time": "full-refresh (scan all history) vs incremental (scan lookback window only)",
+      "space": "incremental appends/upserts within the window; no full rewrite"
+    },
+    "discussion": {
+      "whyAsked": "Incremental models are the most misused dbt feature; interviewers check that you understand idempotency, unique_key, and late-arriving-data handling.",
+      "mistakes": "Filtering on the event timestamp instead of load timestamp; forgetting unique_key so merge degrades to append and dupes; lookback window shorter than ingestion lag.",
+      "followUps": [
+        "How would you switch to insert_overwrite with partitions on BigQuery/Spark?",
+        "How do you backfill a corrupted date range without a full refresh?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-77",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "SCD Type-2 Dimension via Snapshot-Style Logic",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Model a Slowly Changing Dimension Type-2 for products. First define a dbt snapshot `snap_products` over the mutable source `raw.shop.products` (natural key `product_id`, tracked columns `name`, `price`, `category`) using the `check` strategy on those columns. Then build a downstream dim `dim_products_history` that reads the snapshot and exposes SCD2 columns: `product_key` (surrogate), `dbt_valid_from`, `dbt_valid_to`, and an `is_current` flag. Add tests asserting exactly one current row per `product_id` and that `product_key` is unique.",
+    "initialCode": "-- snapshots/snap_products.sql\n{% snapshot snap_products %}\n{{\n    config(\n      target_schema='snapshots',\n      unique_key='product_id',\n      strategy='check',\n      check_cols=['name', 'price', 'category']\n    )\n}}\n-- TODO: select current rows from the raw mutable source\nselect * from {{ source('shop', 'products') }}\n{% endsnapshot %}\n\n-- models/marts/dim_products_history.sql\n{{ config(materialized='table') }}\n-- TODO: read snapshot, add surrogate key + is_current flag\nselect * from {{ ref('snap_products') }}",
+    "solutionCode": "-- snapshots/snap_products.sql\n{% snapshot snap_products %}\n{{\n    config(\n      target_schema='snapshots',\n      unique_key='product_id',\n      strategy='check',\n      check_cols=['name', 'price', 'category'],\n      invalidate_hard_deletes=true\n    )\n}}\n\n-- Snapshot captures the CURRENT state of the mutable source on each run.\n-- dbt writes dbt_valid_from / dbt_valid_to / dbt_scd_id automatically\n-- and closes out old versions when any check_col changes.\nselect\n    product_id,\n    name,\n    price,\n    category,\n    updated_at\nfrom {{ source('shop', 'products') }}\n\n{% endsnapshot %}\n\n\n-- models/marts/dim_products_history.sql\n{{ config(materialized='table') }}\n\nwith snapshotted as (\n    select * from {{ ref('snap_products') }}\n)\n\nselect\n    -- Surrogate key uniquely identifies each version of a product\n    {{ dbt_utils.generate_surrogate_key(['product_id', 'dbt_valid_from']) }} as product_key,\n    product_id,                                  -- natural / business key\n    name,\n    price,\n    category,\n    dbt_valid_from,                              -- version effective start\n    dbt_valid_to,                                -- NULL for the live version\n    (dbt_valid_to is null) as is_current         -- current-version flag\nfrom snapshotted\n\n-- models/marts/_dim_products_history.yml\n-- version: 2\n-- models:\n--   - name: dim_products_history\n--     columns:\n--       - name: product_key\n--         tests:\n--           - unique\n--           - not_null\n--       - name: product_id\n--         tests:\n--           - not_null\n--       - name: is_current\n--         tests:\n--           - accepted_values:\n--               values: [true, false]\n--     tests:\n--       # exactly one current row per product_id\n--       - dbt_utils.expression_is_true:\n--           expression: \"count(*) = 1\"\n--           config:\n--             where: \"is_current = true\"\n--           group_by: [product_id]",
+    "testCases": [],
+    "hint": "1. Let the snapshot own history: dbt manages dbt_valid_from/to and dbt_scd_id.\n2. is_current is simply dbt_valid_to is null.\n3. Build a surrogate product_key from (product_id, dbt_valid_from) so each version is unique.",
+    "difficulty": "hard",
+    "exampleInput": "raw.shop.products over two snapshot runs:\nRun 1 (2023-01-01): product_id=7, name='Widget', price=10, category='A'\nRun 2 (2023-02-01): product_id=7, name='Widget', price=12, category='A'  <- price changed",
+    "exampleOutput": "dim_products_history:\nproduct_key | product_id | price | dbt_valid_from | dbt_valid_to | is_current\nk_a         | 7          | 10    | 2023-01-01     | 2023-02-01   | false\nk_b         | 7          | 12    | 2023-02-01     | NULL         | true",
+    "constraints": "The source is mutable and overwrites in place, so history must be captured on each snapshot run or it is lost forever. Exactly one row per product_id may have is_current = true. Never edit or reload a snapshot table by hand; dbt owns its metadata columns.",
+    "hints": [
+      "SCD2 in dbt is idiomatically done with snapshots, not hand-rolled window SQL, because the source overwrites in place.",
+      "The check strategy versions a row only when a tracked column changes; timestamp strategy uses an updated_at column instead."
+    ],
+    "bruteForce": "Reconstruct history in a model with lag()/window functions over the source. This cannot work when the source overwrites rows in place: once price 10 is overwritten by 12, the old value is gone and no window function can recover it. It also has no durable place to store closed-out versions.",
+    "optimized": "Use a dbt snapshot with the check strategy to persist each version as the source changes, letting dbt maintain dbt_valid_from/dbt_valid_to/dbt_scd_id. A downstream table adds a surrogate key and is_current flag. History is captured incrementally and correctly, with tests enforcing one current row per key.",
+    "complexity": {
+      "time": "snapshot compares check_cols each run (one merge); dim is a light rebuild",
+      "space": "grows by one row per tracked change per key (full version history retained)"
+    },
+    "discussion": {
+      "whyAsked": "SCD Type-2 tests whether you know dbt snapshots exist and why hand-rolled history fails on mutable, overwrite-in-place sources.",
+      "mistakes": "Trying to derive history with window functions over a mutable source; forgetting snapshots must run on a schedule to capture changes; allowing multiple is_current rows per key.",
+      "followUps": [
+        "When would you use the timestamp strategy instead of check?",
+        "How do you handle hard deletes so a deleted product's current version is closed out?"
+      ]
+    }
+  },
+  {
+    "id": "de-c-78",
+    "topicId": "data-engineering-topic-1",
+    "category": "data-engineering",
+    "title": "Metrics Model with Window Functions and Tests",
+    "type": "data-engineering",
+    "track": "dbt Model",
+    "runnable": false,
+    "question": "Build an aggregate metrics model `metrics_customer_monthly` from `fct_orders`. For each customer and calendar month produce: `monthly_revenue`, `order_count`, a `running_lifetime_revenue` (cumulative revenue up to and including that month), the prior month's revenue via `lag()`, and `revenue_mom_pct` (month-over-month percent change). Materialize as a table. Add tests: `not_null` on the customer/month grain, a uniqueness test on the composite grain, and an accepted-range-style test that order_count is non-negative.",
+    "initialCode": "-- models/marts/metrics_customer_monthly.sql\n{{ config(materialized='table') }}\n\nwith orders as (\n    select * from {{ ref('fct_orders') }}\n),\n\nmonthly as (\n    -- TODO: aggregate to customer_id x month grain\n    select\n        customer_id,\n        date_trunc('month', order_date) as order_month,\n        sum(amount) as monthly_revenue,\n        count(*)    as order_count\n    from orders\n    group by 1, 2\n)\n\n-- TODO: add running_lifetime_revenue, prev_month_revenue (lag), revenue_mom_pct\nselect * from monthly",
+    "solutionCode": "-- models/marts/metrics_customer_monthly.sql\n{{ config(materialized='table') }}\n\nwith orders as (\n    select * from {{ ref('fct_orders') }}\n),\n\n-- Step 1: collapse to the reporting grain first\nmonthly as (\n    select\n        customer_id,\n        date_trunc('month', order_date) as order_month,\n        sum(amount)                     as monthly_revenue,\n        count(*)                        as order_count\n    from orders\n    group by 1, 2\n),\n\n-- Step 2: layer window metrics ON the aggregated grain (never on raw rows)\nwith_windows as (\n    select\n        customer_id,\n        order_month,\n        monthly_revenue,\n        order_count,\n        -- cumulative revenue up to and including this month, per customer\n        sum(monthly_revenue) over (\n            partition by customer_id\n            order by order_month\n            rows between unbounded preceding and current row\n        ) as running_lifetime_revenue,\n        -- prior month's revenue (NULL for the first month)\n        lag(monthly_revenue) over (\n            partition by customer_id\n            order by order_month\n        ) as prev_month_revenue\n    from monthly\n)\n\nselect\n    customer_id,\n    order_month,\n    monthly_revenue,\n    order_count,\n    running_lifetime_revenue,\n    prev_month_revenue,\n    -- guard divide-by-zero when prior month was 0 or NULL\n    case\n        when prev_month_revenue is null or prev_month_revenue = 0 then null\n        else round(\n            (monthly_revenue - prev_month_revenue) / prev_month_revenue * 100, 2\n        )\n    end as revenue_mom_pct\nfrom with_windows\n\n-- models/marts/_metrics_customer_monthly.yml\n-- version: 2\n-- models:\n--   - name: metrics_customer_monthly\n--     columns:\n--       - name: customer_id\n--         tests:\n--           - not_null\n--       - name: order_month\n--         tests:\n--           - not_null\n--       - name: order_count\n--         tests:\n--           - dbt_utils.accepted_range:\n--               min_value: 0\n--               inclusive: true\n--     tests:\n--       # composite grain must be unique\n--       - dbt_utils.unique_combination_of_columns:\n--           combination_of_columns:\n--             - customer_id\n--             - order_month",
+    "testCases": [],
+    "hint": "1. Aggregate to the customer x month grain BEFORE applying window functions.\n2. Cumulative sum uses rows between unbounded preceding and current row, partitioned by customer.\n3. Guard the MoM percent against divide-by-zero when the prior month is NULL or 0.",
+    "difficulty": "medium",
+    "exampleInput": "fct_orders (customer 1):\norder_date | amount\n2023-01-10 | 100\n2023-01-20 | 50\n2023-02-05 | 200",
+    "exampleOutput": "metrics_customer_monthly (customer 1):\norder_month | monthly_revenue | order_count | running_lifetime_revenue | prev_month_revenue | revenue_mom_pct\n2023-01     | 150             | 2           | 150                      | NULL               | NULL\n2023-02     | 200             | 1           | 350                      | 150                | 33.33",
+    "constraints": "Window functions must run on the aggregated grain, not raw orders, or the running total double-counts. The composite (customer_id, order_month) must be unique. MoM percent must not divide by zero. Months with no orders will simply be absent (gapless-month handling is out of scope unless a date spine is added).",
+    "hints": [
+      "Aggregate then window: two clean CTE layers instead of one tangled query.",
+      "unbounded preceding to current row is the canonical running-total frame."
+    ],
+    "bruteForce": "Apply window functions like sum(amount) over(...) directly on raw fct_orders rows and then group. Mixing row-level windows with a later group-by double-counts within the same month, and lag() over raw rows compares individual orders rather than months, producing meaningless MoM values.",
+    "optimized": "Two layered CTEs: first group to the customer-by-month grain, then apply cumulative sum and lag() window functions over that clean grain. This keeps the running total and MoM correct, guards divide-by-zero, and a composite-uniqueness test locks the grain.",
+    "complexity": {
+      "time": "one group-by + windowed sort per customer partition; full table rebuild",
+      "space": "one row per customer per active month"
+    },
+    "discussion": {
+      "whyAsked": "Metrics models test comfort with window functions and the discipline of aggregating to the correct grain before analytical functions.",
+      "mistakes": "Running windows on raw rows and double-counting; dividing by zero on MoM; wrong window frame so the running total is not truly cumulative.",
+      "followUps": [
+        "How would you fill gaps for months with zero orders using a date spine?",
+        "Would you expose these as dbt Semantic Layer / MetricFlow metrics instead of a table?"
+      ]
+    }
   }
 ];

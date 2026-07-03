@@ -1,5 +1,5 @@
 import React from 'react';
-import { Database, Code, Zap, Layers, Network, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
+import { Database, Code, Zap, Layers, Network, Terminal, Cloud, Radio, Workflow, Warehouse, Container, ShieldCheck, Siren, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
 import type { Category, Domain } from '../../../core/types/types';
 import { FRONTEND_TECHS } from '../../frontend/loader';
 import { BACKEND_TECHS } from '../../backend-engineering/loader';
@@ -28,11 +28,20 @@ const hexToBg = (hex: string) => {
 
 export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBack, domain = 'data-engineering' }) => {
   const countFor = (id: Category) => allTopics.filter(t => t.category === id).length;
+  // Ordered as the recommended zero-to-job learning path (Phase 1.1 roadmap).
   const dataOptions: TechOption[] = [
-    { id: 'data-engineering', title: 'Data Engineering Core', description: 'Master core concepts, data modeling, ETL pipelines, and data warehouse architecture.', icon: Network, color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.1)', available: true, topicCount: countFor('data-engineering') },
+    { id: 'foundations', title: 'Foundations (Start Here)', description: 'Command line, Linux, Git & version control, environment setup, and how to run jobs — the ground floor every Data Engineer stands on.', icon: Terminal, color: '#64748b', bg: 'rgba(100, 116, 139, 0.12)', available: true, topicCount: countFor('foundations') },
+    { id: 'python', title: 'Python for DE', description: 'Python from scratch for data work: data structures, files, pandas/NumPy, APIs, DB connectivity, logging, packaging, and testing pipelines.', icon: Code, color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', available: true, topicCount: countFor('python') },
     { id: 'sql', title: 'Advanced SQL', description: 'Deep dive into complex queries, window functions, query optimization, and performance tuning.', icon: Database, color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)', available: true, topicCount: countFor('sql') },
-    { id: 'python', title: 'Python for DE', description: 'Learn Python programming from scratch with a focus on data structures, OOP, and data manipulation.', icon: Code, color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', available: true, topicCount: countFor('python') },
+    { id: 'data-engineering', title: 'Data Engineering Core', description: 'Master core concepts, data modeling, ETL pipelines, and data warehouse architecture.', icon: Network, color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.1)', available: true, topicCount: countFor('data-engineering') },
+    { id: 'warehousing', title: 'Cloud Data Warehouses', description: 'Snowflake, BigQuery & Redshift: columnar/MPP architecture, partitioning & clustering, query optimization, cost & workload management, data sharing, and governance.', icon: Warehouse, color: '#0891b2', bg: 'rgba(8, 145, 178, 0.12)', available: true, topicCount: countFor('warehousing') },
+    { id: 'orchestration', title: 'dbt & Orchestration', description: 'Modern ELT with dbt (models, tests, snapshots, macros) and workflow orchestration with Airflow, Dagster & Prefect — schedule, backfill, and run pipelines reliably.', icon: Workflow, color: '#f97316', bg: 'rgba(249, 115, 22, 0.12)', available: true, topicCount: countFor('orchestration') },
     { id: 'pyspark', title: 'Apache PySpark', description: 'Scale your data processing with distributed computing, RDDs, DataFrames, and Spark SQL.', icon: Zap, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)', available: true, topicCount: countFor('pyspark') },
+    { id: 'streaming', title: 'Kafka & Streaming', description: 'Real-time data with Apache Kafka: topics, partitions, consumer groups, delivery semantics, schema registry, Kafka Connect, Debezium/CDC, and stream processing.', icon: Radio, color: '#14b8a6', bg: 'rgba(20, 184, 166, 0.12)', available: true, topicCount: countFor('streaming') },
+    { id: 'cloud', title: 'Cloud & Storage', description: 'Object storage, compute, IAM & security, managed data services, cost/FinOps, and cloud data-platform architecture across AWS, GCP & Azure.', icon: Cloud, color: '#0ea5e9', bg: 'rgba(14, 165, 233, 0.12)', available: true, topicCount: countFor('cloud') },
+    { id: 'devops', title: 'DevOps & Deployment', description: 'Containers (Docker), Kubernetes, Terraform/IaC, and CI/CD for data pipelines — package, deploy, test, and operate DE workloads reliably.', icon: Container, color: '#6366f1', bg: 'rgba(99, 102, 241, 0.12)', available: true, topicCount: countFor('devops') },
+    { id: 'dataquality', title: 'Data Quality & Observability', description: 'Trustworthy data: validation (Great Expectations/Soda), the five observability pillars, freshness/volume/schema monitoring, data contracts, SLAs/SLOs, and lineage-driven root-cause analysis.', icon: ShieldCheck, color: '#22c55e', bg: 'rgba(34, 197, 94, 0.12)', available: true, topicCount: countFor('dataquality') },
+    { id: 'sre', title: 'Reliability & On-Call (SRE)', description: 'Operate data in production: SLIs/SLOs & error budgets, incident response & blameless postmortems, on-call runbooks, idempotency & backfills, retries/DLQs, safe deploys & rollback, disaster recovery (RPO/RTO), cost/FinOps, and debugging pipeline failures at scale.', icon: Siren, color: '#f43f5e', bg: 'rgba(244, 63, 94, 0.12)', available: true, topicCount: countFor('sre') },
     { id: 'databricks', title: 'Databricks', description: 'Build modern data lakehouses, manage Delta Lake, and orchestrate workflows efficiently.', icon: Layers, color: '#a855f7', bg: 'rgba(168, 85, 247, 0.1)', available: true, topicCount: countFor('databricks') },
   ];
 
@@ -51,6 +60,15 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
 
   const completed = getCompleted();
   const completedFor = (id: Category) => Object.keys(completed).filter(tid => completed[tid] && tid.startsWith(id + '-')).length;
+
+  // Guided roadmap (Data Engineering domain only): the techs above are ordered
+  // as the recommended learning path; the first not-yet-finished step is the
+  // "recommended next" stop.
+  const isData = !isFrontend && !isBackend;
+  const stepIndex = (id: Category) => techOptions.findIndex(t => t.id === id);
+  const nextStepId: Category | null = isData
+    ? (dataOptions.find(t => t.available && completedFor(t.id) < t.topicCount)?.id ?? null)
+    : null;
 
   return (
     <div className="dashboard-container animate-fade-in" style={{
@@ -109,6 +127,58 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
         </p>
       </div>
 
+      {/* Guided Learning Roadmap (Data Engineering only) */}
+      {isData && (
+        <div style={{ width: '100%', maxWidth: '1100px', marginBottom: '36px', boxSizing: 'border-box' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.6px', color: 'var(--text-muted)' }}>Your Learning Path</span>
+            <span style={{ height: '1px', flex: 1, background: 'var(--border-glass)' }} />
+            {nextStepId && (
+              <button
+                onClick={() => onSelectTech(nextStepId)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontFamily: 'inherit', padding: '7px 14px', borderRadius: '999px', border: 'none', background: 'linear-gradient(135deg, #3b82f6, #a855f7)', color: '#fff', fontSize: '12.5px', fontWeight: 700 }}
+              >
+                {dataOptions.some(t => completedFor(t.id) > 0) ? 'Continue' : 'Start here'} <ChevronRight size={15} />
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '6px' }}>
+            {dataOptions.map((tech, i) => {
+              const done = completedFor(tech.id);
+              const pct = tech.topicCount ? Math.round((done / tech.topicCount) * 100) : 0;
+              const isNext = tech.id === nextStepId;
+              const isDone = tech.topicCount > 0 && done >= tech.topicCount;
+              return (
+                <React.Fragment key={tech.id}>
+                  <button
+                    onClick={() => onSelectTech(tech.id)}
+                    title={`${tech.title} — ${done}/${tech.topicCount} done`}
+                    style={{
+                      flex: '1 0 auto', minWidth: '132px', cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                      display: 'flex', flexDirection: 'column', gap: '8px',
+                      padding: '12px 14px', borderRadius: '12px',
+                      border: `1px solid ${isNext ? tech.color : 'var(--border-glass)'}`,
+                      background: isNext ? tech.bg : 'var(--bg-glass)',
+                      boxShadow: isNext ? `0 6px 18px -10px ${tech.color}` : 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ flexShrink: 0, width: '24px', height: '24px', borderRadius: '999px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800, background: isDone ? '#10b981' : tech.color, color: '#fff' }}>{isDone ? '✓' : i + 1}</span>
+                      <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>{tech.title.replace(' (Start Here)', '')}</span>
+                    </div>
+                    <div style={{ height: '5px', borderRadius: '999px', background: 'var(--bg-inner)', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${pct}%`, background: tech.color, borderRadius: '999px' }} />
+                    </div>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 600 }}>{isNext ? 'Recommended next' : isDone ? 'Completed' : done > 0 ? `${pct}%` : `${tech.topicCount} topics`}</span>
+                  </button>
+                  {i < dataOptions.length - 1 && <span style={{ alignSelf: 'center', color: 'var(--text-muted)', flexShrink: 0 }}>→</span>}
+                </React.Fragment>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))',
@@ -148,12 +218,17 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <div style={{
-                width: '52px', height: '52px', borderRadius: '14px',
-                background: tech.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                transition: 'transform 0.3s ease'
-              }} className="icon-container">
-                <tech.icon size={26} color={tech.color} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{
+                  width: '52px', height: '52px', borderRadius: '14px',
+                  background: tech.bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'transform 0.3s ease'
+                }} className="icon-container">
+                  <tech.icon size={26} color={tech.color} />
+                </div>
+                {isData && stepIndex(tech.id) >= 0 && (
+                  <span style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: tech.id === nextStepId ? tech.color : 'var(--text-muted)', background: 'var(--bg-inner)', border: `1px solid ${tech.id === nextStepId ? tech.color : 'var(--border-glass)'}`, padding: '3px 9px', borderRadius: '999px', whiteSpace: 'nowrap' }}>Step {stepIndex(tech.id) + 1}</span>
+                )}
               </div>
               {tech.available
                 ? <ChevronRight size={22} color="var(--text-muted)" className="card-arrow" style={{ transition: 'transform 0.3s ease' }} />

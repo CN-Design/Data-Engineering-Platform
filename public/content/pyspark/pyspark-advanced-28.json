@@ -1,0 +1,427 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Spark configuration is the layered system of properties (spark.* keys) that control how a Spark application requests resources, executes work, and tunes SQL/shuffle behavior; resource sizing is the practice of translating a physical cluster's cores and memory into concrete --num-executors, --executor-cores, and --executor-memory values that maximize throughput without wasting capacity.",
+      "Configs are resolved by a strict precedence chain: properties set programmatically via SparkConf/SparkSession.builder.config in code override --conf flags passed to spark-submit, which override values in spark-defaults.conf, which override Spark's built-in defaults; understanding this order prevents 'my setting had no effect' surprises.",
+      "Correct sizing balances the fat-vs-thin executor trade-off: too few large executors waste cores and cause GC pauses, too many tiny executors lose HDFS/S3 throughput and broadcast/cache efficiency; the industry rule of thumb is ~5 cores per executor, reserving 1 core and 1GB per node for the OS and daemons, then subtracting one executor for the driver/ApplicationMaster."
+    ],
+    "learningObjectives": [
+      "Master the four config sources (SparkConf in code, --conf on spark-submit, spark-defaults.conf, defaults) and their exact precedence order, plus which configs are runtime-mutable versus static (require restart).",
+      "Learn the resource sizing math: compute num-executors, executor-cores, and executor-memory from a raw cluster spec using the 5-cores-per-executor rule and the 7% memory overhead formula, including a fully worked 6-node example.",
+      "Understand how to size parallelism knobs (spark.sql.shuffle.partitions, spark.default.parallelism, spark.sql.files.maxPartitionBytes) using the ~128-200MB-per-partition target, and how dynamic allocation and AQE make sizing adaptive at runtime."
+    ],
+    "formalDefinition": "Spark configuration is a hierarchical key-value property system (SparkConf) whose values are merged from four sources in decreasing precedence: (1) properties set in application code via SparkConf.set or SparkSession.builder.config, (2) --conf and named flags on spark-submit, (3) the spark-defaults.conf file on the submitting host, and (4) hard-coded defaults. Resource sizing is the deterministic allocation of an executor topology — a chosen tuple of (executor count, cores per executor, heap memory per executor, memory overhead) — derived from the cluster's total cores and RAM minus reserved OS/daemon capacity, subject to the container limits of the resource manager (YARN/Kubernetes) and the parallelism required by the workload's data volume.",
+    "simpleExplanation": "Think of a Spark cluster as a fleet of delivery trucks (nodes), each with a fixed number of seats (cores) and cargo space (memory). Configuration is the settings sheet telling the dispatcher how to split each truck into delivery crews (executors): how many crews per truck, how many workers per crew, and how much cargo each crew carries. If crews are too big, workers stand around idle and the cargo gets clumsy to manage; if crews are too small, you spend all day hiring and coordinating instead of delivering. Sizing is the arithmetic of carving each truck into balanced crews after setting aside one worker and a bit of cargo space for the driver and the truck's own upkeep.",
+    "historicalContext": "Early Spark (0.x/1.x) relied entirely on manually tuned static configs; getting num-executors and executor-memory wrong was the number-one cause of OutOfMemoryError and underutilized clusters, and community blog posts (notably Cloudera's 2015 'How-to: Tune Your Apache Spark Jobs') codified the 5-cores-per-executor and reserved-resource heuristics that are still cited today. Spark 1.2 introduced dynamic allocation to scale executors with demand, reducing manual guesswork. Spark 3.0 (2020) shipped Adaptive Query Execution (AQE), which re-sizes shuffle partitions and switches join strategies at runtime using real statistics, shifting much of the burden from static tuning to adaptive runtime decisions — though correct base sizing (cores, memory, overhead) remains a manual, precedence-aware task.",
+    "whyItMatters": {
+      "business": "Right-sized clusters finish jobs on time for SLAs while avoiding paying for idle cores; a mis-sized job that runs 3x slower on a metered cloud cluster triples the bill for the same output, so configuration directly maps to the cloud invoice and time-to-insight.",
+      "engineering": "Configuration precedence and sizing are the levers engineers pull to fix OOM crashes, disk spill, and stragglers; knowing that a SparkConf.set overrides spark-defaults.conf, and that 5 cores/executor beats 16, is the difference between a stable pipeline and a nightly pager alert.",
+      "scalability": "Parallelism configs (shuffle.partitions, default.parallelism) and dynamic allocation let the same code scale from a laptop to thousands of cores by changing numbers, not logic; sizing partitions to ~128-200MB keeps task counts proportional to data as volume grows 10x.",
+      "cost": "Every over-provisioned executor core is billed but idle, and every under-provisioned job spills to disk and reruns; tuning num-executors and executor-cores to fully pack nodes, plus enabling dynamic allocation to release idle executors, is the single largest cost lever in Spark operations.",
+      "reliability": "Correct memory sizing (heap + the 7% off-heap overhead) prevents container kills by YARN/Kubernetes for exceeding memory limits — the classic 'Container killed by YARN for exceeding memory limits' error — making jobs deterministic and pager-quiet."
+    },
+    "coreComponents": [
+      {
+        "name": "Configuration Precedence Chain",
+        "definition": "The ordered resolution of spark.* properties from four sources: SparkConf/builder.config in code (highest), --conf on spark-submit, spark-defaults.conf, then built-in defaults (lowest).",
+        "purpose": "To let operators set cluster-wide baselines in spark-defaults.conf, override per-submission with --conf, and force critical values in code, with a predictable winner when the same key appears in multiple places.",
+        "responsibilities": "Merge all four sources at SparkContext creation, apply the highest-precedence value per key, and distinguish static configs (fixed at launch) from runtime-mutable configs (settable via spark.conf.set after start).",
+        "examples": "spark.executor.memory set to 8g in spark-defaults.conf but --conf spark.executor.memory=16g on submit yields 16g; adding .config('spark.executor.memory','20g') in code yields 20g."
+      },
+      {
+        "name": "Executor Topology (num-executors, executor-cores, executor-memory)",
+        "definition": "The three primary sizing parameters that define how many executor JVMs run, how many concurrent task slots (cores) each has, and how much heap memory each is allocated.",
+        "purpose": "To pack the cluster's cores and RAM into balanced JVMs that maximize parallel task throughput while leaving room for the OS, node daemons, and the driver/ApplicationMaster.",
+        "responsibilities": "Determine total parallelism (num-executors x executor-cores), per-task memory budget (executor-memory / executor-cores), and container size (executor-memory + overhead) that must fit within the node and resource-manager limits.",
+        "examples": "--num-executors 15 --executor-cores 5 --executor-memory 19g gives 75 concurrent task slots on a 6-node 16-core/64GB cluster."
+      },
+      {
+        "name": "Memory Overhead",
+        "definition": "The off-heap memory (spark.executor.memoryOverhead, default max(384MB, 7% of executor memory)) reserved per executor container on top of the JVM heap for VM overheads, shuffle buffers, and native/off-heap allocations.",
+        "purpose": "To ensure the total container request (heap + overhead) does not exceed the resource manager's limit, preventing YARN/Kubernetes from killing the container.",
+        "responsibilities": "Cover Netty shuffle buffers, Python worker processes (PySpark), off-heap caches, and JVM metaspace; must be subtracted from the memory available before setting executor-memory.",
+        "examples": "For a 21GB container budget, overhead ~= 21 * 0.07 ~= 1.5GB (rounded up), so executor-memory is set to ~19GB."
+      },
+      {
+        "name": "Parallelism Configs",
+        "definition": "Properties that control partition/task counts: spark.sql.shuffle.partitions (post-shuffle, default 200), spark.default.parallelism (RDD ops, default = total cores), and spark.sql.files.maxPartitionBytes (read split size, default 128MB).",
+        "purpose": "To match the number of tasks to data volume and cluster cores, targeting ~128-200MB per partition to avoid tiny-task overhead and oversized-partition spill.",
+        "responsibilities": "Set post-shuffle partition count for SQL/DataFrame aggregations and joins, initial parallelism for RDD operations, and how large input file splits become read partitions.",
+        "examples": "For 100GB of shuffle data targeting 128MB partitions: 100*1024/128 ~= 800, so set spark.sql.shuffle.partitions to ~800."
+      },
+      {
+        "name": "Dynamic Allocation and AQE",
+        "definition": "Adaptive features: dynamic allocation (spark.dynamicAllocation.enabled) scales executors between minExecutors and maxExecutors based on pending tasks; AQE (spark.sql.adaptive.enabled) re-sizes shuffle partitions and switches join strategies at runtime.",
+        "purpose": "To reduce the burden of perfect static sizing by adding/removing executors on demand and coalescing over-partitioned shuffles using real statistics after each stage.",
+        "responsibilities": "Dynamic allocation requests/releases executors and (with shuffleTracking or an external shuffle service) preserves shuffle data; AQE coalesces partitions toward advisoryPartitionSizeInBytes and auto-broadcasts small sides.",
+        "examples": "spark.dynamicAllocation.enabled=true with minExecutors=2, maxExecutors=50 grows the app under load; spark.sql.adaptive.coalescePartitions.enabled=true shrinks 200 empty shuffle partitions down to a handful."
+      }
+    ],
+    "internalWorking": [
+      "At submission, spark-submit reads spark-defaults.conf on the launching host, layers any --conf and named flags (--num-executors, --executor-cores, --executor-memory) on top, and passes the merged set to the launcher environment.",
+      "When the SparkContext is created, a SparkConf object is built by merging the launcher-provided values with any properties set in code via SparkSession.builder.config/SparkConf.set; code-level settings win, and the final resolved config is what governs the run.",
+      "The driver contacts the resource manager (YARN ResourceManager / Kubernetes API) requesting num-executors containers, each sized executor-memory + memoryOverhead and executor-cores CPUs; the manager schedules containers on nodes that have free capacity, so requests exceeding node limits are silently capped or rejected.",
+      "Each executor JVM starts with executor-cores task slots; the TaskScheduler assigns one task per slot, so total cluster parallelism equals num-executors x executor-cores, and each running task shares executor-memory (unified memory: execution + storage regions managed by spark.memory.fraction).",
+      "For SQL/DataFrame jobs, static configs like spark.sql.shuffle.partitions fix the post-shuffle task count unless AQE is enabled, in which case AQE reads the actual shuffle map output sizes and coalesces partitions toward advisoryPartitionSizeInBytes at runtime; static configs (e.g. executor-memory) cannot change after launch, while runtime configs (e.g. spark.sql.shuffle.partitions before a query, shuffle-related SQL knobs) can be set via spark.conf.set."
+    ],
+    "architectureFlow": "spark-defaults.conf (baseline) -> spark-submit merges --conf + named flags -> SparkConf built at SparkContext init -> code-level builder.config overrides win -> Driver requests N containers (cores + memory + overhead) from YARN/K8s -> Resource Manager schedules executors on nodes -> Executors expose (num-executors x executor-cores) task slots -> TaskScheduler fills slots -> Parallelism/AQE configs size shuffle partitions at runtime -> Dynamic allocation adds/removes executors on demand",
+    "dataFlowWalkthrough": [
+      "1. Operator sets cluster-wide spark.serializer=KryoSerializer and spark.sql.shuffle.partitions=400 in spark-defaults.conf on the edge node.",
+      "2. Engineer runs spark-submit --num-executors 15 --executor-cores 5 --executor-memory 19g --conf spark.sql.shuffle.partitions=800 app.py, overriding the shuffle-partitions baseline to 800 for this job.",
+      "3. app.py contains SparkSession.builder.config('spark.sql.autoBroadcastJoinThreshold', '20m'), which takes final precedence for that key.",
+      "4. The driver requests 15 executors of 19g heap + ~2g overhead (~21g containers) and 5 cores each from YARN; YARN places 3 executors on each of 5 nodes (the 6th node's slot goes to the driver/AM).",
+      "5. A groupBy triggers a shuffle; with AQE off, exactly 800 post-shuffle partitions (tasks) run across the 75 available slots in ceil(800/75) ~= 11 waves; with AQE on, 800 partitions coalesce toward the advisory size if the actual data is smaller."
+    ],
+    "keyTerminology": [
+      {
+        "term": "spark-defaults.conf",
+        "meaning": "A properties file (in $SPARK_HOME/conf) on the submitting host holding default spark.* key=value pairs applied to every application submitted from that host.",
+        "importance": "The lowest-precedence explicit source; ideal for cluster-wide baselines (serializer, shuffle service, default parallelism) that individual jobs can still override."
+      },
+      {
+        "term": "Executor Cores",
+        "meaning": "The number of concurrent task slots (threads) per executor JVM, set by --executor-cores / spark.executor.cores.",
+        "importance": "Controls per-executor parallelism and HDFS/S3 throughput; ~5 is the sweet spot because higher values cause I/O contention and lower values waste JVM overhead."
+      },
+      {
+        "term": "Memory Overhead",
+        "meaning": "Off-heap memory per container (spark.executor.memoryOverhead), default max(384MB, 0.07 * executorMemory), added on top of the heap.",
+        "importance": "Ignoring it causes containers to exceed the resource-manager limit and get killed; it must be subtracted before setting executor-memory."
+      },
+      {
+        "term": "spark.sql.shuffle.partitions",
+        "meaning": "The number of partitions (tasks) produced after a shuffle for DataFrame/SQL operations; default 200.",
+        "importance": "The most impactful SQL tuning knob; too low underutilizes cores and causes spill, too high creates tiny-task overhead — size to ~128-200MB per partition."
+      },
+      {
+        "term": "Dynamic Allocation",
+        "meaning": "The feature (spark.dynamicAllocation.enabled) that adds and removes executors at runtime based on pending/idle task backlog, bounded by min/max/initialExecutors.",
+        "importance": "Improves cluster sharing and cost by releasing idle executors, but requires shuffle data preservation via an external shuffle service or shuffleTracking."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Fat vs Thin Executors",
+        "explanation": "A 'fat' executor takes many cores and lots of memory (few executors per node); a 'thin' executor takes 1-2 cores (many executors per node). Fat executors suffer long GC pauses and can't achieve good HDFS throughput per JVM, and one executor per node loses parallelism for broadcast/cache; thin executors waste memory on duplicated broadcast copies and JVM overhead and lose I/O concurrency. The balanced middle — ~5 cores per executor — maximizes HDFS/S3 read throughput while keeping GC and overhead manageable."
+      },
+      {
+        "concept": "The 5-Cores-Per-Executor Rule",
+        "explanation": "Empirically, HDFS client throughput peaks at roughly 5 concurrent tasks (cores) per executor; beyond that, contention on the HDFS/S3 client degrades per-task throughput. So sizing starts by fixing executor-cores ~= 5, then deriving executors-per-node = floor(available_cores_per_node / 5), and total executors = executors_per_node x nodes, minus one executor reserved for the driver/ApplicationMaster."
+      },
+      {
+        "concept": "Static vs Runtime Configuration",
+        "explanation": "Static configs (spark.executor.memory, spark.executor.cores, spark.driver.memory, spark.serializer) are locked at application launch and require a restart to change. Runtime configs (many spark.sql.* knobs like shuffle.partitions, autoBroadcastJoinThreshold, adaptive settings) can be changed after the SparkSession starts via spark.conf.set and take effect on subsequent queries. Trying to change a static config with spark.conf.set silently has no effect."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Static sizing:** Explicit --num-executors/--executor-cores/--executor-memory computed from the cluster; predictable and simplest to reason about for fixed batch workloads.",
+      "**Dynamic allocation:** spark.dynamicAllocation.enabled with minExecutors/maxExecutors/initialExecutors; executors scale with demand, ideal for multi-tenant clusters and variable workloads.",
+      "**AQE-driven adaptive sizing:** spark.sql.adaptive.enabled coalesces shuffle partitions and adjusts joins at runtime, reducing dependence on a perfect spark.sql.shuffle.partitions value.",
+      "**Config-source variations:** spark-defaults.conf (cluster baseline), spark-submit --conf / named flags (per-job), SparkConf/builder.config in code (application-forced), and environment (SPARK_CONF_DIR) selection of which defaults file is used.",
+      "**Resource-manager variations:** YARN (containers via executor-memory + memoryOverhead), Kubernetes (pods via spark.kubernetes.executor.request/limit.cores and memory), and Standalone (spark.cores.max / spark.executor.cores) each interpret sizing configs slightly differently."
+    ],
+    "advantages": [
+      "**Predictable resource control:** Explicit sizing gives deterministic parallelism and memory budgets, making job runtime and cost reproducible across runs.",
+      "**Precedence flexibility:** The four-source chain lets ops set safe baselines while individual jobs override just what they need without editing global files.",
+      "**Cost efficiency:** Packing nodes fully (5 cores/executor, correct overhead) and enabling dynamic allocation eliminates idle-core billing.",
+      "**Adaptivity without code changes:** AQE and dynamic allocation adjust partition counts and executor counts at runtime, absorbing data-volume variance automatically."
+    ],
+    "disadvantages": [
+      "**Manual math is error-prone:** Forgetting overhead, reserved OS cores, or the driver executor leads to container kills or wasted capacity.",
+      "**Static configs need restarts:** Correcting executor-memory or cores requires resubmitting the whole application, slowing iteration.",
+      "**One size does not fit all stages:** A single spark.sql.shuffle.partitions value is a compromise across stages with very different data volumes (mitigated only by AQE).",
+      "**Dynamic allocation complexity:** It requires an external shuffle service or shuffleTracking and can cause thrashing (add/remove churn) if idle timeouts are mistuned."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use explicit static sizing for stable, well-understood batch jobs where you know the data volume and want reproducible cost/runtime; enable AQE always in Spark 3.x, and add dynamic allocation on shared/multi-tenant clusters or highly variable workloads.",
+      "whenToAvoid": "Avoid hand-tuned static executor counts on bursty, unpredictable workloads (prefer dynamic allocation), and avoid disabling AQE unless you have a specific reason, since a static shuffle.partitions rarely fits all stages. Avoid over-large (fat) executors that trigger long GC pauses and avoid single-core (thin) executors that waste memory and I/O concurrency."
+    },
+    "realWorldAnalogy": "Configuring and sizing Spark is like staffing a restaurant kitchen. spark-defaults.conf is the standard operating manual every shift follows; the --conf flags are the head chef's notes for tonight's special menu; and settings hard-coded in the app are non-negotiable rules the owner insists on (owner beats chef beats manual beats habit — that's precedence). Sizing is deciding how many cooking stations (executors) to set up per kitchen (node), how many cooks per station (cores), and how much counter space each gets (memory) — while always reserving one cook and some counter space for the expediter/dishwasher (OS and daemons) and one whole station for the head chef coordinating orders (the driver). Five cooks per station is the sweet spot: pack in more and they bump elbows (I/O contention); staff too few and you pay for empty stations.",
+    "commonMisconceptions": [
+      {
+        "myth": "Setting spark.executor.memory with spark.conf.set() after the SparkSession starts will resize my executors.",
+        "reality": "Executor memory and cores are static, resolved at launch; spark.conf.set on them has no effect. You must set them via SparkConf/builder.config before SparkContext creation, --conf, or spark-defaults.conf and resubmit."
+      },
+      {
+        "myth": "More executor cores always means faster jobs.",
+        "reality": "Beyond ~5 cores per executor, HDFS/S3 client throughput degrades from contention and GC gets worse; very fat executors are often slower than several 5-core executors with the same total cores."
+      },
+      {
+        "myth": "executor-memory is the total memory each container needs.",
+        "reality": "The container also needs off-heap memoryOverhead (default max(384MB, 7% of heap)); the resource manager allocates executor-memory + overhead, so you must subtract overhead when fitting executors into a node."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Scale by right-sizing parallelism to data: keep executor-cores ~5, set spark.sql.shuffle.partitions and spark.sql.files.maxPartitionBytes so each partition is ~128-200MB, and enable dynamic allocation with a sensible maxExecutors so the app grows with load without swamping the cluster.",
+      "reliability": "Always account for memoryOverhead to avoid 'Container killed by YARN for exceeding memory limits'; size driver memory for the collected results and broadcast tables; and prefer AQE to absorb skew and data-volume drift so a fixed config does not silently OOM as data grows.",
+      "faultTolerance": "With dynamic allocation, enable an external shuffle service (or spark.dynamicAllocation.shuffleTracking.enabled) so shuffle files survive executor removal; set spark.task.maxFailures and spark.stage.maxConsecutiveAttempts to bound retries after executor loss.",
+      "highAvailability": "Run the driver in cluster mode with resource-manager restart (spark.yarn.maxAppAttempts) so a driver failure relaunches the application; for long-running apps, size driver memory generously since the DAGScheduler and broadcast state live there.",
+      "disasterRecovery": "Keep spark-defaults.conf and submission scripts version-controlled so a cluster can be rebuilt with identical sizing; for streaming, checkpoint to durable storage so a resized/restarted app resumes from the last offset regardless of new executor topology.",
+      "performanceOptimization": "Use KryoSerializer (spark.serializer=org.apache.spark.serializer.KryoSerializer) and register classes; keep 5 cores/executor; enable AQE coalescing (spark.sql.adaptive.coalescePartitions.enabled) and set advisoryPartitionSizeInBytes; tune autoBroadcastJoinThreshold up (e.g., 20-50MB) when driver memory allows to eliminate shuffle joins.",
+      "costOptimization": "Pack nodes fully and enable dynamic allocation to release idle executors (spark.dynamicAllocation.executorIdleTimeout); on cloud, use maxExecutors caps and spot instances with an external shuffle service so reclaimed executors do not force full recompute; avoid over-provisioned static clusters billed while idle.",
+      "securityConsiderations": "Do not put secrets in spark-defaults.conf or --conf (visible in the UI/environment tab and process listings); use secret managers or Kubernetes secrets, enable spark.authenticate, spark.network.crypto.enabled, and spark.io.encryption.enabled for shuffle/cached data on shared clusters.",
+      "monitoringAndObservability": "Use the Spark UI Environment tab to verify the resolved (effective) config values after precedence merging, the Executors tab to confirm the actual executor count/cores/memory and GC time, and the Stages tab to watch task counts, spill, and skew that indicate mis-sized partitions.",
+      "dataQualityValidation": "Sizing does not change results, but under-sized memory causing spill or over-aggressive coalescing can change performance characteristics used in SLAs; validate output row counts and partition file sizes so a config change (e.g., shuffle.partitions) does not produce thousands of tiny output files.",
+      "loggingAndAlerting": "Log the effective config (SparkConf.getAll) at startup for audit; alert on executor OOM/container-kill events, high GC time percentage in the Executors tab, and repeated dynamic-allocation add/remove churn indicating mistuned idle timeouts."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Setting Configuration in Code with Correct Precedence",
+        "overview": "Shows how to set static and SQL configs via SparkSession.builder.config (highest precedence) and how to distinguish static configs from runtime-mutable ones set with spark.conf.set.",
+        "code": "from pyspark.sql import SparkSession\n\n# builder.config values are the highest-precedence source (override --conf and spark-defaults.conf)\nspark = (SparkSession.builder\n         .appName(\"ConfigAndSizing\")\n         # --- Static configs: must be set BEFORE the session is created ---\n         .config(\"spark.executor.instances\", \"15\")\n         .config(\"spark.executor.cores\", \"5\")\n         .config(\"spark.executor.memory\", \"19g\")\n         .config(\"spark.executor.memoryOverhead\", \"2g\")\n         .config(\"spark.driver.memory\", \"19g\")\n         .config(\"spark.serializer\", \"org.apache.spark.serializer.KryoSerializer\")\n         # --- SQL/parallelism configs ---\n         .config(\"spark.sql.shuffle.partitions\", \"800\")\n         .config(\"spark.sql.files.maxPartitionBytes\", str(128 * 1024 * 1024))\n         .config(\"spark.sql.autoBroadcastJoinThreshold\", str(20 * 1024 * 1024))\n         .config(\"spark.sql.adaptive.enabled\", \"true\")\n         .config(\"spark.sql.adaptive.coalescePartitions.enabled\", \"true\")\n         .config(\"spark.sql.adaptive.advisoryPartitionSizeInBytes\", str(128 * 1024 * 1024))\n         .getOrCreate())\n\n# Runtime-mutable config: changing shuffle.partitions after start DOES take effect on next query\nspark.conf.set(\"spark.sql.shuffle.partitions\", \"400\")\n\n# Static config: this has NO effect after the session exists (executors already launched)\nspark.conf.set(\"spark.executor.memory\", \"32g\")  # silently ignored\n\n# Verify the effective resolved config\nprint(\"shuffle.partitions =\", spark.conf.get(\"spark.sql.shuffle.partitions\"))\nprint(\"executor.memory   =\", spark.conf.get(\"spark.executor.memory\"))\n",
+        "language": "python",
+        "breakdown": "builder.config sets both static (executor.instances/cores/memory, serializer) and runtime (spark.sql.*) properties before the session is built, so they win over --conf and spark-defaults.conf. After getOrCreate, spark.conf.set changes spark.sql.shuffle.partitions for later queries (runtime-mutable) but silently no-ops on spark.executor.memory (static, executors already exist). spark.conf.get reads the effective resolved value.",
+        "expectedOutput": "shuffle.partitions = 400\nexecutor.memory   = 19g\n(Note: executor.memory stays 19g — the post-start set to 32g was ignored because it is a static config.)",
+        "commonIssues": "The most common trap is expecting spark.conf.set('spark.executor.memory', ...) after startup to resize executors — it does nothing. Also, when a SparkSession already exists (e.g., in a notebook), getOrCreate reuses it and ignores new .config() calls.",
+        "optimizationTips": "Set static sizing via spark-submit flags or spark-defaults.conf for reusable jobs, and reserve builder.config for values you want the app to force regardless of the environment. Always print SparkConf.getAll() at startup for auditability."
+      },
+      {
+        "title": "Worked Resource-Sizing Calculation and Generated spark-submit",
+        "overview": "Implements the full sizing formula for a 6-node x 16-core x 64GB cluster using the 5-cores rule, reserved OS/daemon resources, and 7% overhead, then prints the spark-submit command.",
+        "code": "import math\n\n# --- Cluster spec ---\nnodes = 6\ncores_per_node = 16\nmem_per_node_gb = 64\n\n# 1) Reserve 1 core + 1GB per node for OS / node daemons (e.g., NodeManager)\nusable_cores_per_node = cores_per_node - 1          # 15\nusable_mem_per_node_gb = mem_per_node_gb - 1         # 63\n\n# 2) Fix ~5 cores per executor (HDFS throughput sweet spot)\nexecutor_cores = 5\nexecutors_per_node = usable_cores_per_node // executor_cores   # 15 // 5 = 3\n\n# 3) Total executors across the cluster, then subtract 1 for the driver / ApplicationMaster\ntotal_executors = executors_per_node * nodes - 1     # 3*6 - 1 = 17 ... reserve 1 => commonly 15-16\nnum_executors = executors_per_node * nodes - 1        # 17 raw; many teams reserve one node-slot -> 15\n\n# 4) Memory per executor = usable node memory / executors per node, minus 7% overhead\nmem_per_executor_gb = usable_mem_per_node_gb / executors_per_node          # 63/3 = 21\noverhead_gb = math.ceil(mem_per_executor_gb * 0.07)                        # ceil(1.47) = 2\nexecutor_memory_gb = math.floor(mem_per_executor_gb - overhead_gb)         # 21 - 2 = 19\n\nprint(f\"executor-cores   = {executor_cores}\")\nprint(f\"executors/node   = {executors_per_node}\")\nprint(f\"num-executors    = {num_executors} (leave 1 for driver/AM)\")\nprint(f\"executor-memory  = {executor_memory_gb}g\")\nprint(f\"memoryOverhead   = {overhead_gb}g\")\nprint(f\"total task slots = {num_executors * executor_cores}\")\n\nsubmit = (\n    f\"spark-submit --master yarn --deploy-mode cluster \\\\\\n\"\n    f\"  --num-executors {num_executors} \\\\\\n\"\n    f\"  --executor-cores {executor_cores} \\\\\\n\"\n    f\"  --executor-memory {executor_memory_gb}g \\\\\\n\"\n    f\"  --conf spark.executor.memoryOverhead={overhead_gb}g \\\\\\n\"\n    f\"  --driver-memory {executor_memory_gb}g \\\\\\n\"\n    f\"  --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \\\\\\n\"\n    f\"  --conf spark.sql.adaptive.enabled=true \\\\\\n\"\n    f\"  app.py\"\n)\nprint(submit)\n",
+        "language": "python",
+        "breakdown": "Step 1 reserves 1 core + 1GB per node for OS/daemons, leaving 15 cores and 63GB. Step 2 fixes 5 cores/executor, giving floor(15/5)=3 executors per node. Step 3 computes 3*6=18 raw executors and subtracts 1 for the driver/AM (commonly ending at 15-17 after further reservation). Step 4 splits 63GB across 3 executors = 21GB, subtracts ceil(7%)=2GB overhead, yielding 19GB heap per executor. Total task slots = num_executors * 5.",
+        "expectedOutput": "executor-cores   = 5\nexecutors/node   = 3\nnum-executors    = 17 (leave 1 for driver/AM)\nexecutor-memory  = 19g\nmemoryOverhead   = 2g\ntotal task slots = 85\nspark-submit --master yarn --deploy-mode cluster \\\n  --num-executors 17 \\\n  --executor-cores 5 \\\n  --executor-memory 19g \\\n  --conf spark.executor.memoryOverhead=2g \\\n  --driver-memory 19g \\\n  --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \\\n  --conf spark.sql.adaptive.enabled=true \\\n  app.py",
+        "commonIssues": "Teams often forget to subtract the driver/AM executor (over-request and YARN caps it) or forget overhead (containers get killed). Deciding between 15, 16, or 17 executors depends on whether you dedicate a full node's slot to the driver; in cluster mode the AM/driver consumes one executor-sized slot.",
+        "optimizationTips": "For sizing spark.sql.shuffle.partitions, compute total_shuffle_bytes / target_partition_bytes (e.g., 100GB / 128MB ~= 800). Keep it >= total task slots so no cores sit idle, and enable AQE coalescing so over-estimation is corrected at runtime."
+      },
+      {
+        "title": "Enabling Dynamic Allocation and AQE for Adaptive Sizing",
+        "overview": "Configures dynamic allocation with min/max/initial executors plus shuffle tracking, and AQE coalescing so the application self-sizes at runtime.",
+        "code": "from pyspark.sql import SparkSession\n\nspark = (SparkSession.builder\n         .appName(\"AdaptiveSizing\")\n         # --- Dynamic Allocation: scale executors with demand ---\n         .config(\"spark.dynamicAllocation.enabled\", \"true\")\n         .config(\"spark.dynamicAllocation.minExecutors\", \"2\")\n         .config(\"spark.dynamicAllocation.maxExecutors\", \"50\")\n         .config(\"spark.dynamicAllocation.initialExecutors\", \"10\")\n         .config(\"spark.dynamicAllocation.executorIdleTimeout\", \"60s\")\n         # Preserve shuffle data when executors are removed (no external shuffle service needed)\n         .config(\"spark.dynamicAllocation.shuffleTracking.enabled\", \"true\")\n         # Base per-executor sizing still applies\n         .config(\"spark.executor.cores\", \"5\")\n         .config(\"spark.executor.memory\", \"19g\")\n         # --- AQE: adaptive shuffle partition sizing + join switching ---\n         .config(\"spark.sql.adaptive.enabled\", \"true\")\n         .config(\"spark.sql.adaptive.coalescePartitions.enabled\", \"true\")\n         .config(\"spark.sql.adaptive.advisoryPartitionSizeInBytes\", \"128m\")\n         .config(\"spark.sql.adaptive.skewJoin.enabled\", \"true\")\n         .config(\"spark.sql.autoBroadcastJoinThreshold\", \"10m\")\n         # Start with a high shuffle partition count; AQE coalesces down as needed\n         .config(\"spark.sql.shuffle.partitions\", \"1000\")\n         .getOrCreate())\n\ndf = spark.read.parquet(\"/data/events.parquet\")\nresult = df.groupBy(\"country\").count()\nresult.write.mode(\"overwrite\").parquet(\"/out/by_country\")\nprint(\"AQE coalesced partitions:\", result.rdd.getNumPartitions())\n",
+        "language": "python",
+        "breakdown": "Dynamic allocation lets the app run between 2 and 50 executors, starting at 10, releasing any idle for 60s; shuffleTracking preserves shuffle files so removed executors do not cause fetch failures. AQE is enabled with coalescePartitions targeting 128MB advisory size, skew-join handling, and auto-broadcast at 10MB. spark.sql.shuffle.partitions is intentionally set high (1000) because AQE will coalesce down to the right count based on real shuffle sizes.",
+        "expectedOutput": "AQE coalesced partitions: 12\n(Spark UI Executors tab shows executor count rising toward demand then dropping toward minExecutors; the SQL tab shows 'CoalescedShuffleReader' merging the 1000 planned partitions down to ~12 based on actual data volume.)",
+        "commonIssues": "Dynamic allocation without shuffleTracking or an external shuffle service causes FetchFailedExceptions when executors are removed. Setting maxExecutors too high can starve other tenants. AQE only coalesces down, so an initially-too-low shuffle.partitions cannot be increased at runtime — start high.",
+        "optimizationTips": "Start spark.sql.shuffle.partitions well above your expected need (e.g., 1000-2000) and let AQE coalesce; tune executorIdleTimeout to avoid add/remove thrashing; raise autoBroadcastJoinThreshold to 20-50MB if driver memory allows to convert more joins to broadcast."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A data platform team's nightly aggregation job on a 6-node cluster keeps failing with 'Container killed by YARN for exceeding memory limits' and, when it does run, wastes half the cluster (idle cores) and produces thousands of tiny output files. They need a principled sizing and configuration strategy that is stable, fully utilizes the cluster, and produces reasonable output file sizes.",
+    "inputData": "events.parquet (~500GB, ~2 billion rows: event_id, user_id, country, amount, ts) landing daily in HDFS, joined against users.parquet (~40MB dimension: user_id, segment). Cluster: 6 nodes, each 16 cores and 64GB RAM, running on YARN.",
+    "architecture": "PySpark batch job submitted in YARN cluster mode. spark-defaults.conf provides cluster baselines (KryoSerializer, external shuffle service). spark-submit supplies computed sizing flags; the app sets SQL/AQE configs via builder.config. Executor topology derived from the 5-cores rule with 7% overhead; AQE enabled for runtime partition coalescing.",
+    "processingSteps": [
+      "1. Compute sizing: reserve 1 core + 1GB/node -> 15 cores, 63GB usable; 5 cores/executor -> 3 executors/node -> 18 raw, minus 1 for driver/AM -> ~17 executors; 63/3 = 21GB, minus 7% overhead (2GB) -> 19GB heap.",
+      "2. Set baseline in spark-defaults.conf: spark.serializer=KryoSerializer, spark.shuffle.service.enabled=true, spark.sql.adaptive.enabled=true.",
+      "3. Submit: spark-submit --num-executors 17 --executor-cores 5 --executor-memory 19g --conf spark.executor.memoryOverhead=2g --driver-memory 19g --conf spark.sql.shuffle.partitions=4096 app.py (high shuffle count so AQE coalesces down).",
+      "4. In code, broadcast the 40MB dimension (spark.sql.autoBroadcastJoinThreshold=64m) so the join avoids a shuffle, keeping scan+filter+join in one stage.",
+      "5. groupBy('country').agg(...) triggers a shuffle; AQE coalesces the 4096 planned partitions toward 128MB each based on actual ~120GB shuffle output -> ~960 partitions; write to HDFS with reasonable file sizes."
+    ],
+    "output": "A partitioned Parquet aggregate of metrics by country and segment, written as a few hundred ~128MB files (not thousands of tiny ones), completing within the SLA with 85 task slots fully utilized.",
+    "monitoring": "Spark UI Environment tab confirms the effective config (19g executor memory, 5 cores, overhead 2g) after precedence merging; the Executors tab shows 17 executors, low GC time, and no container kills; the SQL tab shows the BroadcastHashJoin and the AQE CoalescedShuffleReader reducing 4096 partitions to ~960.",
+    "errorHandling": "The prior OOM/container-kill was caused by requesting 21g heap with no overhead budget (container 21g > effective limit) and by fat 8-core executors with long GC; adding a 2g overhead and dropping to 5 cores/19g eliminated the kills. With the external shuffle service on, executors lost to node pressure recover without full recompute; spark.task.maxFailures=4 bounds task retries.",
+    "finalResult": "By computing the executor topology from first principles (5 cores/executor, reserved OS/daemon resources, 7% overhead), setting a high shuffle-partition count for AQE to coalesce, and broadcasting the small dimension, the team eliminated the container-kill failures, raised cluster utilization from ~50% to ~95%, cut runtime from 70 to 24 minutes, and reduced output from ~9,000 tiny files to ~960 well-sized files."
+  },
+  "industryUseCases": [
+    {
+      "company": "Cloudera (customer engagements)",
+      "problem": "Enterprise customers repeatedly hit OutOfMemoryError and underutilized YARN clusters because executor sizing was guessed rather than calculated.",
+      "solution": "Cloudera codified the now-standard sizing methodology — reserve 1 core + 1GB per node for OS/NodeManager, use ~5 cores per executor, subtract one executor for the driver/AM, and reserve ~7% memory overhead — and taught customers to derive num-executors/executor-cores/executor-memory from the cluster spec.",
+      "benefits": "Turned executor sizing from trial-and-error into a repeatable calculation, eliminating the most common OOM failures and dramatically improving cluster utilization and job throughput."
+    },
+    {
+      "company": "Netflix",
+      "problem": "Thousands of heterogeneous Spark jobs run on shared, elastic cloud clusters where static per-job sizing wastes capacity and fixed shuffle-partition counts fit no single job well.",
+      "solution": "Netflix leans on dynamic allocation with an external shuffle service to scale executors per job, sets conservative cluster-wide spark-defaults.conf baselines, and enables AQE so shuffle partitions self-size at runtime rather than relying on a global spark.sql.shuffle.partitions.",
+      "benefits": "Elastic executor scaling and adaptive partitioning let one config baseline serve diverse workloads, maximizing shared-cluster utilization and reducing per-job tuning toil."
+    },
+    {
+      "company": "Databricks (platform)",
+      "problem": "Customers running interactive and job clusters need good performance without deep manual tuning of shuffle partitions, join strategies, or executor counts.",
+      "solution": "Databricks enables AQE by default (adaptive coalescing, skew handling, dynamic join switching) and provides autoscaling clusters that add/remove worker nodes based on load, abstracting much of the static sizing and parallelism configuration away from users.",
+      "benefits": "AQE plus autoscaling removes most hand-tuning of spark.sql.shuffle.partitions and executor counts, giving near-optimal performance with sensible defaults and lower operational overhead."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Total parallelism = num-executors x executor-cores, so scaling means adding executors (or enabling dynamic allocation up to maxExecutors) while holding ~5 cores/executor. Partition-level scalability comes from sizing spark.sql.shuffle.partitions to total_shuffle_bytes / ~128MB and spark.sql.files.maxPartitionBytes to control read splits, keeping task counts proportional to data as volume grows.",
+    "faultTolerance": "Correct memory sizing (heap + overhead) prevents container kills that manifest as task/executor loss. For dynamic allocation, an external shuffle service or spark.dynamicAllocation.shuffleTracking.enabled preserves shuffle files when executors are removed; spark.task.maxFailures and spark.stage.maxConsecutiveAttempts bound retries so transient node issues do not fail the job.",
+    "highAvailability": "In YARN cluster mode, spark.yarn.maxAppAttempts relaunches the driver/ApplicationMaster on failure; because the driver holds broadcast variables and scheduler state, size spark.driver.memory to hold the largest broadcast and any collected results, and avoid client mode for long-running production jobs.",
+    "disasterRecovery": "Version-control spark-defaults.conf, submission scripts, and the sizing calculation so a replacement cluster is provisioned identically; for streaming apps, durable checkpointing means a restarted (and possibly resized) application resumes from the last committed offset regardless of the new executor topology.",
+    "performanceOptimization": "Enable KryoSerializer for faster/compacter serialization; keep 5 cores/executor to protect HDFS/S3 throughput and limit GC; enable AQE coalescing with a 128MB advisory size to avoid tiny/oversized partitions; raise autoBroadcastJoinThreshold to broadcast more dimension tables; and set spark.sql.files.maxPartitionBytes so reads produce ~128MB partitions matching downstream stages.",
+    "costOptimization": "Fully pack nodes (no idle cores from bad executor math), enable dynamic allocation with executorIdleTimeout to release idle executors, cap maxExecutors to control shared-cluster spend, and prefer AQE so you do not over-provision partitions/executors 'just in case'. On cloud, combine spot instances with an external shuffle service so reclamation does not force full recompute.",
+    "securityConsiderations": "Never store credentials in spark-defaults.conf or --conf; both appear in the Spark UI Environment tab and OS process listings. Use secret stores or Kubernetes secrets, and enable spark.authenticate, spark.network.crypto.enabled (RPC encryption), and spark.io.encryption.enabled (shuffle/spill encryption) on shared or regulated clusters.",
+    "monitoringAndObservability": "The Environment tab shows the final resolved config so you can confirm precedence outcomes; the Executors tab reports actual executor count, cores, memory, and GC time (flagging fat-executor GC problems); the Stages tab exposes task counts, shuffle read/write, and spill that indicate mis-sized partitions; the SQL tab shows AQE coalescing and join choices.",
+    "dataQualityValidation": "Sizing must not change results, but validate that partition/output-file counts stay reasonable after config changes (e.g., a shuffle.partitions change can produce thousands of tiny files or a few huge ones); assert output row counts and monitor average output file size as a quality gate.",
+    "loggingAndAlerting": "Log SparkConf.getAll() at startup for config audit and reproducibility; alert on container-kill/OOM events, sustained high GC-time percentage, disk spill volume, and dynamic-allocation add/remove churn, all of which signal a sizing or configuration problem."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Compute, don't guess:** Derive executor topology from the cluster spec using ~5 cores/executor, reserved OS/daemon resources, and 7% overhead rather than picking round numbers.",
+      "**Respect memory overhead:** Always budget spark.executor.memoryOverhead (>= 7% or 384MB) so containers never exceed the resource-manager limit.",
+      "**Enable AQE in Spark 3.x:** Set spark.sql.adaptive.enabled=true with coalescePartitions so shuffle partition counts self-tune from real statistics.",
+      "**Size shuffle partitions to data:** Target ~128-200MB per partition (total_shuffle_bytes / target), and keep the count >= total task slots so no core is idle."
+    ],
+    "engineeringStandards": [
+      "Keep cluster-wide baselines (serializer, shuffle service, adaptive defaults) in version-controlled spark-defaults.conf, and override per-job with --conf; reserve builder.config for values the app must force.",
+      "Never put secrets in spark-defaults.conf or --conf; use secret managers, since these values are exposed in the Spark UI Environment tab.",
+      "Log the effective SparkConf.getAll() at startup and confirm sizing on the Executors tab before declaring a job production-ready."
+    ],
+    "designRecommendations": [
+      "Prefer several 5-core executors over a single fat executor per node to protect HDFS/S3 throughput and keep GC pauses short.",
+      "Set spark.sql.shuffle.partitions high and let AQE coalesce down, rather than guessing a single low value that fits no stage.",
+      "Use dynamic allocation with min/max/initialExecutors on shared or bursty clusters, backed by an external shuffle service or shuffleTracking."
+    ],
+    "namingConventions": [
+      "Name submission scripts and config profiles by workload and cluster (e.g., nightly_agg_6node_yarn.sh) so sizing intent is obvious.",
+      "Prefix custom application configs with a namespace (e.g., spark.myteam.*) so they are distinguishable from Spark's own keys in the Environment tab."
+    ],
+    "documentationStandards": [
+      "Record the sizing calculation (cluster spec -> reserved -> executors/cores/memory/overhead) in the job runbook so future changes recompute from the same basis.",
+      "Document which configs are set where (spark-defaults.conf vs --conf vs code) and why, to make precedence outcomes auditable.",
+      "Capture expected task-slot count, shuffle-partition target, and output file-size range so regressions are easy to detect."
+    ],
+    "testingStrategies": [
+      "Run a small representative sample to observe actual shuffle bytes, then verify the shuffle-partition target yields ~128-200MB partitions before scaling to full data.",
+      "Inject config errors (omit overhead, use fat executors) in a staging cluster to confirm monitoring/alerts catch container kills and high GC.",
+      "Assert output file counts and sizes in integration tests so a config change does not silently produce thousands of tiny files."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Setting executor-memory to the full node memory divided by executors, ignoring memoryOverhead.",
+      "whyItHappens": "Engineers reason 'each executor gets its share of RAM' and forget the container also needs off-heap overhead on top of the heap.",
+      "impact": "The container request (heap + 7% overhead) exceeds the resource-manager limit, causing 'Container killed by YARN for exceeding memory limits' and repeated task failures.",
+      "correctApproach": "Compute per-executor memory as usable_node_mem / executors_per_node, then subtract ~7% (or set spark.executor.memoryOverhead explicitly) and set executor-memory to the remainder."
+    },
+    {
+      "mistake": "Using fat executors (e.g., 16 cores, one executor per node) to maximize parallelism.",
+      "whyItHappens": "More cores per executor looks like more parallelism, and fewer executors seems simpler to manage.",
+      "impact": "HDFS/S3 client throughput degrades beyond ~5 concurrent tasks, GC pauses grow with the large heap, and losing one executor loses a huge chunk of work; jobs often run slower than with 5-core executors.",
+      "correctApproach": "Fix executor-cores at ~5 and derive executors-per-node = floor(usable_cores / 5), yielding multiple balanced executors per node."
+    },
+    {
+      "mistake": "Leaving spark.sql.shuffle.partitions at the default 200 regardless of data volume.",
+      "whyItHappens": "It is the default and works fine on small data, so it is never revisited as datasets grow.",
+      "impact": "On large data, 200 partitions means huge partitions that spill to disk and cause OOM; on small data it means 200 tiny tasks with scheduling overhead and many tiny output files.",
+      "correctApproach": "Size it to total_shuffle_bytes / ~128MB (and >= total task slots), or enable AQE coalescing so the count self-tunes at runtime; start high and let AQE coalesce down."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Where to set a configuration property",
+      "optionA": "spark-defaults.conf (cluster baseline)",
+      "optionB": "--conf on spark-submit or builder.config in code (per-job)",
+      "explanation": "spark-defaults.conf sets a shared default for every job launched from a host — good for serializer, shuffle service, and adaptive baselines. Per-job --conf and code-level builder.config override that baseline for a single application; code-level settings have the highest precedence. Use the file for stable cluster-wide values and per-job overrides for what varies."
+    },
+    {
+      "feature": "Executor shape for a given total core budget",
+      "optionA": "Fat executors (many cores, few executors per node)",
+      "optionB": "Balanced executors (~5 cores each, several per node)",
+      "explanation": "Fat executors have long GC pauses, poor HDFS/S3 throughput per JVM, and coarse failure granularity. Balanced ~5-core executors hit the HDFS throughput sweet spot, keep GC manageable, and lose less work on executor failure. For the same total cores, several 5-core executors usually outperform one giant executor."
+    },
+    {
+      "feature": "Sizing strategy: static vs adaptive",
+      "optionA": "Static sizing (fixed executors + fixed shuffle.partitions)",
+      "optionB": "Dynamic allocation + AQE (adaptive at runtime)",
+      "explanation": "Static sizing is predictable and simple for stable batch jobs with known data volume, but a fixed shuffle-partition count fits no varied workload and idle executors waste money. Dynamic allocation scales executors with demand and AQE coalesces shuffle partitions from real statistics, giving better utilization and less hand-tuning at the cost of some complexity (needs shuffle preservation, can thrash if mistuned)."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What are the different places you can set a Spark configuration, and which one wins?",
+        "answer": "You can set configs in code via SparkConf/SparkSession.builder.config, via --conf and named flags on spark-submit, in spark-defaults.conf, or rely on built-in defaults. Precedence, highest to lowest, is: code (builder.config/SparkConf) > spark-submit --conf/flags > spark-defaults.conf > defaults.",
+        "explanation": "Emphasize the ordering and that code-level settings override everything, which is why a value set in spark-defaults.conf can appear 'ignored' if code sets the same key."
+      },
+      {
+        "question": "What do executor-cores, num-executors, and executor-memory control?",
+        "answer": "num-executors is how many executor JVMs run; executor-cores is the number of concurrent task slots per executor; executor-memory is the heap size per executor. Total parallelism = num-executors x executor-cores, and each executor also needs off-heap memoryOverhead on top of executor-memory.",
+        "explanation": "Mention that total task slots and per-task memory both derive from these three, and that overhead is separate from the heap."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "Given a cluster of 6 nodes, each with 16 cores and 64GB RAM, how would you size executors?",
+        "answer": "Reserve 1 core + 1GB per node for OS/daemons -> 15 cores, 63GB usable. Use ~5 cores/executor -> 3 executors/node -> 18 across the cluster, minus 1 for the driver/AM -> ~17 executors. Memory per executor = 63/3 = 21GB, minus ~7% overhead (2GB) -> ~19GB heap. So roughly --num-executors 17 --executor-cores 5 --executor-memory 19g with 2g overhead.",
+        "explanation": "Walk through each step out loud: reserve OS resources, fix 5 cores, compute executors/node, subtract the driver, then split memory and subtract overhead. Interviewers want the reasoning, not just the numbers."
+      },
+      {
+        "question": "How do you size spark.sql.shuffle.partitions, and why is the default 200 often wrong?",
+        "answer": "Target ~128-200MB per partition: partitions = total_shuffle_bytes / target. For 100GB of shuffle data at 128MB, that's ~800 partitions. The default 200 is fine for small data but on large data yields oversized partitions that spill/OOM, and on small data yields 200 tiny tasks and tiny files. Enabling AQE coalescing lets it self-tune.",
+        "explanation": "Tie it to the ~128MB target and mention keeping partitions >= total task slots so no core is idle, plus AQE as the adaptive alternative."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "Why is ~5 cores per executor recommended, and what goes wrong at the extremes?",
+        "answer": "HDFS/S3 client throughput peaks around 5 concurrent tasks per executor; beyond that, I/O contention on the client degrades per-task throughput. Very fat executors also suffer long GC pauses on large heaps and coarse failure granularity. Very thin (1-2 core) executors waste memory on duplicated broadcast copies and JVM overhead and lose I/O concurrency. Five balances throughput, GC, and overhead.",
+        "explanation": "Connect the rule to the fat-vs-thin trade-off and mention broadcast-copy duplication and GC as the concrete failure modes at the extremes."
+      },
+      {
+        "question": "How do dynamic allocation and AQE reduce the need for perfect static sizing, and what must you have in place?",
+        "answer": "Dynamic allocation scales executors between minExecutors and maxExecutors based on pending tasks, releasing idle ones after executorIdleTimeout — but it needs an external shuffle service or spark.dynamicAllocation.shuffleTracking.enabled so removed executors don't cause fetch failures. AQE coalesces over-provisioned shuffle partitions toward advisoryPartitionSizeInBytes and switches join strategies using real post-shuffle statistics, so a high spark.sql.shuffle.partitions is corrected at runtime.",
+        "explanation": "Stress the prerequisite (shuffle preservation) for dynamic allocation and that AQE only coalesces down, so you start the partition count high."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your job fails with 'Container killed by YARN for exceeding memory limits' even though you set executor-memory to exactly the per-executor share of node RAM. What is wrong and how do you fix it?",
+        "thinkingProcess": "The container request is executor-memory + memoryOverhead. If executor-memory already equals the full per-executor share, adding the default overhead (max(384MB, 7%)) pushes the container over the node/RM limit, so YARN kills it. The fix is to leave headroom for overhead.",
+        "expectedAnswer": "Reduce executor-memory so that heap + overhead fits: compute per-executor budget (e.g., 21GB), subtract ~7% overhead (~2GB), and set executor-memory to ~19GB with spark.executor.memoryOverhead=2g. Also verify you reserved 1 core + 1GB per node for the OS/daemons. This keeps the total container within the resource-manager limit and stops the kills."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design the configuration and sizing strategy for a multi-tenant Spark platform on a 20-node YARN cluster running dozens of daily jobs of varying sizes. How do you set defaults, size resources, and keep utilization high without manual per-job tuning?",
+        "designApproach": "Put stable baselines in a version-controlled spark-defaults.conf (KryoSerializer, external shuffle service, spark.sql.adaptive.enabled=true, sensible autoBroadcastJoinThreshold). Standardize executor shape at ~5 cores each with 7% overhead. Enable dynamic allocation (min/max/initialExecutors) so each job scales with demand, and rely on AQE to self-size shuffle partitions (jobs start with a high spark.sql.shuffle.partitions that AQE coalesces).",
+        "tradeOffs": "Dynamic allocation improves sharing but needs shuffle preservation and can thrash if idle timeouts are mistuned; AQE removes manual partition tuning but only coalesces down. Cluster-wide defaults simplify operations but individual heavy jobs may still need --conf overrides. Higher maxExecutors helps big jobs but risks starving small ones without queue/pool controls.",
+        "scalingStrategy": "Use YARN queues/fair scheduler pools to bound each tenant's maxExecutors, cap dynamic allocation per job, enable the external shuffle service so executors can be reclaimed safely, and monitor the Executors tab for GC and add/remove churn to retune idle timeouts. Size shuffle partitions by data (AQE-coalesced) so parallelism tracks volume as the platform grows."
+      }
+    ],
+    "followUpQuestions": [
+      "Which configs are static (require restart) versus runtime-mutable via spark.conf.set?",
+      "How does spark.default.parallelism differ from spark.sql.shuffle.partitions?",
+      "How does spark.sql.files.maxPartitionBytes affect the number of read partitions?",
+      "Why should you enable KryoSerializer, and what must you do for custom classes?",
+      "How do you decide the driver memory, and when does the driver become the bottleneck?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Spark configuration is a four-source precedence system (code > spark-submit --conf > spark-defaults.conf > defaults) and resource sizing is deriving num-executors/executor-cores/executor-memory from the cluster using ~5 cores/executor, reserved OS/daemon resources, and ~7% memory overhead.",
+    "keyConcepts": [
+      "Precedence: builder.config/SparkConf (code) > --conf/flags (spark-submit) > spark-defaults.conf > defaults.",
+      "5 cores per executor is the HDFS/S3 throughput sweet spot (fat vs thin trade-off).",
+      "Reserve 1 core + 1GB per node for OS/daemons, and 1 executor for the driver/AM.",
+      "Container memory = executor-memory (heap) + memoryOverhead (max(384MB, 7%)).",
+      "Total parallelism = num-executors x executor-cores; size shuffle partitions to ~128-200MB each."
+    ],
+    "formulas": [
+      "usable_cores_per_node = cores_per_node - 1; usable_mem_per_node = mem_per_node - 1GB",
+      "executors_per_node = floor(usable_cores_per_node / 5); num_executors = executors_per_node * nodes - 1 (driver/AM)",
+      "mem_per_executor = usable_mem_per_node / executors_per_node; executor_memory = mem_per_executor - ceil(0.07 * mem_per_executor)",
+      "spark.sql.shuffle.partitions = ceil(total_shuffle_bytes / ~128MB); total_task_slots = num_executors * executor_cores",
+      "spark.default.parallelism default = total cores; read partitions ~= input_bytes / spark.sql.files.maxPartitionBytes (128MB)"
+    ],
+    "commands": [
+      "spark-submit --num-executors 17 --executor-cores 5 --executor-memory 19g --conf spark.executor.memoryOverhead=2g app.py",
+      "SparkSession.builder.config('spark.sql.shuffle.partitions','800').config('spark.serializer','org.apache.spark.serializer.KryoSerializer')",
+      "spark.conf.set('spark.sql.shuffle.partitions','400')  # runtime-mutable; static configs are ignored here",
+      "spark.conf.get('spark.executor.memory'); print(spark.sparkContext.getConf().getAll())  # audit effective config",
+      "--conf spark.dynamicAllocation.enabled=true --conf spark.sql.adaptive.enabled=true"
+    ],
+    "interviewPoints": [
+      "Code-level configs override --conf, which overrides spark-defaults.conf, which overrides defaults.",
+      "Always subtract memoryOverhead (>=7%) or containers get killed by YARN/K8s.",
+      "~5 cores/executor beats fat executors (GC, HDFS contention) and thin executors (overhead, broadcast duplication).",
+      "Static configs (executor memory/cores) need a restart; many spark.sql.* configs are runtime-mutable.",
+      "Start shuffle.partitions high and let AQE coalesce; it only coalesces down, never up."
+    ],
+    "quickNotes": [
+      "spark.sql.autoBroadcastJoinThreshold default is 10MB; raise it to broadcast more dimensions.",
+      "spark.sql.files.maxPartitionBytes default 128MB controls read-side partition size.",
+      "Dynamic allocation needs an external shuffle service or shuffleTracking to preserve shuffle files.",
+      "Never store secrets in spark-defaults.conf/--conf; they show in the UI Environment tab.",
+      "6-node 16c/64GB -> ~17 execs x 5 cores x 19g heap (2g overhead) = 85 task slots (classic worked example)."
+    ]
+  },
+  "keyTakeaways": [
+    "Spark resolves configuration from four sources with strict precedence: SparkConf/builder.config in code beats spark-submit --conf/flags, which beat spark-defaults.conf, which beat built-in defaults.",
+    "Resource sizing is arithmetic, not guesswork: reserve 1 core + 1GB per node for OS/daemons, fix ~5 cores per executor, subtract one executor for the driver/AM, split the remaining memory per executor, and subtract ~7% overhead (e.g., 6x16c/64GB -> ~17 executors x 5 cores x 19g).",
+    "The fat-vs-thin trade-off makes ~5 cores/executor the sweet spot: fatter executors suffer GC and HDFS contention, thinner ones waste memory and I/O concurrency.",
+    "Size parallelism to data: target ~128-200MB per partition for spark.sql.shuffle.partitions and spark.sql.files.maxPartitionBytes, keep total tasks >= num-executors x executor-cores, and never leave the default 200 unquestioned on large data.",
+    "Let the runtime help: enable AQE (coalescePartitions, advisoryPartitionSizeInBytes) and dynamic allocation (min/max/initialExecutors with shuffle preservation) so partition and executor counts self-tune, while remembering static configs like executor memory require a restart."
+  ]
+}

@@ -1,0 +1,457 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Delta Lake MERGE (upsert) is a single atomic operation that reconciles a source dataset against a target Delta table, applying INSERT, UPDATE, and DELETE in one transaction based on a match condition, so you can express 'update if exists, insert if new, delete if flagged' without multiple write passes.",
+      "Under the hood a MERGE is a copy-on-write operation: Delta performs an inner join between source and target to discover which target files contain matching rows, then rewrites only those touched Parquet files with the merged result and commits a new version via the transaction log, leaving unmatched files untouched.",
+      "MERGE is the foundation of production data patterns like SCD Type 1/Type 2 dimensions, CDC (change-data-capture) apply, GDPR deletes, deduplication, and idempotent incremental loads, all built on Delta's ACID guarantees and optimistic concurrency control."
+    ],
+    "learningObjectives": [
+      "Master both the SQL MERGE INTO syntax and the Python DeltaTable.merge() builder API, including whenMatchedUpdate/Delete, whenNotMatchedInsert, and the *All() convenience variants.",
+      "Understand the two-phase copy-on-write execution of MERGE (find-touched-files join, then rewrite files) and how partition pruning in the ON condition limits the number of rewritten files.",
+      "Learn to implement SCD Type 1 and Type 2 upserts, CDC apply patterns with source deduplication, idempotent merges, and performance tuning via repartitionBeforeWrite, ZORDER, low-shuffle merge, and deletion vectors."
+    ],
+    "formalDefinition": "MERGE INTO is a Delta Lake DML operation that atomically upserts a source relation into a target Delta table under a boolean match predicate: for each target/source pair satisfying the ON condition, WHEN MATCHED clauses may UPDATE or DELETE the target row, and WHEN NOT MATCHED clauses may INSERT the source row (with WHEN NOT MATCHED BY SOURCE optionally updating/deleting target rows absent from the source). Execution is copy-on-write: Delta joins source and target to identify data files containing matched rows, rewrites those files with the merge result, and commits the file additions/removals atomically to the transaction log, protected by optimistic concurrency control that aborts with a ConcurrentModificationException if a conflicting commit occurred.",
+    "simpleExplanation": "Think of MERGE as reconciling a stack of incoming changes against a filing cabinet of existing records. You match each incoming slip to a folder by ID: if the folder exists you either replace its contents (update) or shred it (delete), and if there is no folder you file a brand-new one (insert). Delta does all of this in one go and only reopens the drawers (files) that actually contain matching folders, so it never rewrites the whole cabinet just to change a few records.",
+    "historicalContext": "Before Delta Lake, upserts on data lakes were painful: HDFS/S3 Parquet is immutable, so teams simulated updates by reading a full partition, applying changes in Spark, and overwriting the partition, which was slow, non-atomic, and prone to partial writes on failure. Databricks open-sourced Delta Lake in 2019, and MERGE INTO (Delta 0.3.0 / Spark SQL support in 0.4+) brought database-style upserts to the lake with ACID guarantees. Subsequent releases added the DeltaTable.merge() Scala/Python builder, WHEN NOT MATCHED BY SOURCE clauses (Delta 2.3), Change Data Feed (Delta 2.0), low-shuffle merge, and deletion vectors (Delta 2.3+/3.0) that made MERGE dramatically faster by avoiding full file rewrites for deletes and updates.",
+    "whyItMatters": {
+      "business": "Reliable upserts let businesses maintain a single source of truth (customer, inventory, orders) that is continuously kept current from operational systems, powering accurate dashboards, ML features, and regulatory reporting without brittle full reloads.",
+      "engineering": "MERGE collapses the classic read-modify-write-overwrite pattern into one atomic, declarative statement, eliminating custom reconciliation code, partial-write bugs, and race conditions, and giving engineers database-grade semantics on cheap object storage.",
+      "scalability": "Copy-on-write with file-level pruning means MERGE cost scales with the amount of changed data and the number of touched files, not the total table size, so a table can grow to billions of rows while daily merges rewrite only the affected files.",
+      "cost": "By rewriting only touched files (aided by partition pruning, ZORDER, and deletion vectors) MERGE avoids reprocessing entire partitions, cutting compute, S3 request, and I/O costs versus full-partition overwrite strategies.",
+      "reliability": "ACID transactions and optimistic concurrency guarantee that a MERGE is all-or-nothing and isolated from concurrent writers, so a failed job never leaves the table half-updated and concurrent streams do not corrupt each other."
+    },
+    "coreComponents": [
+      {
+        "name": "Target Delta Table",
+        "definition": "The managed or external Delta table being upserted into, addressable by name (catalog.schema.table) or storage path.",
+        "purpose": "Holds the authoritative state that MERGE mutates atomically; its transaction log (_delta_log) records every add/remove of data files per commit.",
+        "responsibilities": "Provides the current snapshot for the match join, exposes partitioning/clustering used for file pruning, and enforces ACID commit semantics via the log.",
+        "examples": "DeltaTable.forName(spark, 'silver.customers') or DeltaTable.forPath(spark, 's3://lake/silver/customers')."
+      },
+      {
+        "name": "Source Relation",
+        "definition": "The incoming DataFrame, view, or SQL query supplying new/changed rows to reconcile against the target.",
+        "purpose": "Carries the deltas (inserts/updates/deletes) to apply; must be deduplicated on the merge key or the merge fails with a multiple-match error.",
+        "responsibilities": "Deliver at most one matching row per target row for the ON key, optionally carry an operation flag (e.g. op = 'I'/'U'/'D') for CDC and ordering columns for SCD2.",
+        "examples": "A CDC batch read from Kafka/Auto Loader, deduplicated with row_number() over a version/timestamp column."
+      },
+      {
+        "name": "Match Condition (ON predicate)",
+        "definition": "The boolean join predicate that pairs source rows to target rows, e.g. target.id = source.id AND target.dt = source.dt.",
+        "purpose": "Determines which rows are MATCHED vs NOT MATCHED and, critically, enables partition pruning so Delta only scans and rewrites relevant files.",
+        "responsibilities": "Include partition columns when possible to prune files, be sargable (avoid non-deterministic functions), and uniquely identify rows to prevent multiple-match errors.",
+        "examples": "ON t.customer_id = s.customer_id AND t.region = s.region -- region is a partition column, so only matching partitions' files are touched."
+      },
+      {
+        "name": "WHEN Clauses (Matched / Not Matched / Not Matched By Source)",
+        "definition": "The action clauses: WHEN MATCHED [AND cond] THEN UPDATE/DELETE, WHEN NOT MATCHED [AND cond] THEN INSERT, WHEN NOT MATCHED BY SOURCE [AND cond] THEN UPDATE/DELETE.",
+        "purpose": "Express the full upsert/delete logic declaratively, including conditional actions and full-row shortcuts (UPDATE SET *, INSERT *).",
+        "responsibilities": "Evaluated in order per matched pair; the first satisfied clause of each type wins. Optional AND sub-conditions gate each action; at most one MATCHED action may apply per row.",
+        "examples": "WHEN MATCHED AND s.op = 'D' THEN DELETE / WHEN MATCHED THEN UPDATE SET * / WHEN NOT MATCHED THEN INSERT *."
+      },
+      {
+        "name": "Transaction Log & Optimistic Concurrency Control",
+        "definition": "The _delta_log JSON/checkpoint files that serialize commits, plus the OCC protocol that validates a commit against concurrent changes before finalizing.",
+        "purpose": "Guarantee atomicity, isolation, and idempotency of the MERGE and detect write-write conflicts.",
+        "responsibilities": "Record RemoveFile/AddFile actions for rewritten files, assign a monotonically increasing table version, and throw ConcurrentModificationException (ConcurrentAppend/Delete) when a conflicting commit sneaks in.",
+        "examples": "Version 42 commit removing 3 files and adding 2 rewritten files; a concurrent MERGE on the same files retries after re-reading the snapshot."
+      }
+    ],
+    "internalWorking": [
+      "Phase 1 (find touched files): Delta runs an inner join between the source and the current target snapshot on the ON condition to determine exactly which target data files contain at least one matching row. Partition predicates in the ON clause prune files here so only relevant partitions are scanned.",
+      "If only INSERT (WHEN NOT MATCHED) clauses exist and there are no matched rows, Delta short-circuits and simply appends new files without rewriting any existing files.",
+      "Phase 2 (rewrite): For the identified touched files, Delta performs an outer join of source against the rows of those files, applies the matched/not-matched actions to produce the new row set, and writes brand-new Parquet files containing the merged result (copy-on-write). Untouched files are never read or rewritten.",
+      "Commit: Delta atomically records the removal of the old touched files and the addition of the new files in a single _delta_log entry with a new version number; the operation is all-or-nothing.",
+      "Concurrency check: Before committing, OCC validates that no concurrent transaction added/removed files that conflict with the files this MERGE read or wrote; if a conflict is detected it raises a ConcurrentModificationException and the job must retry against the latest snapshot.",
+      "Optimizations: With deletion vectors enabled, DELETE/UPDATE-heavy merges can mark rows as removed in a side file instead of rewriting whole Parquet files (merge-on-read for deletes), and low-shuffle merge reduces the shuffle of unmodified rows during the rewrite, both cutting the volume of rewritten data."
+    ],
+    "architectureFlow": "Source DataFrame (deduplicated on key) -> DeltaTable.merge(source, onCondition) -> Phase 1: inner join to find touched target files (partition pruning applied) -> WHEN clauses evaluated (Matched UPDATE/DELETE, NotMatched INSERT, NotMatchedBySource) -> Phase 2: rewrite touched files copy-on-write (or deletion vectors) -> Atomic commit to _delta_log (RemoveFile + AddFile, new version) -> OCC conflict check -> new table snapshot; OPTIMIZE/ZORDER as follow-up maintenance",
+    "dataFlowWalkthrough": [
+      "1. A CDC batch arrives with columns id, name, op ('I'/'U'/'D'), ts; the source is deduplicated with row_number() over id ordered by ts desc so exactly one row per id survives.",
+      "2. DeltaTable.forName(spark,'silver.customers').alias('t').merge(dedup.alias('s'), 't.id = s.id') builds the merge; the ON predicate includes the partition column country to prune files.",
+      "3. Phase 1 inner-joins s to the current snapshot of t on the condition; only files in the countries present in s are scanned, and the set of touched files is computed.",
+      "4. WHEN MATCHED AND s.op='D' THEN DELETE removes retired customers; WHEN MATCHED THEN UPDATE SET * refreshes changed rows; WHEN NOT MATCHED AND s.op<>'D' THEN INSERT * adds new customers.",
+      "5. Phase 2 rewrites only the touched Parquet files with the merged rows and commits RemoveFile/AddFile atomically as version N+1; if a concurrent writer committed first, OCC retries the whole merge on the fresh snapshot."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Upsert",
+        "meaning": "The combined update-or-insert operation MERGE performs: update rows that match, insert rows that do not.",
+        "importance": "It is the canonical incremental-load primitive; understanding upsert semantics is prerequisite to SCD and CDC patterns."
+      },
+      {
+        "term": "Copy-on-write (COW)",
+        "meaning": "The strategy where any change to a Parquet file causes the whole file to be rewritten with the modified rows, since object-store files are immutable.",
+        "importance": "Explains why MERGE cost depends on the number and size of touched files and why partition pruning and file sizing matter."
+      },
+      {
+        "term": "SCD Type 1 vs Type 2",
+        "meaning": "SCD1 overwrites the dimension attribute in place (no history); SCD2 closes the current row (set end_date/is_current=false) and inserts a new versioned row to preserve history.",
+        "importance": "Determines the MERGE clause structure; SCD2 requires a two-step insert+update pattern to record history correctly."
+      },
+      {
+        "term": "Change Data Feed (CDF)",
+        "meaning": "A Delta table property (delta.enableChangeDataFeed=true) that records row-level inserts/updates/deletes so downstream consumers can read only changes via table_changes().",
+        "importance": "Enables efficient downstream CDC propagation from tables that are themselves merged into."
+      },
+      {
+        "term": "Deletion Vectors",
+        "meaning": "A merge-on-read feature where deleted/updated rows are recorded in a bitmap side-file instead of rewriting the whole Parquet file, deferring the rewrite to OPTIMIZE.",
+        "importance": "Greatly reduces write amplification for delete/update-heavy merges, improving MERGE throughput."
+      },
+      {
+        "term": "Optimistic Concurrency Control (OCC)",
+        "meaning": "Delta's concurrency model: transactions proceed without locks and validate for conflicts at commit time, aborting with ConcurrentModificationException on write-write conflicts.",
+        "importance": "Dictates retry logic and partitioning strategy for concurrent merges on the same table."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Source Deduplication Before Merge",
+        "explanation": "Delta requires that at most one source row matches any given target row; otherwise MERGE fails with 'Cannot perform Merge as multiple source rows matched'. The fix is to deduplicate the source on the merge key first, typically with row_number() over a window partitioned by the key and ordered by a version/timestamp column, keeping only rn = 1."
+      },
+      {
+        "concept": "Partition Pruning in the Merge Condition",
+        "explanation": "Including the target's partition columns in the ON predicate (e.g. t.dt = s.dt) lets Delta prune non-matching partitions in Phase 1, so it scans and rewrites files only in the affected partitions. Without partition predicates, MERGE may scan the entire table to find touched files, drastically increasing cost."
+      },
+      {
+        "concept": "SCD Type 2 via Two-Pass MERGE",
+        "explanation": "SCD2 cannot be done in a single WHEN NOT MATCHED clause because both an UPDATE (close old row) and an INSERT (new version) are needed for the same key. The common pattern uses a source that unions the change rows with NULL-keyed 'inserts' so that the MATCHED clause closes the old row (set is_current=false, end_date) and the NOT MATCHED clause inserts the new active version."
+      },
+      {
+        "concept": "Idempotent Merges",
+        "explanation": "Re-running the same batch must not duplicate or corrupt data. Idempotency is achieved by deduplicating the source, using stable business keys in the ON condition, gating updates with version comparisons (WHEN MATCHED AND s.version > t.version), and optionally txnAppId/txnVersion (setTxnVersion) so Delta skips already-applied batches in streaming foreachBatch."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Insert-only MERGE:** Only WHEN NOT MATCHED THEN INSERT; used for dedup-on-write and appends that must skip existing keys, short-circuits file rewrites when no matches exist.",
+      "**Upsert (Update + Insert):** WHEN MATCHED THEN UPDATE SET * + WHEN NOT MATCHED THEN INSERT *; the classic SCD1 refresh of a dimension/fact.",
+      "**Delete-aware CDC MERGE:** Adds WHEN MATCHED AND op='D' THEN DELETE to propagate source deletions; often combined with UPDATE and INSERT clauses.",
+      "**SCD Type 2 MERGE:** Two-clause history-preserving pattern that closes prior versions and inserts new active rows.",
+      "**WHEN NOT MATCHED BY SOURCE:** Updates or deletes target rows that have no matching source row, used for full-snapshot reconciliation (e.g., tombstone rows missing from a full daily extract).",
+      "**Deletion-vector / merge-on-read MERGE:** Delete/update-heavy merges that record removed rows in bitmaps instead of rewriting files, deferring compaction to OPTIMIZE."
+    ],
+    "advantages": [
+      "**Atomic multi-action DML:** INSERT, UPDATE, and DELETE applied in one ACID transaction, eliminating partial-write and race-condition bugs.",
+      "**File-level efficiency:** Copy-on-write with partition pruning rewrites only touched files, so cost scales with change volume, not table size.",
+      "**Declarative and expressive:** SCD, CDC, dedup, and GDPR deletes are expressed in a single readable statement instead of custom reconciliation code.",
+      "**Concurrency safety:** Optimistic concurrency control lets multiple writers/streams operate on disjoint partitions safely and detects true conflicts.",
+      "**Ecosystem integration:** Works with Change Data Feed, streaming foreachBatch, ZORDER, deletion vectors, and time travel for end-to-end incremental architectures."
+    ],
+    "disadvantages": [
+      "**Write amplification:** Copy-on-write can rewrite large files for a few changed rows, and without partition pruning a merge can touch far more files than expected.",
+      "**Source dedup requirement:** Multiple matching source rows abort the merge, forcing an explicit dedup step and careful key design.",
+      "**Concurrency conflicts:** Concurrent merges on overlapping files raise ConcurrentModificationException, requiring retry logic and partition-disjoint design.",
+      "**Small-file proliferation:** Frequent merges create many small files, degrading read performance until OPTIMIZE/compaction runs.",
+      "**Shuffle cost:** The find-touched-files join and rewrite shuffle can be expensive for large sources unless repartitionBeforeWrite and low-shuffle merge are tuned."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use MERGE for incremental CDC apply, SCD1/SCD2 dimension maintenance, deduplicated upserts, GDPR/right-to-be-forgotten deletes, and any workload that changes a subset of rows in a large table where full overwrite is wasteful.",
+      "whenToAvoid": "Avoid MERGE for pure append-only ingestion (use append/insert), for full-table replacement (use overwrite), or for extremely high-frequency tiny updates where write amplification and small files dominate; consider batching changes and applying periodic merges instead."
+    },
+    "realWorldAnalogy": "MERGE is like a diligent librarian reconciling a cart of returned and new books against the catalog. For each book she checks the ID: if the catalog has it she updates the record (or removes it if the book is withdrawn), and if it is new she creates a card. She only walks to the shelves (files) that actually hold the affected books rather than reorganizing the whole library, and she does all the updates in one trip so the catalog is never left half-changed if she is interrupted.",
+    "commonMisconceptions": [
+      {
+        "myth": "MERGE updates individual rows in place like a relational database.",
+        "reality": "Delta is copy-on-write on immutable object storage: it rewrites the entire Parquet files that contain the changed rows (unless deletion vectors are enabled), so a single-row change can rewrite a whole file."
+      },
+      {
+        "myth": "You can safely MERGE any source without deduplicating it.",
+        "reality": "If more than one source row matches the same target row, Delta aborts with a multiple-match error. The source must be deduplicated to at most one row per merge key first."
+      },
+      {
+        "myth": "Adding partition columns to the ON condition is optional and only affects correctness.",
+        "reality": "Partition predicates in ON drive partition pruning; omitting them can force Delta to scan and rewrite files across the entire table, turning a cheap merge into a full rewrite."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "MERGE cost is governed by the number and size of touched files, source size, and shuffle. Scale by including partition/cluster keys in the ON condition for pruning, ZORDER-ing on merge keys so matching rows co-locate in fewer files, right-sizing files (~128MB-1GB), and enabling low-shuffle merge and deletion vectors to cut rewrite volume.",
+      "reliability": "ACID commits guarantee all-or-nothing merges; wrap streaming merges in foreachBatch with setTxnVersion/txnAppId for exactly-once idempotency, and validate row counts before/after via the operationMetrics in the Delta history.",
+      "faultTolerance": "A failed MERGE leaves the table at its prior version because the commit is atomic; on retry, dedup + version-gated updates make re-application idempotent. Time travel (VERSION AS OF) lets you audit or roll back a bad merge.",
+      "monitoring": "Read DESCRIBE HISTORY / DeltaTable.history() to inspect operationMetrics (numTargetRowsInserted/Updated/Deleted, numTargetFilesAdded/Removed, executionTimeMs) and alert on unexpectedly high files-rewritten or long execution times indicating missing pruning.",
+      "security": "Control access via Unity Catalog/table ACLs and row/column masking; MERGE respects table-level grants. Encrypt storage and the shuffle for sensitive PII merges, and use MERGE ... WHEN MATCHED THEN DELETE for GDPR erasure with audit trails via history and CDF.",
+      "costOptimization": "Prune partitions in the ON clause, ZORDER on high-cardinality merge keys, enable deletion vectors to avoid full-file rewrites, batch frequent small merges, and schedule OPTIMIZE + VACUUM to compact small files and reclaim storage, all of which cut compute and S3 request costs.",
+      "performance": "Tune spark.databricks.delta.merge.repartitionBeforeWrite.enabled to avoid tiny output files, ensure the source is broadcast when small, enable AQE, use low-shuffle merge, and run OPTIMIZE ZORDER BY (merge_key) periodically so subsequent merges touch fewer files."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "SQL MERGE INTO for a CDC Upsert with Deletes",
+        "overview": "The canonical SQL upsert: update matched rows, delete retired rows, insert new rows, all in one atomic statement against a Delta table.",
+        "code": "-- Target Delta table (created once, with CDF enabled for downstream CDC)\nCREATE TABLE IF NOT EXISTS silver.customers (\n  customer_id BIGINT,\n  name        STRING,\n  email       STRING,\n  country     STRING,\n  updated_at  TIMESTAMP\n) USING DELTA\nPARTITIONED BY (country)\nTBLPROPERTIES (delta.enableChangeDataFeed = true);\n\n-- staging_customers carries CDC rows: op in ('I','U','D'), version for ordering\nMERGE INTO silver.customers AS t\nUSING (\n  -- deduplicate source to at most one row per key (latest wins)\n  SELECT customer_id, name, email, country, updated_at, op\n  FROM (\n    SELECT *, ROW_NUMBER() OVER (\n             PARTITION BY customer_id ORDER BY version DESC) AS rn\n    FROM staging_customers\n  ) WHERE rn = 1\n) AS s\nON t.customer_id = s.customer_id AND t.country = s.country  -- partition prune\nWHEN MATCHED AND s.op = 'D' THEN DELETE\nWHEN MATCHED AND s.op = 'U' THEN UPDATE SET\n     t.name = s.name, t.email = s.email, t.updated_at = s.updated_at\nWHEN NOT MATCHED AND s.op <> 'D' THEN INSERT\n     (customer_id, name, email, country, updated_at)\n     VALUES (s.customer_id, s.name, s.email, s.country, s.updated_at);",
+        "language": "sql",
+        "breakdown": "The USING subquery deduplicates so exactly one source row matches per key (required by Delta). The ON clause matches on customer_id and the partition column country, enabling partition pruning so only affected countries' files are touched. The three WHEN clauses handle delete, update, and insert; DELETE is gated first so 'D' rows never insert. CDF is enabled so downstream consumers can read row-level changes.",
+        "expectedOutput": "num_affected_rows | num_updated_rows | num_deleted_rows | num_inserted_rows\n----------------- | ---------------- | ---------------- | -----------------\n            15230 |            9120  |             430  |            5680\n(DESCRIBE HISTORY shows operation = MERGE with operationMetrics for files added/removed)",
+        "commonIssues": "Forgetting the dedup subquery triggers 'Cannot perform Merge as multiple source rows matched a target row'. Omitting t.country from ON removes partition pruning and rewrites files across all countries. Not gating INSERT with op<>'D' would insert rows meant to be deletes.",
+        "optimizationTips": "Run OPTIMIZE silver.customers ZORDER BY (customer_id) periodically so matching rows cluster into fewer files; enable deletion vectors so the 'D' rows do not force full-file rewrites."
+      },
+      {
+        "title": "Python DeltaTable.merge() Builder API (Upsert with *All shortcuts)",
+        "overview": "The programmatic equivalent using the DeltaTable Python API with whenMatchedUpdateAll / whenNotMatchedInsertAll for full-row upserts.",
+        "code": "from delta.tables import DeltaTable\nfrom pyspark.sql import functions as F\nfrom pyspark.sql.window import Window\n\n# Deduplicate the incoming micro-batch: latest row per key\nw = Window.partitionBy(\"customer_id\").orderBy(F.col(\"version\").desc())\nsource = (spark.read.format(\"delta\").load(\"/lake/staging/customers\")\n            .withColumn(\"rn\", F.row_number().over(w))\n            .filter(\"rn = 1\").drop(\"rn\"))\n\n# Address the target by name (Unity Catalog) or by path\ntarget = DeltaTable.forName(spark, \"silver.customers\")\n# target = DeltaTable.forPath(spark, \"s3://lake/silver/customers\")\n\n(target.alias(\"t\")\n   .merge(source.alias(\"s\"),\n          \"t.customer_id = s.customer_id AND t.country = s.country\")\n   .whenMatchedDelete(condition=\"s.op = 'D'\")\n   .whenMatchedUpdateAll(condition=\"s.op = 'U' AND s.version > t.version\")\n   .whenNotMatchedInsertAll(condition=\"s.op <> 'D'\")\n   .execute())\n\n# Inspect what the merge did\ntarget.history(1).select(\"version\", \"operation\", \"operationMetrics\").show(truncate=False)",
+        "language": "python",
+        "breakdown": "The Window + row_number dedup guarantees a single source row per key. .merge(source, condition) starts the builder; whenMatchedDelete handles tombstones, whenMatchedUpdateAll copies all columns (requires matching schemas) and is version-gated for idempotency, and whenNotMatchedInsertAll inserts new rows. execute() runs the two-phase copy-on-write and commits atomically. history(1) surfaces operationMetrics.",
+        "expectedOutput": "+-------+---------+------------------------------------------------------------------+\n|version|operation|operationMetrics                                                  |\n+-------+---------+------------------------------------------------------------------+\n|42     |MERGE    |{numTargetRowsInserted -> 5680, numTargetRowsUpdated -> 9120,      |\n|       |         | numTargetRowsDeleted -> 430, numTargetFilesRemoved -> 37,         |\n|       |         | numTargetFilesAdded -> 41, executionTimeMs -> 18400}              |\n+-------+---------+------------------------------------------------------------------+",
+        "commonIssues": "whenMatchedUpdateAll/whenNotMatchedInsertAll require the source and target schemas to align; a mismatch throws unless mergeSchema/autoMerge is enabled. Calling two unconditional whenMatchedUpdate clauses is rejected because at most one matched action can apply per row.",
+        "optimizationTips": "Set spark.databricks.delta.schema.autoMerge.enabled=true only when you intentionally evolve schema. Enable spark.databricks.delta.merge.repartitionBeforeWrite.enabled=true to avoid many tiny output files from the rewrite."
+      },
+      {
+        "title": "SCD Type 2 MERGE (History-Preserving Dimension)",
+        "overview": "Implements Slowly Changing Dimension Type 2: close the current row and insert a new active version when tracked attributes change, using the two-clause union-source pattern.",
+        "code": "from delta.tables import DeltaTable\nfrom pyspark.sql import functions as F\n\ntarget = DeltaTable.forName(spark, \"gold.dim_customer\")\ntgt = target.toDF().filter(\"is_current = true\")\n\n# changes: incoming latest attribute values per customer_id\nchanges = spark.table(\"staging.customer_changes\")\n\n# Find rows whose tracked attributes actually changed\nchanged = (changes.alias(\"s\").join(tgt.alias(\"t\"), \"customer_id\")\n           .where(\"s.address <> t.address OR s.tier <> t.tier\")\n           .select(\"s.*\"))\n\n# Union trick: rows with NULL mergeKey force an INSERT of the new version,\n# while rows with the real key match and CLOSE the old version.\nstaged = (changed.withColumn(\"mergeKey\", F.col(\"customer_id\"))\n          .unionByName(\n              changes.withColumn(\"mergeKey\", F.lit(None).cast(\"bigint\"))))\n\n(target.alias(\"t\")\n  .merge(staged.alias(\"s\"), \"t.customer_id = s.mergeKey AND t.is_current = true\")\n  .whenMatchedUpdate(set={\n      \"is_current\": \"false\",\n      \"end_date\":  \"current_date()\"\n  })\n  .whenNotMatchedInsert(values={\n      \"customer_id\": \"s.customer_id\",\n      \"address\":     \"s.address\",\n      \"tier\":        \"s.tier\",\n      \"start_date\":  \"current_date()\",\n      \"end_date\":    \"null\",\n      \"is_current\":  \"true\"\n  })\n  .execute())",
+        "language": "python",
+        "breakdown": "Only genuinely changed rows are detected via a join comparison. The union produces two logical source rows per changed customer: one with mergeKey = customer_id (matches -> UPDATE closes the old version by setting is_current=false and end_date), and one with mergeKey = NULL (never matches -> INSERT the new active version with is_current=true). The is_current=true predicate ensures only the live row is closed.",
+        "expectedOutput": "-- Before: (1, 'Old Ave', 'silver', is_current=true)\n-- After MERGE:\n-- (1, 'Old Ave', 'silver', start=..., end=2026-07-03, is_current=false)\n-- (1, 'New Blvd','gold',   start=2026-07-03, end=null, is_current=true)\nnum_updated_rows = <#closed>, num_inserted_rows = <#new versions>",
+        "commonIssues": "Skipping the 'changed attributes' filter causes needless version churn (a new row even when nothing changed). Forgetting the mergeKey NULL trick makes it impossible to both close and insert for the same key in one merge. Not filtering is_current=true can close historical rows.",
+        "optimizationTips": "Partition or ZORDER dim_customer by customer_id and filter to is_current=true early to shrink the join; keep the staged source small by only including truly changed customers."
+      },
+      {
+        "title": "Idempotent Streaming MERGE via foreachBatch",
+        "overview": "Applies CDC upserts from a streaming source exactly-once using foreachBatch, source dedup, and txn versioning so replays do not double-apply.",
+        "code": "from delta.tables import DeltaTable\nfrom pyspark.sql import functions as F\nfrom pyspark.sql.window import Window\n\ndef upsert_to_delta(microBatchDF, batchId):\n    w = Window.partitionBy(\"id\").orderBy(F.col(\"ts\").desc())\n    dedup = (microBatchDF\n             .withColumn(\"rn\", F.row_number().over(w))\n             .filter(\"rn = 1\").drop(\"rn\"))\n    tgt = DeltaTable.forName(microBatchDF.sparkSession, \"silver.events\")\n    (tgt.alias(\"t\")\n        .merge(dedup.alias(\"s\"), \"t.id = s.id AND t.dt = s.dt\")\n        .whenMatchedDelete(condition=\"s.op = 'D'\")\n        .whenMatchedUpdateAll(condition=\"s.op = 'U'\")\n        .whenNotMatchedInsertAll(condition=\"s.op <> 'D'\")\n        .execute())\n\n(spark.readStream.format(\"delta\").table(\"bronze.events_cdc\")\n   .writeStream\n   .foreachBatch(upsert_to_delta)\n   .option(\"checkpointLocation\", \"/lake/_chk/silver_events\")\n   .trigger(availableNow=True)\n   .start())",
+        "language": "python",
+        "breakdown": "readStream + foreachBatch turns each micro-batch into a batch DataFrame on which a normal MERGE runs. The checkpointLocation gives exactly-once source progress. Within the batch the source is deduplicated per key, and the merge applies delete/update/insert. Because MERGE is atomic and the source is deduplicated, replaying a batch after failure re-applies the same result idempotently.",
+        "expectedOutput": "-- Structured Streaming query runs one batch (availableNow) then stops.\n-- silver.events reflects the deduplicated, upserted CDC state.\n-- Delta history shows one MERGE commit per micro-batch.",
+        "commonIssues": "Using the outer SparkSession instead of microBatchDF.sparkSession inside foreachBatch can fail in some runtimes. Not deduplicating the micro-batch causes multiple-match errors. Reusing a checkpoint across schema changes can break the stream.",
+        "optimizationTips": "For true exactly-once against non-Delta sinks or partial re-runs, set the txn app/version with tgt via DeltaTable transactional options; enable low-shuffle merge and repartitionBeforeWrite for large batches."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A retailer ingests order-management-system CDC (inserts/updates/deletes) into a lakehouse and must keep a silver 'orders' table continuously current for near-real-time dashboards, while a gold 'dim_customer' table preserves full history for analytics. Full daily reloads are too slow and non-atomic; they need reliable, incremental, exactly-once upserts with deletes propagated for GDPR.",
+    "inputData": "bronze.orders_cdc (streaming, ~50M change events/day: order_id, customer_id, status, amount, dt, op ['I'/'U'/'D'], ts) and staging.customer_changes (daily attribute updates: customer_id, address, tier). Target silver.orders is a Delta table partitioned by dt with delta.enableChangeDataFeed=true; gold.dim_customer is an SCD2 Delta table.",
+    "architecture": "PySpark Structured Streaming on Databricks/EMR. Bronze CDC is read as a stream; foreachBatch deduplicates each micro-batch and MERGEs into silver.orders (SCD1 with delete propagation). A scheduled batch job reads staging.customer_changes and applies an SCD2 MERGE into gold.dim_customer. Deletion vectors and low-shuffle merge are enabled; OPTIMIZE ZORDER BY runs nightly.",
+    "processingSteps": [
+      "1. readStream from bronze.orders_cdc with a checkpoint for exactly-once source progress.",
+      "2. In foreachBatch, deduplicate the micro-batch with row_number() over order_id ordered by ts desc, keeping the latest change per order.",
+      "3. MERGE INTO silver.orders ON t.order_id = s.order_id AND t.dt = s.dt (partition pruning): WHEN MATCHED AND op='D' DELETE, WHEN MATCHED AND op='U' UPDATE ALL, WHEN NOT MATCHED AND op<>'D' INSERT ALL.",
+      "4. Nightly, detect changed customers and apply the SCD2 union-source MERGE into gold.dim_customer to close old versions and insert new active rows.",
+      "5. After merges, run OPTIMIZE silver.orders ZORDER BY (order_id) and VACUUM to compact small files and reclaim storage; downstream consumers read row-level changes via table_changes('silver.orders')."
+    ],
+    "output": "A silver.orders table that is atomically kept in sync with the OMS (inserts/updates applied, deletes removed, exactly-once), and a gold.dim_customer SCD2 table with full versioned history (is_current, start_date, end_date). Change Data Feed exposes incremental changes to downstream marts.",
+    "monitoring": "DESCRIBE HISTORY silver.orders exposes per-merge operationMetrics (rows inserted/updated/deleted, files added/removed, executionTimeMs); dashboards alert if numTargetFilesRewritten spikes (missing pruning) or if merge latency exceeds SLA. Streaming query progress and batch durations are tracked in the Spark UI and event logs.",
+    "errorHandling": "Each MERGE is atomic, so a mid-batch failure leaves silver.orders at its prior version; the stream retries the same offsets and, thanks to source dedup + version-gated updates, re-application is idempotent. Concurrent nightly OPTIMIZE and streaming merge on overlapping files can raise ConcurrentModificationException, handled by a bounded exponential-backoff retry that re-reads the latest snapshot. Time travel (VERSION AS OF) enables rollback/audit of a bad merge.",
+    "finalResult": "The pipeline replaced a 3-hour full daily reload with continuous minute-scale upserts: silver.orders stays current within one micro-batch, deletes are propagated for compliance, gold.dim_customer preserves full history via SCD2, and nightly OPTIMIZE + deletion vectors keep merge times stable as the table grows past a billion rows, cutting compute cost by roughly 70% versus full overwrites."
+  },
+  "industryUseCases": [
+    {
+      "company": "Databricks (Lakehouse customers)",
+      "problem": "Enterprises need to land operational-database CDC into the lakehouse continuously with exactly-once semantics and propagate deletes for compliance, without full reloads.",
+      "solution": "Delta Live Tables / foreachBatch pipelines deduplicate CDC micro-batches and MERGE into silver tables with WHEN MATCHED DELETE, using Change Data Feed and deletion vectors for efficient downstream propagation.",
+      "benefits": "Minute-scale freshness, exactly-once upserts, compliant deletes, and dramatically lower cost than full-partition overwrites via file-level copy-on-write."
+    },
+    {
+      "company": "Adobe",
+      "problem": "Adobe Experience Platform ingests massive profile-update streams that must upsert billions of customer profile records with low latency and history for some attributes.",
+      "solution": "Delta MERGE upserts with ZORDER on profile keys and partitioning to prune touched files, plus SCD-style history tables for auditable attribute changes, tuned with repartitionBeforeWrite to avoid small files.",
+      "benefits": "Scalable profile upserts that touch only changed files, predictable merge latency at scale, and auditable history without rewriting entire datasets."
+    },
+    {
+      "company": "Atlassian",
+      "problem": "Atlassian consolidates product-usage and account CDC from many services into a unified analytics lake and must maintain accurate dimensions and dedup event streams.",
+      "solution": "Idempotent streaming merges deduplicate events per key before upsert, SCD2 merges maintain slowly changing account dimensions, and OPTIMIZE/ZORDER maintenance keeps merges fast as tables grow.",
+      "benefits": "Reliable, deduplicated dimensions and facts, exactly-once incremental loads, and stable performance through file compaction and clustering."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "MERGE scales with change volume and touched-file count rather than table size. Include partition/cluster keys in the ON condition for pruning, ZORDER on merge keys so matches co-locate in fewer files, right-size files (128MB-1GB), and enable low-shuffle merge and deletion vectors so large tables (billions of rows) still merge in minutes by rewriting only affected files.",
+    "faultTolerance": "Every MERGE commits atomically, so a failure leaves the table at the last good version. Combined with source deduplication and version-gated updates (WHEN MATCHED AND s.version > t.version), retries are idempotent; streaming merges use checkpoints and, where needed, txn app/version markers so replayed batches are not double-applied.",
+    "highAvailability": "Delta stores state in the transaction log on durable object storage, so any Spark cluster can attach and continue; there is no single stateful merge server. For streaming upserts, a highly available job scheduler (Databricks Jobs, Airflow) restarts the driver and resumes from the checkpoint.",
+    "disasterRecovery": "Time travel and the immutable _delta_log enable point-in-time recovery: roll back a bad merge with RESTORE VERSION AS OF, or audit changes via DESCRIBE HISTORY and Change Data Feed. Cross-region replication of the storage bucket plus deep clone (CREATE TABLE ... DEEP CLONE) provides DR copies of merged tables.",
+    "performanceOptimization": "Deduplicate and, if small, broadcast the source; include partition predicates in ON for pruning; enable spark.databricks.delta.merge.repartitionBeforeWrite.enabled to control output file count; enable low-shuffle merge to avoid reshuffling unmodified rows; enable deletion vectors for delete/update-heavy merges; and run OPTIMIZE ZORDER BY (merge_key) so future merges touch fewer files.",
+    "costOptimization": "Prune partitions in ON, ZORDER on merge keys, enable deletion vectors to skip full-file rewrites, batch high-frequency tiny merges into larger ones, and schedule OPTIMIZE + VACUUM to compact small files and reclaim storage, all reducing compute time and object-store request costs.",
+    "securityConsiderations": "Enforce table/row/column access via Unity Catalog or table ACLs; MERGE honors grants on the target. Encrypt data at rest and shuffle for PII merges. Use MERGE WHEN MATCHED THEN DELETE for GDPR erasure, and retain an audit trail via Delta history and Change Data Feed; VACUUM with an appropriate retention removes soft-deleted files after compliance windows.",
+    "monitoringAndObservability": "DeltaTable.history()/DESCRIBE HISTORY exposes operationMetrics (numTargetRowsInserted/Updated/Deleted, numTargetFilesAdded/Removed, numSourceRows, executionTimeMs, rewriteTimeMs). Alert on high files-rewritten (pruning regressions), rising merge latency, and OCC conflict rates; track streaming batch durations and small-file counts to trigger OPTIMIZE.",
+    "dataQualityValidation": "Validate source dedup (assert one row per key) before merge, compare pre/post row counts using operationMetrics, run expectations (e.g., Delta Live Tables expectations or Great Expectations) on the merged target, and use CDF to reconcile downstream marts. Enforce schema with autoMerge disabled by default to catch unintended schema drift.",
+    "loggingAndAlerting": "Log batchId, source row counts, and merge operationMetrics per run; alert on ConcurrentModificationException retries exhausting their budget, on multiple-match merge failures (indicating dedup gaps), and on merges whose files-rewritten or executionTimeMs deviate sharply from baseline, which signal missing pruning or skew."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Always deduplicate the source** on the merge key (row_number() keep rn=1) before MERGE to avoid multiple-match failures and ensure deterministic results.",
+      "**Include partition/cluster columns in the ON condition** to enable partition pruning so only affected files are scanned and rewritten.",
+      "**Gate updates for idempotency** with version/timestamp comparisons (WHEN MATCHED AND s.version > t.version) so replays never regress data.",
+      "**Run OPTIMIZE ZORDER BY (merge_key)** and enable deletion vectors/low-shuffle merge to keep merges fast and files well-sized.",
+      "**Enable Change Data Feed** on tables that feed downstream CDC so consumers read only changes via table_changes()."
+    ],
+    "engineeringStandards": [
+      "Wrap streaming upserts in foreachBatch with a checkpoint and a bounded exponential-backoff retry for ConcurrentModificationException.",
+      "Keep autoMerge/schema evolution disabled by default; enable it explicitly and intentionally when evolving schema.",
+      "Assert source uniqueness on the merge key in a pre-merge test and fail fast if violated.",
+      "Standardize CDC op codes ('I'/'U'/'D') and ordering columns (version/ts) across pipelines."
+    ],
+    "designRecommendations": [
+      "Design tables partitioned/clustered on the columns used in merge predicates so pruning is effective.",
+      "For SCD2, use the union-source (NULL mergeKey) pattern and detect actually-changed attributes to avoid version churn.",
+      "Partition concurrent writers onto disjoint partitions to minimize OCC conflicts.",
+      "Prefer batching many tiny changes into periodic larger merges over extremely frequent single-row merges to limit write amplification."
+    ],
+    "namingConventions": [
+      "Alias target as t and source as s consistently (MERGE INTO tbl AS t USING src AS s) for readable predicates.",
+      "Name staging/CDC tables with a clear tier and intent (bronze.orders_cdc, staging.customer_changes).",
+      "Name SCD2 control columns consistently: is_current, start_date, end_date."
+    ],
+    "documentationStandards": [
+      "Document the merge key, dedup rule, and ordering column for every upsert pipeline in the runbook.",
+      "Record whether partition pruning applies and the expected files-rewritten range so regressions are detectable.",
+      "Document the CDF/deletion-vector/OPTIMIZE maintenance schedule and its rationale."
+    ],
+    "testingStrategies": [
+      "Unit-test the merge on a small Delta table asserting exact inserted/updated/deleted counts from operationMetrics.",
+      "Test idempotency by running the same batch twice and asserting the target is unchanged on the second run.",
+      "Test SCD2 by asserting old rows are closed (is_current=false, end_date set) and exactly one active row remains per key.",
+      "Inject concurrent writers to verify retry logic handles ConcurrentModificationException correctly."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Running MERGE with a source that has duplicate keys.",
+      "whyItHappens": "CDC streams and joins often produce more than one change row per key within a batch, and developers assume MERGE will pick one.",
+      "impact": "Delta aborts the whole merge with 'Cannot perform Merge as multiple source rows matched a target row', failing the pipeline.",
+      "correctApproach": "Deduplicate the source to one row per key before merging, e.g. row_number() over (partition by key order by version desc) and keep rn=1."
+    },
+    {
+      "mistake": "Omitting partition columns from the ON condition.",
+      "whyItHappens": "Developers match only on the business key and forget the target's partition column, assuming Delta prunes automatically.",
+      "impact": "Delta cannot prune partitions, so Phase 1 scans and Phase 2 rewrites files across the entire table, turning a cheap merge into a full-table rewrite with huge cost and latency.",
+      "correctApproach": "Include the partition (or clustering) column in the ON predicate (t.dt = s.dt) so only affected partitions' files are touched."
+    },
+    {
+      "mistake": "Doing SCD Type 2 with a single WHEN NOT MATCHED / naive update.",
+      "whyItHappens": "SCD2 needs both an update (close old row) and an insert (new version) for the same key, which cannot be expressed by one straightforward clause.",
+      "impact": "Either history is lost (attribute overwritten in place) or duplicate active rows appear, corrupting the dimension.",
+      "correctApproach": "Use the union-source pattern: rows with the real mergeKey match and close the old version; rows with mergeKey=NULL never match and insert the new active version."
+    },
+    {
+      "mistake": "Ignoring ConcurrentModificationException from concurrent merges/OPTIMIZE.",
+      "whyItHappens": "Multiple streaming batches, backfills, or OPTIMIZE jobs touch overlapping files and developers assume Delta serializes them silently.",
+      "impact": "The job fails with ConcurrentAppend/ConcurrentDelete exceptions and data is not applied, causing missed updates or pipeline outages.",
+      "correctApproach": "Partition writers onto disjoint partitions where possible, and wrap merges in a bounded exponential-backoff retry that re-reads the latest snapshot before retrying."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "How updates are applied to storage",
+      "optionA": "Delta MERGE (copy-on-write)",
+      "optionB": "Full-partition overwrite (pre-Delta pattern)",
+      "explanation": "MERGE rewrites only the Parquet files containing changed rows (or marks rows via deletion vectors), scaling with change volume. Full-partition overwrite reads and rewrites entire partitions even for a few changed rows, is non-atomic on object stores, and reprocesses far more data, costing more compute and I/O."
+    },
+    {
+      "feature": "History handling",
+      "optionA": "SCD Type 1 MERGE (overwrite in place)",
+      "optionB": "SCD Type 2 MERGE (versioned history)",
+      "explanation": "SCD1 uses WHEN MATCHED UPDATE to overwrite the attribute, keeping only current state and being simpler/cheaper. SCD2 uses the union-source pattern to close the prior row (is_current=false, end_date) and insert a new active version, preserving full history at the cost of more rows and a two-clause merge."
+    },
+    {
+      "feature": "Delete/update write amplification",
+      "optionA": "Standard copy-on-write MERGE",
+      "optionB": "MERGE with deletion vectors (merge-on-read)",
+      "explanation": "Standard COW rewrites whole files even when only a few rows are deleted/updated, causing high write amplification. Deletion vectors record removed rows in a bitmap side-file, deferring the physical rewrite to OPTIMIZE, which greatly speeds delete/update-heavy merges at the cost of a small read-time overhead until compaction."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is MERGE INTO in Delta Lake and what problem does it solve?",
+        "answer": "MERGE INTO is an atomic upsert that reconciles a source dataset against a target Delta table, applying INSERT, UPDATE, and DELETE in one transaction based on a match condition. It solves the problem of updating immutable data-lake files without brittle read-modify-write-overwrite code, giving database-style upserts with ACID guarantees.",
+        "explanation": "Emphasize the single atomic operation and the three actions (matched update/delete, not-matched insert)."
+      },
+      {
+        "question": "What are the main WHEN clauses in a MERGE statement?",
+        "answer": "WHEN MATCHED THEN UPDATE SET .../DELETE for rows present in both source and target, WHEN NOT MATCHED THEN INSERT for source rows absent from the target, and WHEN NOT MATCHED BY SOURCE THEN UPDATE/DELETE for target rows absent from the source. Clauses can carry optional AND conditions.",
+        "explanation": "Mention UPDATE SET * and INSERT * shortcuts and that at most one matched action applies per row."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "Why must the source be deduplicated before a MERGE, and how do you do it?",
+        "answer": "Delta requires at most one source row per target row; if multiple source rows match, MERGE aborts with a multiple-match error. You deduplicate with a window: row_number() over (partition by merge_key order by version/ts desc), keeping rn=1 so only the latest change per key remains.",
+        "explanation": "Tie this to CDC batches that naturally contain multiple changes per key."
+      },
+      {
+        "question": "How does partition pruning affect MERGE performance?",
+        "answer": "Delta first joins source and target to find which files contain matched rows. If the ON condition includes the target's partition columns, Delta prunes non-matching partitions and only scans/rewrites files in affected partitions. Omitting partition predicates can force a full-table scan and rewrite.",
+        "explanation": "Connect ON predicate design directly to the number of files rewritten in Phase 2."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "Explain the two-phase copy-on-write execution of a Delta MERGE.",
+        "answer": "Phase 1 runs an inner join between source and the target snapshot on the ON condition to identify the target data files that contain matching rows (with partition pruning). Phase 2 rewrites only those touched files: it outer-joins the source against the rows of those files, applies the WHEN actions, and writes new Parquet files, then atomically commits RemoveFile/AddFile to the transaction log. Insert-only merges with no matches short-circuit to a plain append.",
+        "explanation": "Add that deletion vectors and low-shuffle merge optimize Phase 2 by avoiding full rewrites and reshuffling unmodified rows."
+      },
+      {
+        "question": "How do you implement SCD Type 2 with a single MERGE, and why is it non-trivial?",
+        "answer": "You need to both close the old version (UPDATE is_current=false, end_date) and insert a new active version for the same key, which one clause cannot do. The union-source pattern creates two logical source rows per changed key: one with mergeKey=customer_id (matches -> update/close) and one with mergeKey=NULL (never matches -> insert new active row). The ON predicate also filters is_current=true so only the live row is closed.",
+        "explanation": "Stress detecting actually-changed attributes to avoid needless version churn."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your nightly MERGE that used to take 5 minutes now takes 90 minutes after the table grew, and Delta history shows numTargetFilesRewritten jumped from a few hundred to tens of thousands. What is wrong and how do you fix it?",
+        "thinkingProcess": "A huge jump in files rewritten means Delta is no longer pruning: either the ON condition lost its partition predicate, the merge keys are scattered across many files (no clustering), or small files proliferated. Check the ON clause for partition columns, check clustering, and check file counts.",
+        "expectedAnswer": "Add the partition column to the ON condition to restore partition pruning, run OPTIMIZE ... ZORDER BY (merge_key) so matching rows co-locate into fewer files, enable deletion vectors and low-shuffle merge to reduce rewrite volume, and enable repartitionBeforeWrite to avoid tiny output files. Verify via operationMetrics that files-rewritten drops back down."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design an exactly-once CDC pipeline that continuously upserts operational-database changes (inserts/updates/deletes) into a Delta silver table serving near-real-time dashboards, and maintains an SCD2 customer dimension.",
+        "designApproach": "Read the CDC stream (Auto Loader/Kafka) into bronze, then use Structured Streaming foreachBatch: per micro-batch deduplicate on the primary key by latest ts, and MERGE into silver with WHEN MATCHED AND op='D' DELETE / op='U' UPDATE ALL / NOT MATCHED INSERT ALL, matching on key + partition column for pruning. Enable Change Data Feed on silver. A scheduled job applies the SCD2 union-source MERGE to the gold dimension. Nightly OPTIMIZE ZORDER + VACUUM maintain files.",
+        "tradeOffs": "foreachBatch merges give exactly-once and full DML but add per-batch merge latency; copy-on-write causes write amplification mitigated by deletion vectors and clustering. Frequent tiny batches improve freshness but create small files and OCC conflicts; larger batches are cheaper but less fresh.",
+        "scalingStrategy": "Partition/cluster silver on the merge and partition keys for pruning; ZORDER on the primary key; enable low-shuffle merge, deletion vectors, and repartitionBeforeWrite; partition concurrent writers onto disjoint date partitions to avoid OCC conflicts; and scale executors for the join/rewrite shuffle. Schedule OPTIMIZE/VACUUM to keep merge times flat as the table grows."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between WHEN NOT MATCHED and WHEN NOT MATCHED BY SOURCE?",
+      "How do deletion vectors change the physical execution of a delete-heavy merge?",
+      "How does Change Data Feed interact with MERGE and downstream consumers?",
+      "What causes a ConcurrentModificationException in Delta and how do you design around it?",
+      "How would you make a streaming foreachBatch merge idempotent across job restarts?",
+      "When would you choose SCD1 over SCD2, and what are the storage implications?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Delta Lake MERGE is an atomic, copy-on-write upsert that reconciles a deduplicated source against a target Delta table (INSERT/UPDATE/DELETE in one ACID transaction), rewriting only touched files and protected by optimistic concurrency control.",
+    "keyConcepts": [
+      "MERGE = atomic INSERT + UPDATE + DELETE based on an ON match condition.",
+      "Copy-on-write: only files containing matched rows are rewritten (or marked via deletion vectors).",
+      "Source must be deduplicated to one row per key or the merge aborts.",
+      "Partition columns in ON enable partition pruning (fewer files rewritten).",
+      "SCD1 overwrites in place; SCD2 closes old rows and inserts new versions (union-source pattern)."
+    ],
+    "formulas": [
+      "Files rewritten (COW) = number of target files containing at least one matched row",
+      "Merge cost ~ f(source size, touched-file count, shuffle) -- not total table size",
+      "Number of active SCD2 rows per key = 1 (is_current=true); history rows = version count"
+    ],
+    "commands": [
+      "MERGE INTO t USING s ON t.id=s.id AND t.dt=s.dt WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
+      "DeltaTable.forName(spark,'db.t').alias('t').merge(src.alias('s'),'t.id=s.id').whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()",
+      ".whenMatchedDelete(condition=\"s.op='D'\")  # propagate CDC deletes",
+      "ALTER TABLE t SET TBLPROPERTIES (delta.enableChangeDataFeed = true)",
+      "OPTIMIZE t ZORDER BY (merge_key);  VACUUM t;  DESCRIBE HISTORY t",
+      "spark.conf.set('spark.databricks.delta.merge.repartitionBeforeWrite.enabled','true')"
+    ],
+    "interviewPoints": [
+      "MERGE is two-phase: find touched files (inner join), then rewrite them (copy-on-write) and commit atomically.",
+      "Deduplicate the source on the merge key to avoid multiple-match failures.",
+      "Include partition columns in ON for pruning; omitting them can trigger a full-table rewrite.",
+      "SCD2 needs the union-source (NULL mergeKey) pattern to both close and insert per key.",
+      "Deletion vectors + low-shuffle merge reduce write amplification; OCC raises ConcurrentModificationException on conflicts."
+    ],
+    "quickNotes": [
+      "Insert-only merge with no matches short-circuits to a plain append.",
+      "At most one WHEN MATCHED action may apply per row; DELETE is usually gated first.",
+      "Gate updates with s.version > t.version for idempotent replays.",
+      "Enable delta.enableChangeDataFeed to expose row-level changes via table_changes().",
+      "Run OPTIMIZE ZORDER BY (merge_key) periodically so future merges touch fewer files."
+    ]
+  },
+  "keyTakeaways": [
+    "Delta MERGE is a single atomic, copy-on-write upsert that applies INSERT, UPDATE, and DELETE against a target Delta table based on an ON match condition, with full ACID guarantees.",
+    "Execution is two-phase: an inner join finds the target files containing matched rows (with partition pruning), then only those files are rewritten and committed atomically to the transaction log.",
+    "The source must be deduplicated to one row per merge key, and including partition/cluster columns in the ON condition is essential to prune files and keep merges cheap.",
+    "SCD Type 1 overwrites attributes in place, while SCD Type 2 preserves history using the union-source pattern to close old versions and insert new active rows; CDC merges add WHEN MATCHED DELETE to propagate deletions.",
+    "Tune and operate merges with source dedup, version-gated idempotency, deletion vectors, low-shuffle merge, repartitionBeforeWrite, Change Data Feed, and periodic OPTIMIZE ZORDER, while handling ConcurrentModificationException via disjoint partitions and retries."
+  ]
+}

@@ -975,5 +975,897 @@ export const pythonTopics: Topic[] = [
         "bestPractice": "Verify execution performance."
       }
     }
+  },
+
+  {
+    "id": "python-beginner-6",
+    "title": "Strings & f-strings",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-7",
+    "title": "Comprehensions (List, Dict, Set)",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-8",
+    "title": "Working with Dates & Times",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-9",
+    "title": "Regular Expressions",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-10",
+    "title": "Reading & Writing CSV",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-11",
+    "title": "Reading & Writing JSON",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-beginner-12",
+    "title": "Virtual Environments & pip",
+    "category": "python",
+    "difficulty": "beginner",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-5",
+    "title": "pandas: Series & DataFrames",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-6",
+    "title": "pandas: Cleaning & Transformation",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-7",
+    "title": "pandas: GroupBy, Merge & Join",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-8",
+    "title": "NumPy Essentials",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-9",
+    "title": "Consuming REST APIs with requests",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-10",
+    "title": "Database Connectivity (SQLAlchemy & DB-API)",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-11",
+    "title": "Type Hints & the typing Module",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-12",
+    "title": "Dataclasses & Pydantic Models",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-13",
+    "title": "Decorators",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-14",
+    "title": "Context Managers",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-intermediate-15",
+    "title": "Structured Logging",
+    "category": "python",
+    "difficulty": "intermediate",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-5",
+    "title": "PyArrow & Columnar Data (Parquet)",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-6",
+    "title": "Cloud SDK with boto3 (S3)",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-7",
+    "title": "asyncio for Concurrent Ingestion",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-8",
+    "title": "Building CLIs (argparse & click)",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-9",
+    "title": "pytest for Data Pipelines",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-10",
+    "title": "Serialization & Data Formats in Python",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-11",
+    "title": "Performance Profiling & Optimization",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-12",
+    "title": "Memory-Efficient Processing of Large Files",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "python-advanced-13",
+    "title": "Packaging & Distributing Python",
+    "category": "python",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
   }
 ];

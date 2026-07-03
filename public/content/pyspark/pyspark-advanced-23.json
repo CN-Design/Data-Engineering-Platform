@@ -1,0 +1,471 @@
+{
+  "coreConcept": {
+    "overview": [
+      "The Spark UI is the web-based diagnostic console served by the driver on port 4040 (4041, 4042, ... if occupied) that exposes every job, stage, task, SQL query, executor, cached dataset, and configuration value for a running Spark application, making it the single most important tool for reading what Spark actually did versus what you asked it to do.",
+      "It is organized into tabs — Jobs, Stages, Storage, Environment, Executors, and SQL/DataFrame (plus Streaming when applicable) — each drilling from a high-level summary down to per-task metrics, so you can go from 'the job is slow' to 'task 147 of stage 6 spilled 8GB to disk because of a skewed key' in a few clicks.",
+      "Because the live UI at port 4040 disappears when the driver exits, the History Server reconstructs the same UI from persisted event logs (spark.eventLog.enabled=true), which is how you post-mortem a batch job that finished hours ago on an ephemeral cluster."
+    ],
+    "learningObjectives": [
+      "Navigate every Spark UI tab and understand which diagnostic question each one answers: Jobs/Stages for execution shape, SQL for the physical plan, Executors for resource health, Storage for caching, Environment for config verification.",
+      "Read the Stages tab summary-metrics table (min/25th/median/75th/max for task duration, shuffle read/write, spill, GC) to detect skew, spill, and GC pressure quantitatively.",
+      "Interpret the SQL/DataFrame tab: map physical-plan nodes (Exchange = shuffle, WholeStageCodegen, scan filters, number of output rows, spill) back to the code and use it to diagnose broadcast vs sort-merge joins.",
+      "Set up and use the History Server with event logging so completed and failed applications can be analyzed after the driver has exited."
+    ],
+    "formalDefinition": "The Spark UI is a Jetty-hosted web application, exposed by the driver's SparkContext at http://<driver-host>:4040, that renders the SparkListener event stream into interactive views. Live metrics flow from executors to the driver via heartbeats and task-end events, are aggregated by the AppStatusListener into an in-memory (or KVStore-backed) store, and are presented per tab. When spark.eventLog.enabled is true, the same events are serialized as JSON to spark.eventLog.dir; the Spark History Server later replays those logs to rebuild an identical, read-only UI for terminated applications.",
+    "simpleExplanation": "Think of the Spark UI as the flight recorder and cockpit dashboard for your Spark job. While the job flies (runs), the cockpit at port 4040 shows live gauges: how many engines (executors) are running, how long each task takes, where data is getting stuck. The black box (event log) records everything, so even after the plane lands (job ends), investigators (you, via the History Server) can replay exactly what happened. Reading the dials — which task took 10x longer than its neighbors, which stage spilled to disk, which query node shuffled a terabyte — is how you find and fix the slow, expensive parts.",
+    "historicalContext": "Early Spark (0.x) shipped only rudimentary monitoring; the modern tabbed Web UI matured through the 1.x series, with the SQL tab arriving alongside DataFrames and Catalyst in Spark 1.3-1.4 to visualize physical plans and per-node metrics. The event-log-driven History Server was added so YARN/Mesos batch jobs on ephemeral executors could be inspected after completion. Spark 3.x enriched the SQL tab with Adaptive Query Execution annotations (initial vs final plan, coalesced partitions, skew-split nodes) and added richer per-node metrics like number of output rows and spill, turning the UI into a first-class performance-diagnosis tool rather than just a status page.",
+    "whyItMatters": {
+      "business": "Faster diagnosis of slow or failing pipelines means SLAs are met and analysts get data on time; being able to point at the exact skewed key or oversized shuffle in the UI turns a multi-day performance war-room into a targeted 30-minute fix.",
+      "engineering": "The UI is the ground truth that reconciles intended logic with actual execution — it reveals shuffles you did not expect, broadcasts that silently reverted to sort-merge joins, and stages that spilled, which no amount of reading code can tell you with certainty.",
+      "scalability": "Reading task-duration distribution and shuffle sizes tells you whether adding executors will help (uniform tasks, CPU-bound) or is wasted (one skewed task dominates), directly informing how a job scales with cluster size.",
+      "cost": "Every shuffle, spill, and GC pause visible in the UI is spent cluster-hours; identifying and removing the biggest Exchange or the worst spill in the Stages/SQL tabs is the fastest path to lowering the compute bill of a recurring job.",
+      "reliability": "The Executors tab surfaces dead executors, task failures, and GC-driven timeouts before they cascade into job failure, and the event log preserves the evidence needed to root-cause an incident after the fact."
+    },
+    "coreComponents": [
+      {
+        "name": "Jobs Tab",
+        "definition": "The top-level view listing every Spark job (one per action) with status, duration, and its stages, plus the DAG visualization and the event timeline of jobs and executor add/remove events.",
+        "purpose": "To give the execution shape of the application: how many jobs an action produced, how they decomposed into stages, and which stages were skipped due to cached or reused shuffle data.",
+        "responsibilities": "Shows job ID, description (job group / spark.job.description), submitted time, duration, stages succeeded/total, tasks succeeded/total, and links each job to its DAG and stages.",
+        "examples": "A groupBy().count() action appears as one job with two stages; if the input DataFrame was cached, the upstream stage shows as 'skipped' in green."
+      },
+      {
+        "name": "Stages Tab",
+        "definition": "The per-stage detail view showing summary metrics (min/25th/median/75th/max) across tasks for duration, GC time, shuffle read/write, input/output, and spill, plus the event timeline and per-task table.",
+        "purpose": "To quantify how work was distributed across tasks so you can detect skew (max >> median), spill (memory/disk spill columns), and GC pressure (GC time near task time).",
+        "responsibilities": "Aggregates task metrics into the summary-statistics table, renders the per-task event timeline (scheduler delay, deserialization, compute, shuffle, serialization), and exposes shuffle read/write bytes, records, and locality levels.",
+        "examples": "A stage where max task duration is 9 min but median is 12 s (a 45x ratio) is the classic signature of data skew on one partition."
+      },
+      {
+        "name": "SQL / DataFrame Tab",
+        "definition": "The view that renders each DataFrame/SQL query as an annotated physical-plan graph with per-node metrics (number of output rows, data size, shuffle bytes, spill, scan time) and links each node to the stages that executed it.",
+        "purpose": "To connect declarative DataFrame/SQL code to the concrete physical plan and reveal where shuffles (Exchange), scans, aggregations, and joins occur along with their runtime costs.",
+        "responsibilities": "Displays the query plan DAG, WholeStageCodegen boundaries, Exchange (shuffle) nodes with partition counts, join type (BroadcastHashJoin vs SortMergeJoin), and AQE initial-vs-final plans.",
+        "examples": "Clicking a query's 'Details' shows an Exchange hashpartitioning(country, 200) node with '1.2 TB shuffle write', confirming a full shuffle you may want to replace with a broadcast join."
+      },
+      {
+        "name": "Executors Tab",
+        "definition": "The cluster-resource view listing every executor (and the driver) with cores, active/failed/completed tasks, storage memory used, disk used, GC time, shuffle read/write, and logs, including dead executors.",
+        "purpose": "To assess resource health and utilization: are executors dying, is GC dominating, is storage memory exhausted, are tasks failing on specific nodes.",
+        "responsibilities": "Shows per-executor task counts and failures, total/used storage memory, on-heap/off-heap usage, cumulative GC time versus task time, and links to stdout/stderr logs.",
+        "examples": "An executor showing 40% of its total time in GC, or 5 dead executors with 'ExecutorLostFailure', points to memory pressure or unhealthy nodes."
+      },
+      {
+        "name": "Storage Tab",
+        "definition": "The view of all cached/persisted RDDs and DataFrames, showing storage level, number of cached partitions, fraction cached, and size in memory and on disk.",
+        "purpose": "To verify that datasets you expect to be cached are actually fully cached in memory (not partially evicted or spilled to disk), which is what enables stage skipping.",
+        "responsibilities": "Lists each persisted dataset by name/ID, its StorageLevel (MEMORY_ONLY, MEMORY_AND_DISK, etc.), cached partition count, percent cached, and memory/disk footprint per executor.",
+        "examples": "A DataFrame you .cache()d showing '65% cached' means memory pressure evicted partitions, so downstream actions still recompute — a signal to persist with MEMORY_AND_DISK or add memory."
+      },
+      {
+        "name": "Environment Tab",
+        "definition": "The read-only listing of all effective runtime configuration: Spark properties, Hadoop/Hive properties, system properties, JVM flags, and the classpath.",
+        "purpose": "To verify that the configs you set (shuffle partitions, AQE, broadcast threshold, memory fractions) actually took effect, since defaults and cluster overrides often silently win.",
+        "responsibilities": "Displays every spark.* property and its resolved value, JVM version and options, environment variables, and the resolved classpath / added JARs.",
+        "examples": "Confirming spark.sql.adaptive.enabled=true and spark.sql.shuffle.partitions=400 are present here proves your submit-time flags were applied and not overridden by cluster defaults."
+      }
+    ],
+    "internalWorking": [
+      "The SparkContext registers listeners (SparkListener) on a LiveListenerBus; as the scheduler runs, it posts events (SparkListenerJobStart, StageSubmitted, TaskEnd, SQLExecutionStart, etc.) onto this asynchronous bus.",
+      "The AppStatusListener consumes these events and maintains an in-memory KVStore (or a LevelDB/RocksDB-backed store for large apps) of aggregated job, stage, task, and executor state that the web pages query on each refresh.",
+      "The web server (embedded Jetty) exposes tab pages and a REST API (/api/v1/applications/...) that render or return the aggregated store, so the UI is a view over the listener state, not a direct probe of executors.",
+      "Executors report task metrics (run time, GC time, shuffle read/write bytes and records, memory/disk spill, peak execution memory) inside the TaskEnd event and via periodic heartbeats, which the driver aggregates into the per-stage summary-statistics table.",
+      "When spark.eventLog.enabled=true, an EventLoggingListener also serializes each event as a JSON line to a file under spark.eventLog.dir (e.g., hdfs:///spark-logs); the History Server later replays that file through the same AppStatusListener to reconstruct an identical, read-only UI."
+    ],
+    "architectureFlow": "User action triggers job -> DAGScheduler & TaskScheduler post events to LiveListenerBus -> Executors send TaskEnd metrics + heartbeats to driver -> AppStatusListener aggregates into KVStore -> Jetty web server renders tabs (Jobs, Stages, SQL, Executors, Storage, Environment) at :4040 -> EventLoggingListener writes JSON event log to eventLog.dir -> History Server replays event log to rebuild UI after driver exit",
+    "dataFlowWalkthrough": [
+      "1. Application starts; the driver binds the Web UI to port 4040 (incrementing if taken) and starts the LiveListenerBus and, if enabled, the EventLoggingListener writing to spark.eventLog.dir.",
+      "2. An action (e.g., df.write) triggers a job; SparkListenerJobStart and StageSubmitted events appear, so the Jobs tab shows the new job and its stages with 0/N tasks complete.",
+      "3. Executors run tasks and stream TaskEnd events carrying per-task metrics; the Stages tab's summary-metrics table and per-task timeline fill in with duration, shuffle read/write, spill, and GC time as tasks finish.",
+      "4. For DataFrame/SQL work, SQLExecutionStart/End events populate the SQL tab with the physical-plan graph, and each plan node accumulates 'number of output rows', data size, and spill from the tasks that executed it.",
+      "5. When the driver exits, port 4040 goes away, but the completed JSON event log remains; pointing the History Server at spark.eventLog.dir replays it so you can open the exact same tabs for the finished application."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Port 4040 (Live UI)",
+        "meaning": "The default TCP port on the driver where the live Spark Web UI is served for the duration of the SparkContext; increments to 4041+ if the port is in use by another running application.",
+        "importance": "It is the primary entry point for real-time diagnosis; knowing it disappears when the driver stops motivates enabling event logging for post-mortems."
+      },
+      {
+        "term": "Summary Metrics (min / 25th / median / 75th / max)",
+        "meaning": "The per-stage distribution of a task metric across all tasks in the stage, shown as percentiles in the Stages tab.",
+        "importance": "The single richest signal for diagnosing skew and spill: comparing max to median instantly reveals whether one task is dominating the stage."
+      },
+      {
+        "term": "Exchange",
+        "meaning": "The physical-plan node representing a shuffle (data redistribution across partitions) shown in the SQL tab, e.g., Exchange hashpartitioning(key, N).",
+        "importance": "Each Exchange is a stage boundary and a cost center; counting and sizing them is the core of SQL-tab optimization."
+      },
+      {
+        "term": "Spill (memory) / Spill (disk)",
+        "meaning": "Metrics indicating that an operator's data exceeded execution memory and was spilled — first serialized to off-heap/on-heap, then written to disk — during aggregation, sort, or shuffle.",
+        "importance": "Spill is a strong signal of under-partitioning or skew and a major, often silent, source of slowdown visible in both the Stages and SQL tabs."
+      },
+      {
+        "term": "WholeStageCodegen",
+        "meaning": "A boxed region in the SQL plan where Catalyst fused multiple operators into a single generated Java function to avoid per-row virtual calls.",
+        "importance": "Its presence indicates efficient Tungsten execution; operators outside a codegen box (e.g., some UDFs, certain joins) are slower and worth noticing."
+      },
+      {
+        "term": "History Server",
+        "meaning": "A standalone service that replays persisted event logs from spark.eventLog.dir to reconstruct the Web UI for completed or failed applications.",
+        "importance": "It is the only way to analyze jobs after the driver exits, which is the normal case for batch jobs on ephemeral or spot clusters."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Skew detection via max/median ratio",
+        "explanation": "In the Stages tab summary metrics, if the max task duration (or max shuffle read / max spill) is many times the median (a rule of thumb is >5-10x), a small number of partitions hold disproportionate data. This 'long tail' means the whole stage waits on one or two straggler tasks; the fix is salting the hot key, enabling AQE skew join handling, or repartitioning."
+      },
+      {
+        "concept": "Spill diagnosis",
+        "explanation": "Non-zero Spill (memory) and Spill (disk) columns mean an operator could not fit its working set in execution memory. Disk spill in particular serializes and writes data, then reads it back, often multiplying I/O. Common causes are too few shuffle partitions (each is too large), a skewed key concentrating data, or an oversized aggregation state; increasing spark.sql.shuffle.partitions or fixing skew usually removes it."
+      },
+      {
+        "concept": "Skipped stages",
+        "explanation": "Stages shown as 'skipped' in the Jobs tab were not re-executed because their output already existed as cached partitions or as shuffle files from a prior job. Seeing expected skipped stages confirms caching is working; NOT seeing them when you cached a DataFrame indicates the cache was evicted (check the Storage tab's percent-cached) or you triggered a plan that could not reuse it."
+      },
+      {
+        "concept": "Broadcast vs shuffle join confirmation",
+        "explanation": "The SQL tab tells you which join strategy actually ran: a BroadcastHashJoin node (with a BroadcastExchange feeding the small side) means no big shuffle, while a SortMergeJoin with two Exchange inputs means both sides were shuffled. If you intended a broadcast but see a sort-merge join, the table exceeded spark.sql.autoBroadcastJoinThreshold or statistics were missing — the UI is how you catch this regression."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Live UI (port 4040):** Real-time view served by the running driver; vanishes when the SparkContext stops.",
+      "**History Server UI:** Reconstructed from event logs for completed/failed apps; identical tabs but read-only and after-the-fact.",
+      "**Structured Streaming tab:** Adds a Streaming/Structured Streaming view with per-micro-batch input rate, processing time, and state-store metrics.",
+      "**REST API (/api/v1):** Programmatic access to the same job/stage/executor/SQL metrics as JSON, used for automated monitoring and alerting.",
+      "**Cluster-manager UIs (YARN ResourceManager, K8s dashboard, Databricks/EMR consoles):** Wrap or proxy the Spark UI and add cluster-level context like container allocation and logs."
+    ],
+    "advantages": [
+      "**Ground-truth execution visibility:** Shows what Spark actually did (real shuffles, real spill, real task times), not just what the code implies.",
+      "**Quantitative skew/spill/GC diagnosis:** Percentile summary metrics turn vague 'it's slow' into precise, actionable numbers.",
+      "**Plan-to-code linkage:** The SQL tab maps physical-plan nodes and their row counts back to your DataFrame operations.",
+      "**Post-mortem capability:** Event logs plus the History Server let you analyze finished jobs on ephemeral clusters.",
+      "**Zero-instrumentation:** All metrics are collected automatically; no code changes needed to observe a job."
+    ],
+    "disadvantages": [
+      "**Live UI is ephemeral:** It disappears when the driver exits unless event logging is enabled.",
+      "**Metric overhead and log size:** Very large jobs with millions of tasks bloat the in-memory store and produce huge event logs that slow the History Server.",
+      "**Learning curve:** Correctly interpreting summary metrics, plan nodes, and locality levels requires experience; raw numbers can mislead novices.",
+      "**Sampling and aggregation limits:** Extremely high task counts may be truncated or slow to render, and some metrics are aggregated, hiding per-task detail.",
+      "**Security exposure:** An unprotected UI can leak configuration and data samples; it must be secured (ACLs, reverse proxy) in shared environments."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use the live UI for interactive/notebook development and active incident triage, and enable event logging plus the History Server for all production batch jobs so any run can be inspected after it finishes. Reach for the SQL tab first for DataFrame/SQL performance, the Stages tab for skew/spill, and the Executors tab for resource/GC/failure issues.",
+      "whenToAvoid": "For always-on, fleet-wide monitoring and alerting, do not rely on manually opening the UI; export metrics via the REST API or a metrics sink (Prometheus/Graphite) instead. For jobs with millions of tiny tasks, be cautious enabling verbose event logging (it can dominate I/O); trim it with rolling event logs or reduce task counts."
+    },
+    "realWorldAnalogy": "The Spark UI is like the full diagnostic suite on a modern car. The Jobs tab is the trip computer (how many trips, how long each took). The Stages tab is the per-cylinder telemetry — if one cylinder (task) runs far hotter/longer than the others, you have an imbalance (skew). The SQL tab is the wiring diagram annotated with live current draw at each component (Exchange = a heavy transformer). The Executors tab is the engine bay health (temperature, oil = GC, dead cylinders = dead executors). The Environment tab is the settings menu confirming your configuration. And the History Server is the onboard event recorder that lets a mechanic replay the whole drive after you have parked and walked away.",
+    "commonMisconceptions": [
+      {
+        "myth": "If the job finished successfully, there is nothing useful in the Spark UI.",
+        "reality": "A successful job can still be wildly inefficient. The Stages and SQL tabs routinely reveal massive spill, skew, and redundant shuffles in jobs that 'work' but cost 10x more than they should."
+      },
+      {
+        "myth": "Total stage duration tells you where the time went.",
+        "reality": "Stage duration is dominated by the slowest task; a stage can look slow only because one skewed task ran 20x longer than the median. You must read the summary-metrics distribution, not just the total."
+      },
+      {
+        "myth": "The number of output rows in the SQL tab equals the rows your code returned.",
+        "reality": "Each plan node reports rows flowing through THAT node; a scan may emit billions that a downstream filter reduces to thousands. Reading rows per node is how you spot filters that were not pushed down."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "For applications with millions of tasks, the in-memory status store and event log grow large; enable spark.ui.retainedJobs/retainedStages/retainedTasks limits, use rolling event logs (spark.eventLog.rolling.enabled) and log compaction, and back the store with disk (spark.history.store.path) so the History Server scales.",
+      "faultTolerance": "The UI itself is a view over listener state; if the LiveListenerBus drops events under extreme load (spark.scheduler.listenerbus.eventqueue.capacity exceeded), some metrics may be missing. Increase the queue capacity for very large jobs, and rely on the persisted event log as the durable record for post-mortem.",
+      "highAvailability": "The live UI lives in the driver and dies with it, so HA comes from the History Server (which can be run redundantly) reading a shared, durable event-log directory (HDFS/S3/GCS) rather than from the driver's port 4040.",
+      "disasterRecovery": "Persist event logs to reliable, retained storage (e.g., s3://bucket/spark-logs with lifecycle policies) so that even if clusters are destroyed, the History Server can reconstruct any past run for incident review and compliance.",
+      "performanceOptimization": "Use the SQL tab to find the largest Exchange and eliminate it (broadcast joins, pre-partitioning), the Stages tab to fix skew (max/median ratio) and spill (raise shuffle partitions), and the Executors tab to reduce GC time (tune memory fractions, off-heap, fewer larger executors), iterating with each run's UI as feedback.",
+      "costOptimization": "Every shuffle byte, spill byte, and GC second in the UI maps to cluster-hours; prioritize removing the single largest cost center shown (biggest Exchange or worst spilling stage) for the highest ROI, and use the UI to confirm right-sizing of executors and partitions.",
+      "securityConsiderations": "The UI can expose configuration, environment variables, SQL text, and sampled data; enable spark.ui.filters/ACLs (spark.acls.enable, spark.ui.view.acls), run behind an authenticating reverse proxy, restrict the History Server, and avoid logging secrets into configs that appear in the Environment tab.",
+      "monitoringAndObservability": "Beyond manual inspection, scrape the REST API (/api/v1/applications) or enable a metrics sink (Prometheus servlet, Graphite) so job/stage/executor metrics feed dashboards and alerts; use event logs as the durable trace for the History Server."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Generating a UI-Visible Job and Locating It in the Jobs/Stages Tabs",
+        "overview": "Runs a small but representative pipeline (read, filter, groupBy, write) with a named job description so it is easy to find in the Jobs tab, then keeps the driver alive so you can browse port 4040.",
+        "code": "from pyspark.sql import SparkSession\nfrom pyspark.sql.functions import col, sum as _sum\nimport time\n\nspark = (SparkSession.builder\n         .appName(\"SparkUIDemo\")\n         .config(\"spark.sql.shuffle.partitions\", \"200\")\n         .config(\"spark.sql.adaptive.enabled\", \"true\")\n         .getOrCreate())\n\n# Give this logical step a readable name in the Jobs tab\nspark.sparkContext.setJobGroup(\"revenue_by_region\", \"Nightly revenue aggregation\")\n\ndf = spark.read.parquet(\"/data/transactions.parquet\")\nagg = (df.filter(col(\"is_fraud\") == False)          # narrow -> Stage 0\n         .groupBy(\"region\")                          # WIDE -> Exchange / stage boundary\n         .agg(_sum(\"amount\").alias(\"revenue\")))\n\nagg.write.mode(\"overwrite\").parquet(\"/output/revenue_by_region\")  # ACTION -> a Job\n\nprint(\"Open the Spark UI at http://localhost:4040 (Jobs / Stages / SQL tabs)\")\ntime.sleep(600)  # keep driver alive so the live UI stays reachable\nspark.stop()\n",
+        "language": "python",
+        "breakdown": "setJobGroup labels the job so 'Nightly revenue aggregation' appears in the Jobs tab description instead of an opaque call site. The filter is narrow (pipelined into the first stage); groupBy introduces an Exchange, so the write action produces a job with a ShuffleMapStage and a ResultStage. The sleep keeps the SparkContext (and thus port 4040) alive for browsing; in a notebook the UI stays up as long as the session lives.",
+        "expectedOutput": "Open the Spark UI at http://localhost:4040 (Jobs / Stages / SQL tabs)\n\n# In the Jobs tab you will see:\n#   Job 0  'Nightly revenue aggregation'  2/2 stages  (Stage 0: scan+filter+partial_agg, Stage 1: final agg+write)\n# In the Stages tab, Stage 0 shows 'Shuffle Write' bytes; Stage 1 shows 'Shuffle Read' bytes.",
+        "commonIssues": "If port 4040 is already used by another running app, this driver binds 4041/4042 — check the driver log line 'Bound SparkUI to ... port 404x'. Without setJobGroup, jobs are labeled by the anonymous call site and are hard to correlate to code. If the script exits immediately (no sleep, not a notebook), the UI disappears before you can open it.",
+        "optimizationTips": "Use spark.sparkContext.setJobDescription('...') per action for even finer labeling. If you only care about post-run analysis, skip the sleep and enable event logging (next example) so the History Server keeps the UI."
+      },
+      {
+        "title": "Enabling Event Logging and Reading a Finished Job in the History Server",
+        "overview": "Configures durable event logging so the job can be inspected after the driver exits, and shows the History Server startup and the config that makes it work.",
+        "code": "# 1) Submit the app with event logging enabled\n#    (equivalently set these in spark-defaults.conf or SparkSession config)\nspark = (SparkSession.builder\n         .appName(\"EventLoggedJob\")\n         .config(\"spark.eventLog.enabled\", \"true\")\n         .config(\"spark.eventLog.dir\", \"hdfs:///spark-logs\")   # or s3a://bucket/spark-logs\n         .config(\"spark.eventLog.rolling.enabled\", \"true\")     # rotate big logs\n         .config(\"spark.eventLog.rolling.maxFileSize\", \"128m\")\n         .getOrCreate())\n\n# ... run your pipeline, then spark.stop() — the JSON event log persists ...\n\n# 2) On a host, start the History Server pointing at the same dir:\n#    export SPARK_HISTORY_OPTS=\"-Dspark.history.fs.logDirectory=hdfs:///spark-logs\"\n#    $SPARK_HOME/sbin/start-history-server.sh\n#    Then browse http://<history-host>:18080 and click the finished application.\n",
+        "language": "python",
+        "breakdown": "spark.eventLog.enabled turns on the EventLoggingListener; spark.eventLog.dir is the durable location (HDFS/S3/GCS) where per-app JSON logs are written. Rolling logs prevent a single huge file for long jobs. The History Server (default port 18080) is a separate process configured via spark.history.fs.logDirectory pointing at the same directory; it replays each app's log to rebuild the exact tabs — Jobs, Stages, SQL, Executors — for completed and failed runs.",
+        "expectedOutput": "# History Server UI at http://<host>:18080 lists:\n#   App ID                         Name             Started              Duration  \n#   application_1699_0042          EventLoggedJob   2026-07-03 01:12     11 min\n# Clicking it opens the same Jobs/Stages/SQL/Executors tabs as the live UI did.",
+        "commonIssues": "The event log dir must exist and be writable, or the app fails to start. If the History Server shows 'no completed applications', the logDirectory does not match spark.eventLog.dir or the app never called spark.stop() (incomplete logs may show under 'incomplete applications'). Huge logs from million-task jobs slow the History Server unless rolling + compaction is on.",
+        "optimizationTips": "Enable spark.history.fs.cleaner.enabled with a retention (spark.history.fs.cleaner.maxAge) to prune old logs, and set spark.history.store.path to a local disk KVStore so the History Server does not re-parse logs on every load."
+      },
+      {
+        "title": "Reading SQL-Tab Metrics Programmatically to Detect Skew and Spill",
+        "overview": "Uses explain() to see the physical plan (Exchange, join type) that the SQL tab visualizes, and the REST API to pull stage summary metrics so you can flag skew (max/median) and spill without clicking through the UI.",
+        "code": "import requests\n\n# The physical plan is exactly what the SQL tab draws: Exchange = shuffle, join strategy, etc.\njoined = (spark.read.parquet(\"/data/orders.parquet\")\n              .join(spark.read.parquet(\"/data/customers.parquet\"), \"customer_id\")\n              .groupBy(\"country\").count())\njoined.explain(mode=\"formatted\")   # look for 'Exchange' and 'BroadcastHashJoin' vs 'SortMergeJoin'\njoined.count()                      # run it so metrics populate\n\n# Pull stage metrics from the live UI REST API (same data the Stages tab shows)\nbase = \"http://localhost:4040/api/v1\"\napp_id = requests.get(f\"{base}/applications\").json()[0][\"id\"]\nstages = requests.get(f\"{base}/applications/{app_id}/stages\").json()\nfor s in stages:\n    d = s.get(\"taskMetricsDistributions\") or {}\n    dur = d.get(\"executorRunTime\")\n    spill = d.get(\"diskBytesSpilled\")\n    if dur:                       # dur is [min,25,median,75,max]\n        median, mx = dur[2], dur[4]\n        ratio = (mx / median) if median else 0\n        print(f\"Stage {s['stageId']}: median={median:.0f}ms max={mx:.0f}ms skew_ratio={ratio:.1f}x\")\n        if ratio > 5:\n            print(f\"  ** SKEW: max task is {ratio:.1f}x the median — investigate hot key\")\n    if spill and spill[4] > 0:\n        print(f\"  ** SPILL: max disk spill {spill[4]/1e9:.2f} GB — raise shuffle.partitions or fix skew\")\n",
+        "language": "python",
+        "breakdown": "explain(mode='formatted') prints the same physical plan the SQL tab renders graphically; each Exchange is a shuffle/stage boundary and the join node name tells you broadcast vs sort-merge. The REST API endpoints (/applications, /stages) return the identical aggregated metrics the Stages tab shows, including taskMetricsDistributions with [min,25th,median,75th,max] arrays. Comparing max to median for executorRunTime programmatically flags skew, and non-zero diskBytesSpilled flags spill — automating what you would otherwise eyeball in the UI.",
+        "expectedOutput": "== Physical Plan ==\n*(3) HashAggregate(keys=[country], functions=[count(1)])\n+- Exchange hashpartitioning(country, 200)          <-- shuffle (Stages boundary)\n   +- *(2) HashAggregate(keys=[country], functions=[partial_count(1)])\n      +- *(2) Project [country]\n         +- *(2) BroadcastHashJoin [customer_id], [customer_id]   <-- no big shuffle\n            :- *(2) Filter isnotnull(customer_id)\n            :  +- Scan parquet orders\n            +- BroadcastExchange\n               +- Scan parquet customers\n\nStage 3: median=1200ms max=41000ms skew_ratio=34.2x\n  ** SKEW: max task is 34.2x the median — investigate hot key\n  ** SPILL: max disk spill 6.40 GB — raise shuffle.partitions or fix skew",
+        "commonIssues": "The REST base URL must match the actual UI port (4041 if 4040 was taken). taskMetricsDistributions is only populated after the stage completes and may be null for running/failed stages. On the History Server use the base http://<host>:18080/api/v1 and the persisted app id.",
+        "optimizationTips": "Wire this check into CI or a post-run hook so any stage exceeding a skew-ratio or spill threshold fails the build or fires an alert, turning UI reading into an automated guardrail. Enable AQE skew join handling (spark.sql.adaptive.skewJoin.enabled=true) and re-check the ratio."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A data platform team's nightly 'orders enrichment and revenue rollup' job started missing its 6 AM SLA, sometimes taking over 90 minutes and occasionally failing. Leadership wants it back under 20 minutes and stable. The team must use the Spark UI to find and remove the bottlenecks rather than guessing.",
+    "inputData": "orders.parquet (2B rows: order_id, customer_id, country, amount, ts), customers.parquet (30M rows: customer_id, segment), and a small currency.parquet (180 rows: country, fx_rate). Data lives on S3; the cluster is 60 executors (4 cores, 16GB each) on EMR/YARN.",
+    "architecture": "PySpark DataFrame job compiled by Catalyst, executed as an RDD DAG. Event logging is enabled to s3a://analytics-logs/spark-logs and a History Server (port 18080) is available. AQE is on. The team inspects the live UI at 4040 during a manual run and the History Server for failed nightly runs.",
+    "processingSteps": [
+      "1. Open the failed run in the History Server; the Jobs tab shows one dominant job whose final stage ran 78 of its 90 minutes — the bottleneck is a single stage.",
+      "2. In the SQL tab, click the query's Details: the plan shows a SortMergeJoin with two Exchange inputs (both orders 2B and customers 30M were shuffled) and a large Exchange before the country aggregation.",
+      "3. In the Stages tab for the join stage, the summary metrics show median task 900ms but max 47s (a 52x skew ratio) and max disk spill of 9GB — a hot country/customer key is overloading a few partitions and spilling.",
+      "4. In the Executors tab, 3 executors show GC time near 35% of task time and two 'ExecutorLostFailure' entries, correlating the OOM/GC pressure with the spilling skewed tasks.",
+      "5. Apply fixes: broadcast the small currency table and the 30M customers table where it fits, enable AQE skew-join handling, and raise spark.sql.shuffle.partitions from 200 to 800; re-run and re-read the UI to confirm.",
+      "6. Verify in the Environment tab that spark.sql.adaptive.skewJoin.enabled=true and spark.sql.shuffle.partitions=800 actually took effect (not overridden by cluster defaults)."
+    ],
+    "output": "A revenue-by-country Parquet dataset, plus a new SQL-tab plan showing a BroadcastHashJoin for currency, an AQE 'skew=true' annotation splitting the hot partition, and the final Exchange coalesced by AQE to a right-sized partition count.",
+    "monitoring": "The Stages tab now shows the join stage's max/median ratio dropped from 52x to about 2.3x and disk spill to zero; the Executors tab shows GC under 8% and no dead executors; the Jobs tab shows the previously 78-minute stage completing in about 6 minutes. A post-run REST-API check asserts skew ratio < 5 and spill == 0.",
+    "errorHandling": "The prior failures were ExecutorLostFailure from OOM during spill on skewed tasks; after skew handling and more partitions, tasks fit in memory and no executors are lost. Event logging ensures that if a future run fails, the History Server preserves the exact stage/task metrics for root-cause analysis without needing to reproduce the failure live.",
+    "finalResult": "By reading the SQL tab (found the unnecessary big-table shuffle), the Stages tab (quantified 52x skew and 9GB spill), the Executors tab (linked it to GC/OOM), and the Environment tab (confirmed configs), the team broadcast the dimension, enabled AQE skew handling, and right-sized partitions. Runtime fell from 90+ minutes to 14 minutes, spill and dead executors went to zero, and the SLA is now met with margin — all changes justified by concrete UI evidence."
+  },
+  "industryUseCases": [
+    {
+      "company": "Netflix",
+      "problem": "Petabyte-scale ETL on ephemeral, spot-heavy clusters means jobs finish (or fail) after executors are gone, so live debugging is impossible and inefficiencies hide in 'successful' runs.",
+      "solution": "Engineers standardize on event logging to durable storage and a scaled History Server, then read the Stages and SQL tabs post-hoc to hunt oversized shuffles, skew (max/median), and spill across thousands of daily jobs.",
+      "benefits": "Post-mortem UI analysis on any run — including failed spot-reclaimed ones — lets teams cut shuffle and spill costs at fleet scale without reproducing jobs live, directly lowering cloud spend."
+    },
+    {
+      "company": "Uber",
+      "problem": "Huge trip and event aggregations frequently hit data skew on hot cities/drivers, causing straggler tasks that blow through latency budgets.",
+      "solution": "Uber's platform teams use the Stages-tab summary metrics (max vs median task duration and shuffle read) to detect skew, then apply salting and AQE skew-join handling, verifying the improvement in the same UI on the next run.",
+      "benefits": "Quantitative skew detection turns latency spikes into targeted fixes, shrinking straggler tails and stabilizing pipeline SLAs on massive datasets."
+    },
+    {
+      "company": "Databricks (customer platforms)",
+      "problem": "Customers write complex multi-join SQL whose physical plans hide redundant Exchanges, unexpected sort-merge joins, and spill that inflate cost.",
+      "solution": "The enhanced SQL/DataFrame tab (with AQE initial-vs-final plans, per-node output rows, and spill) lets users and support engineers pinpoint the largest Exchange and confirm whether a broadcast join actually happened, guiding rewrites.",
+      "benefits": "Making the physical plan and its runtime metrics readable turns opaque slow queries into obvious, fixable bottlenecks, reducing customer job cost and duration."
+    },
+    {
+      "company": "Shopify",
+      "problem": "Nightly analytics jobs on merchant data occasionally regress in performance after code changes, and the cause is not visible from logs alone.",
+      "solution": "They compare the SQL-tab plan and Stages metrics of a regressed run against a known-good baseline in the History Server, spotting a newly introduced Exchange or a broadcast that reverted to a shuffle.",
+      "benefits": "UI-based regression comparison catches accidental shuffles and lost broadcasts before they compound into SLA misses, keeping recurring-job cost predictable."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "As task counts reach the hundreds of thousands or millions, the driver's in-memory status store and the event log grow; cap retained UI state (spark.ui.retainedJobs/retainedStages/retainedTasks), enable rolling event logs with compaction (spark.eventLog.rolling.enabled, spark.eventLog.rolling.maxFileSize), and back the History Server with a disk KVStore (spark.history.store.path) so both the live UI and post-mortem UI stay responsive at scale.",
+    "faultTolerance": "The UI is a projection of the SparkListener event stream; under extreme event rates the listener bus can drop events (watch for 'Dropped events' warnings), leaving gaps in metrics. Raise spark.scheduler.listenerbus.eventqueue.capacity for very large jobs and treat the persisted event log as the authoritative record, since it survives driver crashes and executor loss.",
+    "highAvailability": "The live UI dies with the driver, so availability of historical insight comes from running the History Server (optionally multiple instances behind a load balancer) against a shared, durable event-log directory rather than depending on any single driver's port 4040.",
+    "disasterRecovery": "Store event logs in replicated, retained object storage (HDFS with replication or S3/GCS with lifecycle and versioning) so that even after clusters are torn down, the History Server can reconstruct any historical run for incident review, audits, and regression comparison.",
+    "performanceOptimization": "Drive tuning from the UI: use the SQL tab to find and eliminate the largest Exchange (broadcast, pre-partitioning, bucketing), the Stages tab to fix skew (max/median ratio) and spill (raise shuffle partitions, enable AQE skew join), and the Executors tab to cut GC time (adjust memory fractions, off-heap, fewer/larger executors), re-reading the UI after each change to confirm the metric moved.",
+    "costOptimization": "Rank cost centers by what the UI shows: the biggest shuffle-write bytes, the worst disk-spill stage, and the highest cumulative GC time. Fixing the single largest one first yields the biggest cluster-hour savings; the Executors and Storage tabs also reveal over-provisioned memory and half-cached datasets to right-size.",
+    "securityConsiderations": "Both live and History-Server UIs can expose configs, environment variables, SQL text, and sampled data. Enable authentication/authorization (spark.acls.enable, spark.ui.view.acls, spark.history.ui.acls.enable), place the UI behind an authenticating reverse proxy, restrict network access, and avoid putting secrets in Spark configs since they surface in the Environment tab.",
+    "monitoringAndObservability": "Complement manual UI reading with automation: scrape the REST API (/api/v1/applications/.../stages) for skew/spill thresholds, enable the Prometheus servlet or a metrics sink for dashboards and alerting, and use event logs as the durable trace that ties alerts back to a specific run in the History Server.",
+    "dataQualityValidation": "The SQL tab's per-node 'number of output rows' is a validation tool: unexpected row counts after a join (row explosion from a bad key) or after a filter (predicate not pushed down) are visible immediately, letting you catch correctness/quality issues that a passing job would otherwise hide.",
+    "loggingAndAlerting": "Correlate UI evidence with driver/executor logs (linked from the Executors tab) and alert on signals derived from UI metrics: repeated ExecutorLostFailure, GC time exceeding a fraction of task time, non-zero disk spill on critical stages, and skew ratios above threshold — each backed by the persisted event log for investigation."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Always enable event logging in production:** Set spark.eventLog.enabled=true to a durable dir so every run — including failures on ephemeral clusters — is inspectable in the History Server.",
+      "**Read the SQL tab first for DataFrame/SQL jobs:** Start from the physical-plan graph to find the largest Exchange and confirm join strategies before touching code.",
+      "**Judge stages by the distribution, not the total:** Use the min/median/max summary metrics to detect skew and spill instead of trusting overall stage duration.",
+      "**Label jobs for readability:** Use setJobGroup/setJobDescription so the Jobs tab maps clearly to logical pipeline steps.",
+      "**Verify configs in the Environment tab:** Confirm shuffle partitions, AQE, and broadcast threshold actually took effect rather than assuming submit flags won."
+    ],
+    "engineeringStandards": [
+      "Require an explain(mode='formatted') review and a Spark UI check (stage count, largest Exchange, skew ratio, spill) before promoting any new or changed pipeline to production.",
+      "Enable spark.sql.adaptive.enabled and spark.sql.adaptive.skewJoin.enabled by default in Spark 3.x, and confirm the AQE final plan in the SQL tab.",
+      "Standardize event-log directories and History Server access across teams so any engineer can open any run."
+    ],
+    "designRecommendations": [
+      "Design pipelines so filters/projections are early and shuffles are few, then use the SQL tab to verify the plan matches that intent.",
+      "Prefer broadcast joins for small dimensions and confirm a BroadcastHashJoin (not SortMergeJoin) node appears in the SQL tab.",
+      "Right-size spark.sql.shuffle.partitions to data volume and cores, using Stages-tab spill and task-size metrics as the tuning signal."
+    ],
+    "namingConventions": [
+      "Set descriptive spark.app.name so applications are identifiable in the History Server list.",
+      "Use setJobGroup('<pipeline_step>', '<human description>') and setJobDescription per action so Jobs-tab rows read like the pipeline.",
+      "Name cached DataFrames (via .alias or a comment/table name) so they are identifiable in the Storage tab."
+    ],
+    "documentationStandards": [
+      "Capture a baseline of the expected UI shape in each job's runbook: number of jobs/stages, the largest expected Exchange size, and normal task-duration range.",
+      "Document the History Server URL, event-log location, and retention policy for each environment.",
+      "Record known skew keys and the mitigation applied, with the before/after Stages-tab metrics as evidence."
+    ],
+    "testingStrategies": [
+      "In CI or a post-run hook, pull the REST API and assert thresholds (skew ratio < 5, disk spill == 0 on critical stages, expected number of Exchanges) to catch regressions automatically.",
+      "Compare the SQL-tab plan of a candidate change against the baseline in the History Server to detect accidental shuffles or lost broadcasts.",
+      "Run failure-injection (kill an executor) and confirm the Executors tab and event log capture the recovery for observability validation."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Judging a stage only by its total duration and missing that a single skewed task dominates it.",
+      "whyItHappens": "The Jobs/Stages summary shows one big number, and engineers assume the whole stage is uniformly slow rather than opening the per-task distribution.",
+      "impact": "They add executors or memory that do not help (the straggler task is the bottleneck), wasting cost while the SLA still misses.",
+      "correctApproach": "Open the Stages tab summary metrics and compare max to median task duration/shuffle read; if the ratio is high, fix skew (salting, AQE skew join, repartition) rather than scaling the cluster."
+    },
+    {
+      "mistake": "Not enabling event logging, so a failed or finished job on an ephemeral cluster has no UI to inspect.",
+      "whyItHappens": "Developers rely on the live port-4040 UI during notebook work and forget it vanishes when the driver exits in production.",
+      "impact": "When a nightly job fails, there is nothing to analyze; the team must reproduce it live, delaying resolution by hours or days.",
+      "correctApproach": "Set spark.eventLog.enabled=true with a durable spark.eventLog.dir and run a History Server so every run is preserved and inspectable."
+    },
+    {
+      "mistake": "Assuming a broadcast join happened without checking the SQL tab.",
+      "whyItHappens": "The code used a broadcast() hint or the table looked small, so the engineer trusts intent over evidence.",
+      "impact": "If the table exceeded the broadcast threshold or stats were missing, Spark silently ran a SortMergeJoin, shuffling huge tables and inflating runtime and cost unnoticed.",
+      "correctApproach": "Open the SQL tab and confirm a BroadcastHashJoin node with a BroadcastExchange feeding the small side; if it is a SortMergeJoin with two Exchanges, raise the threshold or fix statistics."
+    },
+    {
+      "mistake": "Ignoring non-zero spill metrics because the job still succeeded.",
+      "whyItHappens": "Spill does not fail the job, so it is treated as harmless; the Spill (memory)/(disk) columns are overlooked.",
+      "impact": "Disk spill silently multiplies I/O and can trigger GC pressure and OOM later, making the stage far slower and more fragile than necessary.",
+      "correctApproach": "Treat non-zero disk spill as a tuning signal: raise spark.sql.shuffle.partitions, fix skew, or increase executor memory until the Stages tab shows spill back at zero."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Where to look for a performance problem",
+      "optionA": "Stages tab (task-level metrics)",
+      "optionB": "SQL/DataFrame tab (plan-level metrics)",
+      "explanation": "The Stages tab tells you HOW work was distributed across tasks — skew (max/median), spill, GC, shuffle bytes per task. The SQL tab tells you WHAT the query did structurally — which Exchanges (shuffles), join strategies, and scans exist and their per-node row counts. Use the SQL tab to find the offending operator, then the Stages tab to quantify how badly it behaved at the task level."
+    },
+    {
+      "feature": "Live inspection vs post-mortem",
+      "optionA": "Live UI on port 4040",
+      "optionB": "History Server (port 18080) from event logs",
+      "explanation": "The live UI is real-time and interactive but dies with the driver, ideal for notebooks and active triage. The History Server reconstructs the identical tabs from persisted event logs after the app ends, which is essential for production batch jobs on ephemeral clusters where the driver is long gone by the time you investigate."
+    },
+    {
+      "feature": "Diagnosing skew vs diagnosing spill",
+      "optionA": "Skew signal: max task duration / shuffle read >> median",
+      "optionB": "Spill signal: non-zero Spill (memory) and Spill (disk)",
+      "explanation": "Skew shows up as a long tail in the summary-metrics distribution (a few tasks far larger than the median), addressed by salting/AQE skew join/repartition. Spill shows up as explicit spill columns and means working set exceeded execution memory, addressed by more shuffle partitions or more memory. They often co-occur — a skewed partition is also the one that spills — but the fixes differ, so read both signals."
+    },
+    {
+      "feature": "Manual UI reading vs automated metric extraction",
+      "optionA": "Browsing the tabs interactively",
+      "optionB": "Scraping the REST API (/api/v1) or metrics sink",
+      "explanation": "Interactive browsing is best for ad-hoc, deep diagnosis of a single run. The REST API returns the same job/stage/executor/SQL metrics as JSON, enabling automated thresholds (skew ratio, spill, Exchange count) in CI and alerting. Use manual reading to understand a problem and automated extraction to prevent it from recurring."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is the Spark UI and how do you access it?",
+        "answer": "The Spark UI is the driver's web console showing jobs, stages, tasks, SQL queries, executors, cached data, and configuration for a Spark application. You access the live UI at http://<driver-host>:4040 (4041, 4042, ... if 4040 is taken) while the application runs; after it exits, you use the History Server (default port 18080) if event logging was enabled.",
+        "explanation": "Emphasize the port, that it lives in the driver, and the live-vs-History-Server distinction."
+      },
+      {
+        "question": "What does each main tab of the Spark UI show?",
+        "answer": "Jobs: one row per action with its stages and the DAG. Stages: per-stage task metrics (duration distribution, shuffle read/write, spill, GC). SQL/DataFrame: the physical plan graph with per-node row counts and Exchanges. Executors: cores, memory, GC, task failures, dead executors. Storage: cached datasets and how much is cached. Environment: effective configuration.",
+        "explanation": "Knowing which tab answers which question is the core competency; tie each tab to a diagnostic purpose."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How do you detect data skew using the Spark UI?",
+        "answer": "In the Stages tab, open the summary-metrics table and compare the max to the median for task duration (executor run time) and shuffle read bytes. If max is many times the median (rule of thumb >5-10x), a few partitions hold disproportionate data — that long tail is skew. The per-task event timeline confirms one or two straggler tasks running far longer than the rest.",
+        "explanation": "The key metric is the max/median ratio in the summary statistics, not the total stage time."
+      },
+      {
+        "question": "What is spill in the Spark UI and how do you fix it?",
+        "answer": "Spill (memory) and Spill (disk) in the Stages tab mean an operator's working set exceeded execution memory and was spilled — serialized in memory, then written to disk. Disk spill in particular adds heavy I/O. Fix it by increasing spark.sql.shuffle.partitions (smaller per-partition data), fixing skew, or adding executor memory, then confirm the spill columns return to zero.",
+        "explanation": "Stress that spill does not fail the job but silently slows it, and the fix targets partition size or skew."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How do you use the SQL tab to confirm the join strategy and find the biggest cost center?",
+        "answer": "Open the query's Details in the SQL tab to see the physical-plan graph. A BroadcastHashJoin node fed by a BroadcastExchange means the small side was broadcast (no big shuffle); a SortMergeJoin with two Exchange inputs means both sides were shuffled. Each Exchange shows shuffle-write bytes and partition count, and each node shows number of output rows and spill — the largest Exchange or the node with the most output rows/spill is your top cost center to attack.",
+        "explanation": "Tie plan nodes to code and metrics: Exchange = shuffle = stage boundary; per-node rows reveal filter pushdown and row explosion."
+      },
+      {
+        "question": "How does the History Server work and why is it necessary in production?",
+        "answer": "When spark.eventLog.enabled=true, an EventLoggingListener writes every SparkListener event as JSON to spark.eventLog.dir. The History Server (spark.history.fs.logDirectory pointing at that dir) replays those logs through the same status listener to rebuild an identical, read-only UI on port 18080. It is necessary because production drivers on ephemeral/spot clusters exit — and take port 4040 with them — long before you investigate, so the persisted log is the only way to inspect finished or failed runs.",
+        "explanation": "Explain the event-log replay mechanism and the ephemeral-driver motivation."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "A nightly job that used to run in 15 minutes now takes 70. The Jobs tab shows one stage consuming almost all the time. How do you diagnose it with the UI?",
+        "thinkingProcess": "One dominant stage means the problem is localized. First check the SQL tab to see if a new/larger Exchange appeared or a broadcast reverted to a sort-merge join. Then open that stage in the Stages tab and read the summary metrics: is max task duration >> median (skew), or are spill columns non-zero (memory pressure)? Cross-check the Executors tab for GC time and dead executors. Finally verify configs in the Environment tab in case a default changed.",
+        "expectedAnswer": "Open the SQL tab Details to compare the plan against the baseline — likely a broadcast join reverted to a SortMergeJoin (two Exchanges) because the dimension grew past the broadcast threshold, or data growth introduced skew. In the Stages tab, a high max/median ratio and non-zero disk spill would confirm skew/spill. Fix by restoring the broadcast (raise spark.sql.autoBroadcastJoinThreshold or add a hint), enabling AQE skew join, and/or increasing shuffle partitions, then re-read the UI to confirm the ratio and spill dropped."
+      },
+      {
+        "scenario": "You cached a DataFrame with .cache() but subsequent actions are still slow and not showing skipped stages. What does the UI tell you?",
+        "thinkingProcess": "Skipped stages appear only when cached partitions or existing shuffle files are reused. If they are absent, either the cache did not fully materialize or was evicted. The Storage tab shows the true cache state (percent cached). GC/memory pressure in the Executors tab would explain eviction. Also, if the second action uses a slightly different plan, it cannot reuse the cache.",
+        "expectedAnswer": "Open the Storage tab: if the DataFrame shows less than 100% cached, memory pressure evicted partitions, so downstream actions recompute — confirmed by no skipped stages in the Jobs tab. Fix by persisting with MEMORY_AND_DISK, adding executor memory, or reducing cached data; also ensure the reusing action has an identical plan. Verify success when the Storage tab shows 100% cached and the Jobs tab shows skipped upstream stages."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design an observability setup so that any Spark batch job across a large team — including failed runs on spot clusters — can be diagnosed for skew, spill, and cost after the fact, with automated regression detection.",
+        "designApproach": "Enable event logging on every job to a shared durable directory (s3://.../spark-logs) with rolling logs and compaction. Run a scaled, HA History Server (backed by a disk KVStore) reading that directory, secured behind auth. Standardize spark.app.name and job descriptions for identifiability. Add a post-run hook that hits the REST API to extract stage skew ratios, spill bytes, Exchange counts, and GC time, storing them per run.",
+        "tradeOffs": "Event logging adds I/O and storage cost, mitigated by rolling logs, compaction, and retention cleanup; larger listener queues avoid dropped events but use driver memory. Automated thresholds can be noisy, so tune skew/spill limits per job class. The History Server can be slow on million-task logs, mitigated by the KVStore and log size limits.",
+        "scalingStrategy": "Partition event logs by date/app and apply lifecycle policies; run multiple History Server instances behind a load balancer against the shared dir; cap retained UI state and use rolling event logs so both live and historical UIs stay responsive. Feed extracted metrics into dashboards/alerts (Prometheus/Grafana) and gate deploys on regression checks comparing a run's plan and metrics to its baseline."
+      }
+    ],
+    "followUpQuestions": [
+      "What does a 'skipped' stage in the Jobs tab mean and what causes it?",
+      "How do you read the per-task event timeline (scheduler delay, deserialization, compute, shuffle, serialization)?",
+      "What do the data-locality levels (PROCESS_LOCAL, NODE_LOCAL, RACK_LOCAL, ANY) in the Stages tab tell you?",
+      "How does the SQL tab display an AQE plan differently (initial vs final, coalesced partitions, skew=true)?",
+      "How would you secure the Spark UI and History Server in a shared cluster?",
+      "What metrics indicate GC pressure in the Executors tab and how do you reduce it?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "The Spark UI is the driver's web console (live at :4040, post-mortem via the History Server at :18080) whose Jobs, Stages, SQL, Executors, Storage, and Environment tabs expose per-task and per-plan-node metrics for diagnosing skew, spill, shuffles, GC, and configuration.",
+    "keyConcepts": [
+      "Live UI at :4040 (4041+ if busy) lives in the driver and dies with it; History Server (:18080) replays event logs.",
+      "Stages-tab summary metrics (min/25th/median/75th/max) reveal skew (max >> median) and spill.",
+      "SQL tab: Exchange = shuffle = stage boundary; check BroadcastHashJoin vs SortMergeJoin and per-node output rows.",
+      "Executors tab shows cores, storage memory, GC time, task failures, and dead executors.",
+      "spark.eventLog.enabled + spark.eventLog.dir preserve runs for the History Server."
+    ],
+    "formulas": [
+      "Skew ratio = max task duration (or shuffle read) / median task duration; investigate when > ~5-10x",
+      "GC pressure = executor GC time / executor task time; concerning when > ~0.15 (15%)",
+      "Spill flag = Spill (disk) > 0 (any non-zero disk spill is a tuning signal)",
+      "Cache health = cached partitions / total partitions (want 100% for reliable stage skipping)"
+    ],
+    "commands": [
+      "http://localhost:4040  # live UI (Jobs/Stages/SQL/Executors/Storage/Environment)",
+      "spark.conf.set('spark.eventLog.enabled', 'true'); spark.conf.set('spark.eventLog.dir', 'hdfs:///spark-logs')  # persist runs",
+      "$SPARK_HOME/sbin/start-history-server.sh  # with spark.history.fs.logDirectory set -> :18080",
+      "df.explain(mode='formatted')  # the physical plan the SQL tab draws (Exchange = shuffle)",
+      "spark.sparkContext.setJobGroup('step','desc')  # label jobs in the Jobs tab",
+      "GET http://localhost:4040/api/v1/applications/<id>/stages  # stage metrics as JSON (taskMetricsDistributions)"
+    ],
+    "interviewPoints": [
+      "Access the live UI at :4040; it vanishes with the driver — use the History Server for finished/failed jobs.",
+      "Detect skew via max/median task metrics in the Stages tab, not total stage duration.",
+      "Non-zero Spill (disk) means working set exceeded execution memory; fix with more partitions or less skew.",
+      "Confirm join strategy in the SQL tab: BroadcastHashJoin (no big shuffle) vs SortMergeJoin (two Exchanges).",
+      "Enable event logging so every production run is inspectable in the History Server."
+    ],
+    "quickNotes": [
+      "Skipped stages (green) = cached/reused shuffle output; absence when you cached means eviction (check Storage tab).",
+      "Each Exchange node in the SQL tab is one shuffle and one stage boundary.",
+      "Per-node 'number of output rows' catches missing filter pushdown and join row explosion.",
+      "Verify configs (shuffle.partitions, AQE, broadcast threshold) actually applied in the Environment tab.",
+      "Use setJobDescription/setJobGroup so Jobs-tab rows read like your pipeline steps.",
+      "REST API (/api/v1) returns the same metrics for automated skew/spill alerting."
+    ]
+  },
+  "keyTakeaways": [
+    "The Spark UI is the ground truth for what a job actually did; read it via the live UI at port 4040 during runs and via the History Server (with event logging enabled) for finished or failed jobs on ephemeral clusters.",
+    "Each tab answers a specific question — Jobs/Stages for execution shape and task distribution, SQL/DataFrame for the physical plan and shuffles, Executors for resource/GC/failure health, Storage for caching, Environment for config verification.",
+    "Diagnose skew by comparing max to median task duration/shuffle read in the Stages summary metrics, and diagnose spill from the non-zero Spill (memory)/(disk) columns — both point to under-partitioning or hot keys, fixed by AQE skew handling, salting, or more shuffle partitions.",
+    "In the SQL tab, every Exchange is a shuffle and stage boundary; confirm BroadcastHashJoin vs SortMergeJoin and read per-node output rows to catch lost broadcasts, missing filter pushdown, and the single largest cost center.",
+    "Enable spark.eventLog.enabled to a durable directory and run a History Server so every run is preserved, then turn UI reading into automation by scraping the REST API to alert on skew ratio, spill, GC pressure, and unexpected Exchanges."
+  ]
+}

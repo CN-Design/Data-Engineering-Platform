@@ -17,7 +17,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ What is Databricks? Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ What is Databricks? Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Raw data from various sources like S3, ADLS, and Kafka streams.",
         "processing": "A data engineer uses Databricks' unified platform to ingest, transform, and analyze this data using Apache Spark.",
@@ -64,9 +64,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "What is Databricks? simplifies distributed operations.",
@@ -92,7 +92,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Workspace Overview Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Workspace Overview Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A user logs into the Databricks platform via a web browser.",
         "processing": "The workspace displays a navigable interface with folders for notebooks, libraries, experiments, and access to compute resources like clusters and SQL warehouses.",
@@ -139,9 +139,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Workspace Overview simplifies distributed operations.",
@@ -167,7 +167,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Notebooks Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Notebooks Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Python script containing Spark SQL queries and PySpark transformations.",
         "processing": "The notebook executes cells sequentially on an attached cluster, running the code to read data, perform ETL, and write results.",
@@ -214,9 +214,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Notebooks simplifies distributed operations.",
@@ -242,7 +242,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Clusters Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Clusters Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A user defines a cluster configuration specifying Spark version, node types, and auto-scaling parameters.",
         "processing": "Databricks provisions virtual machines and configures a Spark environment, distributing the workload across worker nodes.",
@@ -289,9 +289,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Clusters simplifies distributed operations.",
@@ -317,7 +317,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ DBFS Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ DBFS Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A CSV file located in an S3 bucket.",
         "processing": "A user uploads the CSV to `/FileStore/tables/` in DBFS or uses `dbutils.fs.cp` to copy it from an external location.",
@@ -364,9 +364,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "DBFS simplifies distributed operations.",
@@ -392,7 +392,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Mount Points Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Mount Points Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "An Azure Data Lake Storage Gen2 container with raw data.",
         "processing": "A Databricks admin configures a mount point using `dbutils.fs.mount()` to expose the ADLS container at `/mnt/raw_data`.",
@@ -439,9 +439,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Mount Points simplifies distributed operations.",
@@ -467,7 +467,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ SQL Warehouse Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ SQL Warehouse Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A BI tool (e.g., Power BI) attempts to query a Delta table `sales_data`.",
         "processing": "The SQL Warehouse provides a highly optimized, serverless compute layer to execute the SQL query against the underlying Delta Lake table.",
@@ -514,9 +514,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "SQL Warehouse simplifies distributed operations.",
@@ -542,7 +542,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Query Editor Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Query Editor Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A SQL query like `SELECT product_id, SUM(quantity) FROM sales GROUP BY product_id;`.",
         "processing": "The user types and executes the query in the Databricks SQL Query Editor, selecting an available SQL Warehouse for execution.",
@@ -589,9 +589,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Query Editor simplifies distributed operations.",
@@ -617,7 +617,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ What is Delta Lake? Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ What is Delta Lake? Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A stream of incoming IoT sensor data.",
         "processing": "Delta Lake stores this data in Parquet format with an ACID-compliant transaction log, enabling schema enforcement and time travel.",
@@ -664,9 +664,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "What is Delta Lake? simplifies distributed operations.",
@@ -692,7 +692,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Benefits of Delta Lake Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Benefits of Delta Lake Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A data pipeline attempting to update records in a table while another process is concurrently reading it, potentially leading to inconsistencies.",
         "processing": "Delta Lake's ACID transactions ensure that writes are atomic and isolated, preventing dirty reads and ensuring data integrity.",
@@ -739,9 +739,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Benefits of Delta Lake simplifies distributed operations.",
@@ -767,7 +767,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Delta Tables Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Delta Tables Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A raw CSV file named 'new_customers.csv' containing customer IDs, names, and registration dates is uploaded to DBFS at '/mnt/raw/new_customers.csv'.",
         "processing": "A Spark DataFrame is created by reading the CSV, inferring its schema, and then written to a Delta Lake path using `df.write.format('delta').save('/mnt/delta/customers')`.",
@@ -814,9 +814,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Delta Tables simplifies distributed operations.",
@@ -842,7 +842,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Transactions Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Transactions Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "An existing Delta table `sales_data` and a new DataFrame `df_updates` containing updated sales records for existing `order_id`s and new sales records.",
         "processing": "A `MERGE INTO` operation is executed to atomically update existing rows in `sales_data` where `order_id` matches `df_updates`, and insert new rows that don't match.",
@@ -889,9 +889,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Transactions simplifies distributed operations.",
@@ -917,7 +917,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Time Travel Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Time Travel Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta table `product_inventory` has undergone several updates, including a mistaken bulk update at version 3 that incorrectly reduced stock levels.",
         "processing": "A query is executed using `SELECT * FROM product_inventory VERSION AS OF 2` to retrieve the table's state before the erroneous update.",
@@ -964,9 +964,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Time Travel simplifies distributed operations.",
@@ -992,7 +992,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Vacuum Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Vacuum Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta table `log_events` has accumulated many old versions and associated data files due to frequent appends and updates over several months.",
         "processing": "The command `VACUUM log_events RETAIN 168 HOURS` is executed, specifying a retention period of 7 days.",
@@ -1039,9 +1039,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Vacuum simplifies distributed operations.",
@@ -1067,7 +1067,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Optimize Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Optimize Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta table `sensor_readings` receives continuous small appends, resulting in thousands of tiny Parquet files, which degrades query performance.",
         "processing": "The command `OPTIMIZE sensor_readings ZORDER BY (device_id, timestamp)` is executed.",
@@ -1114,9 +1114,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Optimize simplifies distributed operations.",
@@ -1142,7 +1142,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Catalogs Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Catalogs Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A user wants to organize data assets for different business units within Unity Catalog.",
         "processing": "An administrator creates a new catalog using `CREATE CATALOG IF NOT EXISTS finance_catalog`.",
@@ -1189,9 +1189,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Catalogs simplifies distributed operations.",
@@ -1217,7 +1217,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Schemas Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Schemas Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Within the `main` catalog, a data engineer needs to logically group tables related to customer relationship management.",
         "processing": "The command `CREATE SCHEMA IF NOT EXISTS main.crm_data` is executed.",
@@ -1264,9 +1264,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Schemas simplifies distributed operations.",
@@ -1292,7 +1292,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Tables Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Tables Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark DataFrame `df_products` containing product details needs to be persisted as a managed table in Unity Catalog.",
         "processing": "The DataFrame is written to a Unity Catalog table using `df_products.write.saveAsTable('main.sales_db.products')`.",
@@ -1339,9 +1339,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Tables simplifies distributed operations.",
@@ -1367,7 +1367,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Governance Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Governance Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A group of data analysts (`analyst_team`) needs read-only access to the `main.sales_db.sales_data` table, but no write permissions.",
         "processing": "An administrator executes `GRANT SELECT ON TABLE main.sales_db.sales_data TO `analyst_team`;`.",
@@ -1414,9 +1414,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Governance simplifies distributed operations.",
@@ -1442,7 +1442,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Jobs Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Jobs Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Python script `daily_etl.py` processes raw sales files, cleans them, and appends to a Delta table `main.sales_db.processed_sales`.",
         "processing": "A Databricks Job is configured to run `daily_etl.py` on a scheduled basis (e.g., every day at 04:00 AM) using a specific cluster configuration.",
@@ -1489,9 +1489,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Jobs simplifies distributed operations.",
@@ -1517,7 +1517,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Scheduling Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Scheduling Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Python script `daily_etl.py` is stored in Databricks Repos, designed to process daily sales data.",
         "processing": "A Databricks Job is configured to execute `daily_etl.py` every day at 04:00 AM UTC on a specific cluster, with email notifications for success or failure.",
@@ -1564,9 +1564,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Scheduling simplifies distributed operations.",
@@ -1592,7 +1592,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Monitoring Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Monitoring Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Databricks Job is actively running a complex Spark application, generating logs and cluster metrics.",
         "processing": "The Databricks UI's Jobs and Clusters tabs are used to observe driver/executor logs, Spark UI metrics, and cluster resource utilization in real-time.",
@@ -1639,9 +1639,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Monitoring simplifies distributed operations.",
@@ -1667,7 +1667,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Incremental Loading Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Incremental Loading Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta table `raw_logs` contains 50GB of historical data, and a new 2GB batch of daily log files arrives in cloud storage.",
         "processing": "A Databricks notebook uses `COPY INTO raw_logs FROM '/new_logs/' FILEFORMAT = CSV` with `_commit_version` tracking to append only the newly arrived, unseen files.",
@@ -1714,9 +1714,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Incremental Loading simplifies distributed operations.",
@@ -1742,7 +1742,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Schema Evolution Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Schema Evolution Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "An existing Delta table `customer_data` has columns `id`, `name`, `email`. A new data source introduces a `phone_number` column.",
         "processing": "A `MERGE INTO` operation is executed with `spark.databricks.delta.schema.autoMerge.enabled = true` to insert new records, automatically adding the `phone_number` column.",
@@ -1789,9 +1789,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Schema Evolution simplifies distributed operations.",
@@ -1817,7 +1817,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Control Plane Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Control Plane Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A user attempts to create a new Databricks cluster, define a job, and manage notebook permissions.",
         "processing": "The Databricks Control Plane authenticates the user, validates their workspace permissions, and orchestrates the provisioning of resources or configuration changes with the underlying cloud provider.",
@@ -1864,9 +1864,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Control Plane simplifies distributed operations.",
@@ -1892,7 +1892,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Data Plane Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Data Plane Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark job running on a Databricks cluster needs to read 1TB of data from S3, perform transformations, and write results to ADLS Gen2.",
         "processing": "The cluster's worker nodes (VMs in the customer's cloud account) directly interact with S3 and ADLS Gen2 APIs to fetch and store data, executing all computations locally.",
@@ -1939,9 +1939,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Data Plane simplifies distributed operations.",
@@ -1967,7 +1967,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Bronze Layer Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Bronze Layer Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Raw JSON files representing website clickstream events are continuously landing in an Azure Data Lake Storage Gen2 container.",
         "processing": "A Databricks Auto Loader stream ingests these files incrementally, adding an ingestion timestamp and storing them as a Delta table without schema enforcement.",
@@ -2014,9 +2014,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Bronze Layer simplifies distributed operations.",
@@ -2042,7 +2042,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Silver Layer Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Silver Layer Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "The `bronze_clickstream_events` Delta table contains raw, potentially malformed JSON data from the Bronze layer.",
         "processing": "A Databricks notebook reads from the Bronze layer, parses the JSON, cleanses data (e.g., handles nulls, filters invalid events), and enriches it by joining with user profile data.",
@@ -2089,9 +2089,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Silver Layer simplifies distributed operations.",
@@ -2117,7 +2117,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Gold Layer Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Gold Layer Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "The `silver_cleaned_clickstream` Delta table contains cleaned and enriched clickstream events.",
         "processing": "A Databricks SQL query aggregates the Silver data into a business-friendly format, such as daily unique visitors per page or hourly conversion rates.",
@@ -2164,9 +2164,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Gold Layer simplifies distributed operations.",
@@ -2192,7 +2192,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Z-Ordering Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Z-Ordering Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A large Delta table `product_reviews` is partitioned by `review_date` and frequently queried by `product_id` and `customer_id`.",
         "processing": "An `OPTIMIZE product_reviews ZORDER BY (product_id, customer_id)` command is executed on the table.",
@@ -2239,9 +2239,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Z-Ordering simplifies distributed operations.",
@@ -2267,7 +2267,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Compaction Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Compaction Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta Lake table `sales_data` contains thousands of small files (e.g., 1MB each) due to frequent micro-batch appends.",
         "processing": "Execute `OPTIMIZE sales_data ZORDER BY (sale_date)` to merge these small files into larger, more optimal file sizes and co-locate related data.",
@@ -2314,9 +2314,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Compaction simplifies distributed operations.",
@@ -2342,7 +2342,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Partitioning Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Partitioning Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A large Delta table `web_logs` stores billions of records without any partitioning, making queries filtering by date very slow.",
         "processing": "Recreate or convert the `web_logs` table to be partitioned by `event_date` using `CREATE TABLE ... PARTITIONED BY (event_date)`.",
@@ -2389,9 +2389,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Partitioning simplifies distributed operations.",
@@ -2417,7 +2417,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Photon Engine Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Photon Engine Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A complex SQL query involving multiple large joins and aggregations is running slowly on a standard Databricks cluster.",
         "processing": "Execute the query on a Databricks cluster with Photon enabled, leveraging its vectorized query engine and native C++ implementation.",
@@ -2464,9 +2464,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Photon Engine simplifies distributed operations.",
@@ -2492,7 +2492,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Query Optimization Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Query Optimization Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Spark SQL query joining `orders` and `customers` tables, filtering on `customer_region` and `order_date`, is performing poorly.",
         "processing": "Analyze the query plan using `EXPLAIN` and then apply `OPTIMIZE orders ZORDER BY (order_date)` and `OPTIMIZE customers ZORDER BY (customer_region)` to improve data locality and skip irrelevant data.",
@@ -2539,9 +2539,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Query Optimization simplifies distributed operations.",
@@ -2567,7 +2567,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ RBAC Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ RBAC Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Databricks workspace has a `finance_team` group and a `marketing_team` group, and a Delta table `customer_transactions`.",
         "processing": "Grant `SELECT` permission on `customer_transactions` to `finance_team` and `SELECT` on a masked view to `marketing_team` using `GRANT SELECT ON TABLE customer_transactions TO `finance_team` `.",
@@ -2614,9 +2614,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "RBAC simplifies distributed operations.",
@@ -2642,7 +2642,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Data Masking Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Data Masking Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A Delta table `employee_records` contains a `social_security_number` column with sensitive personal data.",
         "processing": "Create a view `masked_employee_records` where the `social_security_number` column is masked using a SQL function like `mask(social_security_number, 'X', 0, 5)` to obscure most digits.",
@@ -2689,9 +2689,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Data Masking simplifies distributed operations.",
@@ -2717,7 +2717,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Row Level Security Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Row Level Security Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A `sales_data` Delta table contains sales records from multiple regions, and regional managers should only see data for their specific region.",
         "processing": "Create a dynamic view `regional_sales_view` that filters rows based on the current user's group membership or a session variable, e.g., `WHERE region = current_user_region()`.",
@@ -2764,9 +2764,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Row Level Security simplifies distributed operations.",
@@ -2792,7 +2792,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Real-time Ingestion Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Real-time Ingestion Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A continuous stream of clickstream events arrives in JSON format into a Kafka topic.",
         "processing": "Use Databricks Structured Streaming to read from the Kafka topic, parse the JSON, apply schema, and continuously append micro-batches to a Delta Lake table `clickstream_events`.",
@@ -2839,9 +2839,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Real-time Ingestion simplifies distributed operations.",
@@ -2867,7 +2867,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ CDC Pipelines Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ CDC Pipelines Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "A source database table `products` undergoes frequent `INSERT`, `UPDATE`, and `DELETE` operations, captured as a stream of change events.",
         "processing": "Use Databricks Structured Streaming with `MERGE INTO` (or `APPLY CHANGES INTO` in DLT) to incrementally apply these change events to a target Delta table `products_silver`.",
@@ -2914,9 +2914,9 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "CDC Pipelines simplifies distributed operations.",
@@ -2942,7 +2942,7 @@ export const databricksTopics: Topic[] = [
         "Managing real-time location metrics at Uber",
         "Updating store checkout carts at Amazon"
       ],
-      "diagram": "Raw Inflow\n   ↓\n[ Lakehouse Design Processor ]\n   ↓\nOutputs Ingested",
+      "diagram": "Raw Inflow\n   \u2193\n[ Lakehouse Design Processor ]\n   \u2193\nOutputs Ingested",
       "detailedExample": {
         "input": "Raw, unstructured log files and semi-structured JSON data from various sources are landing in cloud object storage.",
         "processing": "Implement a multi-layered architecture (Bronze, Silver, Gold) using Delta Lake tables. Bronze stores raw data, Silver applies cleansing and transformations, and Gold aggregates for business intelligence.",
@@ -2989,15 +2989,246 @@ export const databricksTopics: Topic[] = [
       ],
       "summaryNotes": [
         "Key Takeaways:",
-        "✓ Coordinates operations.",
-        "✓ Prevents single-point failures.",
-        "✓ Easy to maintain."
+        "\u2713 Coordinates operations.",
+        "\u2713 Prevents single-point failures.",
+        "\u2713 Easy to maintain."
       ],
       "cheatSheet": {
         "definition": "Lakehouse Design simplifies distributed operations.",
         "mostAskedQuestion": "Explain the performance impact of Lakehouse Design.",
         "commonMistake": "Forgetting to verify the partition size.",
         "bestPractice": "Always index keys."
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-17",
+    "title": "Auto Loader: Incremental File Ingestion",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-18",
+    "title": "Delta Live Tables (DLT): Declarative Pipelines",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-19",
+    "title": "Databricks Asset Bundles & CI/CD",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-20",
+    "title": "Databricks Workflows: Multi-Task Orchestration",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-21",
+    "title": "Unity Catalog: Governance, Lineage & Discovery",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-22",
+    "title": "DBU Cost Management & Cluster Optimization",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
+      }
+    }
+  },
+  {
+    "id": "databricks-advanced-23",
+    "title": "Liquid Clustering",
+    "category": "databricks",
+    "difficulty": "advanced",
+    "concept": {
+      "overview": "",
+      "bookDefinition": "",
+      "simpleExplanation": "",
+      "whyItMatters": "",
+      "analogy": "",
+      "useCases": [],
+      "diagram": "",
+      "detailedExample": {
+        "input": "",
+        "processing": "",
+        "output": ""
+      },
+      "codeExample": "",
+      "stepByStepBreakdown": "",
+      "commonMistakes": [],
+      "bestPractices": [],
+      "interviewQuestions": [],
+      "scenarioQuestions": [],
+      "summaryNotes": [],
+      "cheatSheet": {
+        "definition": "",
+        "mostAskedQuestion": "",
+        "commonMistake": "",
+        "bestPractice": ""
       }
     }
   }

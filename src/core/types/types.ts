@@ -1,5 +1,5 @@
 // Backend / data-engineering technologies.
-export type BackendCategory = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks' | 'golang' | 'java';
+export type BackendCategory = 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'databricks' | 'golang' | 'java' | 'foundations' | 'cloud' | 'streaming' | 'orchestration' | 'warehousing' | 'devops' | 'dataquality' | 'sre';
 
 // Frontend technologies (the frontend domain). Kept broad so future content
 // slots in without further type changes.
@@ -160,6 +160,46 @@ export interface PremiumTopicData {
   keyTakeaways: string[];
 }
 
+// ============================================================
+// Progressive Projects (build-along ladder) types — DE domain
+// ============================================================
+
+export interface DeProjectMilestone {
+  id: string;
+  title: string;
+  goal: string;
+  tasks: string[];
+  acceptanceCriteria: string[];
+  hints: string[];
+  deliverable: string;
+}
+
+export interface DeProject {
+  id: string;
+  order: number;
+  title: string;
+  tagline: string;
+  level: Difficulty;
+  estimatedTime: string;
+  summary: string;
+  scenario: string;
+  learningGoals: string[];
+  skillsDemonstrated: string[];
+  techStack: string[];
+  prerequisites: string[];
+  datasetDescription: string;
+  // Data-flow description using "->" arrows for the flow diagram renderer.
+  architectureFlow: string;
+  // Suggested repository layout (tree text).
+  repoStructure: string;
+  milestones: DeProjectMilestone[];
+  productionChecklist: string[];
+  stretchGoals: string[];
+  portfolioTips: string;
+  // Learn tracks this project builds on / reinforces.
+  relatedTechs: Category[];
+}
+
 export interface InterviewQuestion {
   id: string;
   topicId: string;
@@ -176,6 +216,13 @@ export interface CodingChallenge {
   title: string;
   question: string;
   type: 'sql' | 'pyspark' | 'python' | 'data-engineering' | 'golang' | 'scenario' | 'html' | 'css' | 'javascript' | 'typescript' | 'react' | 'nextjs';
+  // Optional DE practice track (e.g. "Build-a-DAG", "dbt Model",
+  // "Fix-the-Pipeline", "Optimize Spark") used by the Practice tab's track filter.
+  track?: string;
+  // When false, the challenge is declarative/environment-bound (Airflow DAG, dbt
+  // model) and cannot execute in-browser — the runner shows reference guidance
+  // instead of attempting to run. Defaults to true (runnable) when omitted.
+  runnable?: boolean;
   initialCode: string;
   solutionCode: string;
   // Frontend challenges: optional multi-file starter and assertion-based grading.
@@ -218,7 +265,10 @@ export type InterviewCategory =
   | 'production'
   | 'architecture'
   | 'optimization'
-  | 'coding';
+  | 'coding'
+  | 'behavioral'
+  | 'systemdesign'
+  | 'takehome';
 
 export interface InterviewFollowUp {
   question: string;
@@ -301,4 +351,7 @@ export const INTERVIEW_CATEGORIES: InterviewCategoryMeta[] = [
   { id: 'architecture', label: 'Architecture', description: 'System design & large-scale' },
   { id: 'optimization', label: 'Optimization', description: 'Performance tuning' },
   { id: 'coding', label: 'Coding', description: 'Coding interview questions' },
+  { id: 'behavioral', label: 'Behavioral', description: 'STAR stories, ownership, conflict & on-call' },
+  { id: 'systemdesign', label: 'System Design', description: 'DE design framework & end-to-end platform problems' },
+  { id: 'takehome', label: 'Take-Home & Machine Coding', description: 'Realistic assignments & live build tasks' },
 ];

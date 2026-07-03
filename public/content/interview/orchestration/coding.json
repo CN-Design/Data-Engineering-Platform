@@ -1,0 +1,223 @@
+[
+  {
+    "id": "orchestration-coding-1",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a dbt incremental model for an events fact table that processes only new/updated rows, is idempotent, and handles late-arriving data. Source: {{ source('app','events') }} with columns event_id, user_id, event_type, amount, event_ts, loaded_at.",
+    "thoughtProcess": "The interviewer wants a production-grade incremental model, not a toy. Three things make it correct: (1) an is_incremental() guarded delta filter so on the first run it does a full build and on later runs only recent rows are scanned; (2) a lookback window rather than a strict max()-watermark so late-arriving events within the window are captured; and (3) a unique_key plus the merge strategy so re-scanned rows upsert instead of duplicating, which is what makes reruns/backfills idempotent. I would filter on loaded_at (the ingestion time, which is monotonic and prunable) for the delta but keep event_ts as the business time. I would also mention partitioning/clustering on loaded_at so the delta filter prunes data and the merge is cheap.",
+    "solution": {
+      "code": "{{\n  config(\n    materialized='incremental',\n    unique_key='event_id',\n    incremental_strategy='merge',\n    on_schema_change='append_new_columns'\n  )\n}}\n\nwith source as (\n\n    select\n        event_id,\n        user_id,\n        event_type,\n        amount,\n        event_ts,\n        loaded_at\n    from {{ source('app', 'events') }}\n\n    {% if is_incremental() %}\n    -- only scan recent data; lookback captures late-arriving rows\n    where loaded_at >= (\n        select dateadd('day', -3, max(loaded_at)) from {{ this }}\n    )\n    {% endif %}\n\n)\n\nselect\n    event_id,\n    user_id,\n    event_type,\n    amount,\n    event_ts,\n    loaded_at\nfrom source",
+      "language": "sql"
+    },
+    "lineByLine": "The config block sets materialized='incremental' so dbt maintains the table over time, unique_key='event_id' plus incremental_strategy='merge' so applied rows upsert on the key (making reruns idempotent), and on_schema_change handles new source columns gracefully. The CTE selects the needed columns from the source. The {% if is_incremental() %} block only applies on runs where the table already exists (not the first build and not a --full-refresh): it filters loaded_at to the last 3 days relative to the current max loaded_at in {{ this }} (the model's own table), so each run scans only recent ingestion and re-includes late arrivals within the window. The final SELECT returns those rows, which dbt MERGEs on event_id.",
+    "timeComplexity": "Per incremental run, cost is proportional to the rows within the lookback window (a few days) rather than the full history, assuming loaded_at is partitioned/clustered so the warehouse prunes older data. The first run and any --full-refresh scan all source rows.",
+    "spaceComplexity": "Storage is O(total distinct events) since the table accumulates history; each run's working set is O(lookback-window rows). The merge rewrites only the micro-partitions containing the affected event_ids when the target is clustered on the key/date.",
+    "alternativeApproaches": [
+      {
+        "title": "delete+insert by partition",
+        "explanation": "Instead of a row-level merge, use incremental_strategy='delete+insert' with unique_key set to a partition column (like the event date). Each run deletes the affected partitions and re-inserts them, which can be faster than a row-level merge on columnar warehouses and is easy to reason about at partition grain.",
+        "code": "{{ config(materialized='incremental', incremental_strategy='delete+insert', unique_key='event_date') }}"
+      },
+      {
+        "title": "strict watermark (no lookback)",
+        "explanation": "A simpler filter of where loaded_at > (select max(loaded_at) from {{ this }}) scans even less, but it misses any late-arriving rows whose loaded_at is not strictly greater and duplicates on retries if using append. It is only safe for strictly monotonic, exactly-once ingestion, so it trades correctness for a bit less compute."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why filter on loaded_at instead of event_ts for the delta?",
+        "answer": "loaded_at (ingestion time) is monotonically increasing as data lands, so max(loaded_at) is a reliable high-water mark and filtering on it prunes cleanly if the table is partitioned/clustered by it. event_ts (business time) can arrive out of order and late, so a max(event_ts) watermark would permanently miss late events. Using loaded_at for the delta and keeping event_ts as the business timestamp gives correct capture (late events still have a recent loaded_at) plus efficient pruning."
+      },
+      {
+        "question": "What does on_schema_change do here and why set it?",
+        "answer": "on_schema_change controls how dbt reacts when the model's selected columns differ from the existing table's columns on an incremental run. 'append_new_columns' adds newly-appearing columns to the table without a full rebuild, 'sync_all_columns' also drops removed ones, 'ignore' leaves the schema as-is, and 'fail' errors out. Setting it to append_new_columns lets the model absorb additive source schema changes gracefully instead of failing or silently dropping the new column, which is common as source events evolve."
+      }
+    ],
+    "tags": ["dbt", "incremental", "merge", "idempotency", "late-arriving-data", "coding"]
+  },
+  {
+    "id": "orchestration-coding-2",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Write a dbt schema.yml test block for a fct_orders model that enforces: order_id is unique and not null; status is one of placed, shipped, cancelled; customer_id has referential integrity to dim_customers; and amount is never negative (custom). Also declare column descriptions.",
+    "thoughtProcess": "The interviewer is checking that I know dbt's declarative testing in YAML and can combine the four built-in generic tests with a reusable custom expression test. order_id gets unique and not_null. status gets accepted_values. customer_id gets the relationships test pointing at dim_customers. For the non-negative amount, dbt Core has no built-in range test, so I would use dbt_utils.accepted_range (from the widely-used dbt_utils package) rather than writing a one-off singular test, since it is reusable and idiomatic. I would also add descriptions so the docs are meaningful, and I would note that dbt build runs these tests right after building the model.",
+    "solution": {
+      "code": "version: 2\n\nmodels:\n  - name: fct_orders\n    description: \"One row per order with revenue and status.\"\n    columns:\n      - name: order_id\n        description: \"Primary key, unique per order.\"\n        data_tests:\n          - unique\n          - not_null\n\n      - name: status\n        description: \"Lifecycle status of the order.\"\n        data_tests:\n          - accepted_values:\n              values: ['placed', 'shipped', 'cancelled']\n\n      - name: customer_id\n        description: \"FK to dim_customers.\"\n        data_tests:\n          - not_null\n          - relationships:\n              to: ref('dim_customers')\n              field: customer_id\n\n      - name: amount\n        description: \"Order total in USD; must be non-negative.\"\n        data_tests:\n          - dbt_utils.accepted_range:\n              min_value: 0\n              inclusive: true",
+      "language": "yaml"
+    },
+    "lineByLine": "version: 2 is the required schema file version. Under models, fct_orders is documented with a model-level description. Each column lists a description (which populates the docs) and a data_tests list. order_id declares the unique and not_null generic tests. status uses accepted_values with the allowed list, generating a query that returns any row whose status is outside the list. customer_id gets not_null plus relationships, which checks every customer_id exists in ref('dim_customers').customer_id (referential integrity). amount uses dbt_utils.accepted_range with min_value 0 inclusive, which fails on any negative value. Each test compiles to a query selecting offending rows and passes only when none are returned.",
+    "timeComplexity": "Each test is a single query over fct_orders (plus a join to dim_customers for relationships). Cost is roughly O(N) scans of the model, and the relationships test adds a join, so it is O(N + M) for N orders and M customers.",
+    "spaceComplexity": "Negligible beyond the query engine's working memory; tests return only failing rows (or their count), not full data, unless store_failures is enabled to persist them.",
+    "alternativeApproaches": [
+      {
+        "title": "Singular test instead of dbt_utils",
+        "explanation": "If you cannot add the dbt_utils package, write a singular test file tests/assert_amount_non_negative.sql that returns offending rows. It is a one-off but needs no dependency.",
+        "code": "-- tests/assert_amount_non_negative.sql\nselect order_id, amount\nfrom {{ ref('fct_orders') }}\nwhere amount < 0"
+      },
+      {
+        "title": "unique_combination_of_columns for composite keys",
+        "explanation": "If the grain were a composite (for example order_id plus line_number), a single-column unique test is wrong. Use dbt_utils.unique_combination_of_columns to assert uniqueness across the set of columns that define the true grain."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "What is the difference between the 'tests' and 'data_tests' keys in schema YAML?",
+        "answer": "They do the same thing; 'data_tests' is the newer key name introduced to disambiguate from unit tests, while 'tests' is the older name still widely supported for backward compatibility. In current dbt you should prefer data_tests for column and model data assertions. Functionally, both attach generic tests to the column or model, and dbt compiles each into a query that must return zero rows to pass."
+      },
+      {
+        "question": "How would you make one of these tests warn instead of fail the build?",
+        "answer": "Add a config with severity: warn to the specific test. For example, under accepted_values you write config: {severity: warn}, so failing rows produce a warning but do not fail the run. You can also set warn_if and error_if thresholds (like error_if: '>100') so the test only errors above a certain number of failing rows. This is useful for soft checks you want visibility on without blocking the pipeline, while keeping hard failures on key integrity tests like unique and not_null."
+      }
+    ],
+    "tags": ["dbt", "tests", "schema-yml", "accepted-values", "relationships", "dbt-utils", "coding"]
+  },
+  {
+    "id": "orchestration-coding-3",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write an Airflow DAG using the TaskFlow API that runs daily: extract data for the run's data interval to a file, load it into a warehouse table, then run dbt build. It must be idempotent, retry on failure, and pass the interval date through to dbt. No catchup.",
+    "thoughtProcess": "This tests modern Airflow (TaskFlow @dag/@task), correct interval handling, idempotency, and integrating dbt. Key decisions: use @dag with schedule='@daily', catchup=False, and default_args with retries and exponential backoff. Inside tasks I must use the run context (data_interval_start/end or ds) rather than datetime.now() so backfills are correct, that is the off-by-one guardrail. The load must be idempotent: I delete-then-load the interval's partition (or the file path is deterministic per date so re-running overwrites). I pass the logical date to dbt via --vars so dbt filters the same slice. XCom carries only the small file path between extract and load, not the data itself. dbt build (not run) so tests run inline.",
+    "solution": {
+      "code": "from __future__ import annotations\nimport pendulum\nfrom airflow.decorators import dag, task\nfrom airflow.operators.bash import BashOperator\n\ndefault_args = {\n    \"retries\": 3,\n    \"retry_delay\": pendulum.duration(minutes=2),\n    \"retry_exponential_backoff\": True,\n    \"max_retry_delay\": pendulum.duration(minutes=30),\n}\n\n@dag(\n    schedule=\"@daily\",\n    start_date=pendulum.datetime(2024, 1, 1, tz=\"UTC\"),\n    catchup=False,\n    default_args=default_args,\n    tags=[\"events\", \"dbt\"],\n)\ndef events_pipeline():\n\n    @task\n    def extract(data_interval_start=None, data_interval_end=None) -> str:\n        ds = data_interval_start.to_date_string()\n        path = f\"s3://raw/events/dt={ds}/data.parquet\"\n        # extract ONLY this interval and overwrite the deterministic path\n        write_events_between(data_interval_start, data_interval_end, path)\n        return path  # small pointer via XCom, not the data\n\n    @task\n    def load(path: str, data_interval_start=None) -> None:\n        ds = data_interval_start.to_date_string()\n        # idempotent: replace this day's partition then load\n        run_sql(f\"DELETE FROM raw.events WHERE dt = '{ds}'\")\n        run_sql(f\"COPY INTO raw.events FROM '{path}'\")\n\n    file_path = extract()\n    loaded = load(file_path)\n\n    dbt_build = BashOperator(\n        task_id=\"dbt_build\",\n        bash_command=(\n            \"cd /opt/dbt && dbt build --target prod \"\n            \"--vars '{run_date: {{ ds }}}'\"\n        ),\n    )\n\n    loaded >> dbt_build\n\nevents_pipeline()",
+      "language": "python"
+    },
+    "lineByLine": "default_args set retries=3 with exponential backoff capped at 30 minutes, applied to every task. The @dag decorator schedules @daily, sets catchup=False so it does not replay history on deploy, and pins a start_date. extract receives data_interval_start/end from the run context and derives a deterministic S3 path keyed by the interval date, extracts only that interval, overwrites the path (idempotent), and returns the small path string as an XCom. load pulls that path, and to stay idempotent first DELETEs the day's partition then COPYs the file in, so retries and backfills replace rather than duplicate. The TaskFlow calls extract() and load(file_path) automatically wire the dependency and XCom. The BashOperator runs dbt build (models plus tests) passing the logical date {{ ds }} as a dbt var so dbt processes the same slice. loaded >> dbt_build enforces order.",
+    "timeComplexity": "Per run the work is proportional to one interval's data volume for extract and load, plus the dbt build cost of the affected models. There is no full-history scan because everything is scoped to the interval.",
+    "spaceComplexity": "XCom holds only a short path string (O(1)); the actual data lives in S3 and the warehouse. Storage grows by one partition per run.",
+    "alternativeApproaches": [
+      {
+        "title": "Cosmos for per-model dbt tasks",
+        "explanation": "Instead of a single BashOperator running dbt build as a black box, use astronomer-cosmos to render each dbt model as its own Airflow task from the manifest. This gives per-model retries, parallelism, and observability, at the cost of more tasks and scheduler load.",
+        "code": "from cosmos import DbtTaskGroup\n# DbtTaskGroup(project_config=..., profile_config=...) renders dbt models as tasks"
+      },
+      {
+        "title": "MERGE instead of delete+insert for load",
+        "explanation": "If source rows can be updated (not just appended), replace the delete-then-copy with a staged COPY into a temp table followed by a MERGE on the event key into raw.events. This handles updates idempotently at row grain rather than replacing the whole partition."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is delete-then-insert used in the load task instead of a plain insert?",
+        "answer": "A plain insert is not idempotent: if the task is retried after a partial load, or the interval is backfilled, it inserts the same rows again and creates duplicates. Deleting the interval's partition first and then loading means each run replaces exactly that day's data, so any number of retries or reruns converges to the same correct state. This scopes the write to the data interval and makes the automatic retries in default_args safe rather than dangerous."
+      },
+      {
+        "question": "Why pass {{ ds }} to dbt as a var rather than letting dbt use current_date?",
+        "answer": "So dbt processes the same interval Airflow extracted, and so backfills are correct. {{ ds }} is the run's logical date (the data interval), which for a @daily DAG lags wall-clock time by a day. If dbt used current_date instead, it would process the wrong day, causing the classic off-by-one, and backfilled runs would all use today's date instead of their historical interval. Passing the logical date via --vars keeps extraction, loading, and transformation aligned to one deterministic slice per run."
+      }
+    ],
+    "tags": ["airflow", "taskflow", "dag", "idempotency", "retries", "dbt", "coding"]
+  },
+  {
+    "id": "orchestration-coding-4",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a dbt snapshot that tracks changes to a customers source (SCD Type 2) so you keep history of subscription_tier and country changes. Source: {{ source('app','customers') }} with customer_id, subscription_tier, country, updated_at.",
+    "thoughtProcess": "The interviewer wants correct SCD2 via a dbt snapshot. I must define a snapshot block with a unique_key (the natural key customer_id), a strategy, and target schema/database. Since the source has a reliable updated_at, I use strategy='timestamp' with updated_at as the updated_at column, which is cheaper than the check strategy. If updated_at were unreliable, I would use strategy='check' with check_cols listing subscription_tier and country. dbt will add dbt_valid_from/dbt_valid_to to record each version's active window. I would stress that snapshots are stateful history that must run frequently and must never be dropped or full-refreshed. I will also mention invalidate_hard_deletes if we want to close out records removed from the source.",
+    "solution": {
+      "code": "{% snapshot customers_snapshot %}\n\n{{\n  config(\n    target_schema='snapshots',\n    unique_key='customer_id',\n    strategy='timestamp',\n    updated_at='updated_at',\n    invalidate_hard_deletes=True\n  )\n}}\n\nselect\n    customer_id,\n    subscription_tier,\n    country,\n    updated_at\nfrom {{ source('app', 'customers') }}\n\n{% endsnapshot %}",
+      "language": "sql"
+    },
+    "lineByLine": "The {% snapshot name %} ... {% endsnapshot %} block declares a snapshot resource. config.target_schema pins where the durable history table lives (a dedicated snapshots schema so it is not confused with rebuildable models). unique_key='customer_id' is the natural key dbt uses to identify a record across versions. strategy='timestamp' with updated_at='updated_at' tells dbt a row changed whenever its updated_at is newer than the stored version, so it closes the old version and inserts a new one. invalidate_hard_deletes=True makes dbt close out (set dbt_valid_to on) records that disappear from the source. The SELECT simply pulls the tracked columns from the source; dbt automatically adds dbt_scd_id, dbt_valid_from, and dbt_valid_to.",
+    "timeComplexity": "Each dbt snapshot run scans the current source and compares to the existing snapshot on customer_id, roughly O(N) over the source plus the matching snapshot rows. Only changed and new records are written, so writes are proportional to the number of changes since the last run.",
+    "spaceComplexity": "Storage grows with the number of versions retained: O(sum of versions across all customers). Every change adds a row, so a frequently-changing attribute increases storage over time; this is inherent to keeping full SCD2 history.",
+    "alternativeApproaches": [
+      {
+        "title": "check strategy when updated_at is unreliable",
+        "explanation": "If the source has no trustworthy updated_at, use the check strategy and explicitly list the columns whose changes should create a new version. dbt then compares those column values directly instead of trusting a timestamp.",
+        "code": "config(target_schema='snapshots', unique_key='customer_id', strategy='check', check_cols=['subscription_tier', 'country'])"
+      },
+      {
+        "title": "Manual SCD2 in an incremental model",
+        "explanation": "You could hand-build SCD2 logic in an incremental model with window functions to close and open versions, but it is far more error-prone than snapshots. Snapshots exist precisely to encapsulate this correctly, so hand-rolling is only justified for unusual requirements dbt snapshots cannot express."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How would you query the customer's subscription_tier as of a specific past date?",
+        "answer": "Filter the snapshot where the target date falls within a version's validity window: where '2024-06-15' >= dbt_valid_from and ('2024-06-15' < dbt_valid_to or dbt_valid_to is null). The null dbt_valid_to marks the current version. Joining a fact table's event date to the snapshot on customer_id with this between-condition attaches the attributes as they were at the time of each fact, giving point-in-time correctness, which is the entire purpose of SCD2."
+      },
+      {
+        "question": "Why should a snapshot never be dropped or run with --full-refresh?",
+        "answer": "A snapshot is stateful history that cannot be reconstructed from the current source, because the source only holds the latest state. Dropping the snapshot or full-refreshing it would erase every historical version ever captured, permanently losing the change history you built the snapshot to preserve. That is why snapshots live in a durable schema, are excluded from destructive operations, and are treated as source-of-truth history rather than a rebuildable model."
+      }
+    ],
+    "tags": ["dbt", "snapshot", "scd2", "timestamp-strategy", "history", "coding"]
+  },
+  {
+    "id": "orchestration-coding-5",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a reusable dbt macro that generates a date spine (one row per day between two dates) and a custom generic test that asserts a date column has no gaps for each entity. Show how to call both.",
+    "thoughtProcess": "This tests Jinja macro authoring plus custom generic tests. First a date spine macro: rather than reinvent it I could wrap dbt_utils.date_spine, but the interviewer likely wants me to demonstrate generating the SQL myself, so I write a macro that uses a recursive-free approach via generated day offsets. I'll keep it warehouse-generic by delegating to dbt_utils.date_spine internally since re-implementing cross-warehouse date generation is brittle, but I'll show the macro wrapper. Second, a custom generic test named 'no_date_gaps' that takes model, column_name, and a partition_by: it uses lag over each partition ordered by the date and returns rows where the gap to the previous date exceeds 1 day, which are the gap boundaries. Any returned rows fail the test. I'll show attaching it in YAML.",
+    "solution": {
+      "code": "-- macros/date_spine.sql\n{% macro day_spine(start_date, end_date) %}\n    {{ dbt_utils.date_spine(\n        datepart=\"day\",\n        start_date=\"cast('\" ~ start_date ~ \"' as date)\",\n        end_date=\"cast('\" ~ end_date ~ \"' as date)\"\n    ) }}\n{% endmacro %}\n\n\n-- macros/test_no_date_gaps.sql\n{% test no_date_gaps(model, column_name, partition_by) %}\n\nwith ordered as (\n    select\n        {{ partition_by }} as entity,\n        {{ column_name }} as dt,\n        lag({{ column_name }}) over (\n            partition by {{ partition_by }}\n            order by {{ column_name }}\n        ) as prev_dt\n    from {{ model }}\n)\n\n-- returns gap boundaries; any row = a missing date => test fails\nselect entity, prev_dt, dt\nfrom ordered\nwhere prev_dt is not null\n  and datediff('day', prev_dt, dt) > 1\n\n{% endtest %}",
+      "language": "sql"
+    },
+    "lineByLine": "The day_spine macro wraps dbt_utils.date_spine, passing datepart='day' and casting the string bounds to dates, so callers get a clean one-row-per-day table without repeating the boilerplate; it returns SQL that a model can select from. The no_date_gaps test is a custom generic test: the {% test name(model, column_name, partition_by) %} signature makes it callable from YAML with those arguments. The ordered CTE computes, per entity (partition_by), the previous date via lag over the date column ordered ascending. The final SELECT returns rows where the difference between consecutive dates exceeds one day, i.e. a gap exists. Because dbt tests fail when the query returns any rows, any gap causes the test to fail, and the returned rows show exactly where.",
+    "timeComplexity": "The date spine is O(number of days in the range). The no_date_gaps test is O(N log N) per partition due to the ordered window (sort) over each entity's dates, distributed by the warehouse, plus one scan of the model.",
+    "spaceComplexity": "The spine materializes O(days) rows where used. The test's working set is O(N) for the windowed computation; it returns only the gap-boundary rows, so its output is small (O(number of gaps)).",
+    "alternativeApproaches": [
+      {
+        "title": "Spine + anti-join test for every missing day",
+        "explanation": "Instead of reporting gap boundaries, generate a full per-entity spine with day_spine, cross/left-join to each entity's min/max range, and left-anti-join against the actual dates to return every individual missing day. More thorough but more expensive because it materializes all expected dates.",
+        "code": "select s.entity, s.dt\nfrom entity_spine s\nleft join {{ ref('model') }} m\n  on s.entity = m.entity and s.dt = m.dt\nwhere m.dt is null"
+      },
+      {
+        "title": "Use dbt_utils tests directly",
+        "explanation": "For common assertions, dbt_utils provides ready-made generic tests (like sequential_values) that can check for gaps in sequences without writing a custom macro. Reaching for the package first avoids maintaining custom test logic when an equivalent already exists."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How does the custom generic test become attachable in schema.yml?",
+        "answer": "Defining a macro with the {% test name(model, column_name, ...) %} convention registers it as a generic test named after the macro. You then attach it in YAML under a column's data_tests just like a built-in: - no_date_gaps: {partition_by: entity_id}. dbt passes the model and column automatically and the extra kwargs (partition_by) as arguments. It compiles to the query the macro returns, and the test fails if that query returns any rows, exactly like unique or not_null."
+      },
+      {
+        "question": "Why report gap boundaries rather than every missing date in the test?",
+        "answer": "Reporting boundaries (via lag and datediff > 1) is far cheaper because it never materializes the full expected calendar; it only compares each existing date to the previous one and emits the few rows where a gap starts. Generating every missing day requires building a complete date spine per entity and anti-joining, which can explode row counts for wide ranges. For a pass/fail data-quality test, detecting that any gap exists (and where it begins) is usually sufficient and much more efficient than enumerating all absent days."
+      }
+    ],
+    "tags": ["dbt", "macro", "jinja", "custom-generic-test", "date-spine", "data-quality", "coding"]
+  },
+  {
+    "id": "orchestration-coding-6",
+    "tech": "orchestration",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write an Airflow DAG that waits for an upstream partner file to arrive (without wasting worker slots), limits concurrent warehouse load to protect a fragile database, and configures a safe controlled backfill for a past date range. Use a deferrable sensor, a pool, and correct catchup/backfill settings.",
+    "thoughtProcess": "This combines three advanced operational concerns. (1) Waiting efficiently: a plain poke sensor hogs a worker slot, so I use a deferrable sensor (deferrable=True) so the async triggerer handles the wait and frees the slot, avoiding sensor deadlock. (2) Protecting a fragile DB: assign the load task to a pool with a small number of slots so no matter how many DAG runs (including a backfill) are active, only N load tasks hit the DB concurrently. (3) Safe backfill: set catchup=False so deploying with a past start_date does not spawn a flood of runs, and instead perform an explicit, concurrency-limited backfill via the CLI, relying on max_active_runs and the pool to pace it, plus interval-scoped idempotent tasks. I'll show the DAG and the backfill command, and mention the pool must exist.",
+    "solution": {
+      "code": "from __future__ import annotations\nimport pendulum\nfrom airflow.decorators import dag, task\nfrom airflow.providers.amazon.aws.sensors.s3 import S3KeySensor\n\n@dag(\n    schedule=\"@daily\",\n    start_date=pendulum.datetime(2024, 1, 1, tz=\"UTC\"),\n    catchup=False,                 # do NOT auto-replay history on deploy\n    max_active_runs=4,             # cap concurrent runs during a backfill\n    tags=[\"partner\", \"load\"],\n)\ndef partner_ingest():\n\n    wait_for_file = S3KeySensor(\n        task_id=\"wait_for_file\",\n        bucket_key=\"s3://partner/drop/dt={{ ds }}/data.csv\",\n        deferrable=True,           # frees the worker slot via the triggerer\n        timeout=60 * 60 * 6,       # fail after 6h so it never waits forever\n        poke_interval=300,\n    )\n\n    @task(pool=\"fragile_db\", pool_slots=1)   # cap concurrency on the DB\n    def load(data_interval_start=None):\n        ds = data_interval_start.to_date_string()\n        # interval-scoped + idempotent so backfills are safe\n        run_sql(f\"DELETE FROM raw.partner WHERE dt = '{ds}'\")\n        run_sql(f\"COPY INTO raw.partner FROM 's3://partner/drop/dt={ds}/data.csv'\")\n\n    wait_for_file >> load()\n\npartner_ingest()\n\n# --- one-time: create the pool with a small number of slots ---\n#   airflow pools set fragile_db 3 \"limit concurrent load on fragile DB\"\n#\n# --- safe, explicit backfill of a past range (paced by max_active_runs + pool) ---\n#   airflow dags backfill partner_ingest \\\n#       --start-date 2024-05-01 --end-date 2024-05-31",
+      "language": "python"
+    },
+    "lineByLine": "The @dag sets schedule @daily, catchup=False so deploying with a 2024 start_date does not trigger a mass auto-backfill, and max_active_runs=4 so even during an explicit backfill at most 4 runs execute at once. S3KeySensor with deferrable=True offloads the wait to the triggerer, freeing the worker slot and preventing sensor slot exhaustion; timeout=6h ensures it fails and alerts rather than waiting forever, and it keys on {{ ds }} so each run waits for its own interval's file. The load task is assigned to the fragile_db pool with pool_slots=1, so Airflow guarantees at most (pool size) load tasks hit the database concurrently across all runs, protecting it during backfills. load is interval-scoped and idempotent (delete the day's partition then COPY), so replaying dates is safe. The commented commands show creating the pool with 3 slots and running an explicit, bounded backfill for May 2024 rather than relying on catchup.",
+    "timeComplexity": "Per run, work is O(one interval's file size) for the load, and the deferrable wait consumes negligible compute (handled by the async triggerer). A backfill of D days runs those D interval-loads paced by max_active_runs and the pool, so effective concurrency is bounded rather than D-at-once.",
+    "spaceComplexity": "The sensor holds essentially no worker resources while deferred. Storage grows by one partition per interval loaded. The pool bounds peak concurrent DB connections to its slot count.",
+    "alternativeApproaches": [
+      {
+        "title": "reschedule-mode sensor if no triggerer",
+        "explanation": "If your deployment does not run a triggerer, deferrable operators are unavailable. Fall back to a sensor in mode='reschedule', which releases the worker slot between pokes (unlike poke mode) at the cost of extra scheduler churn and coarser wait granularity.",
+        "code": "S3KeySensor(task_id=\"wait_for_file\", bucket_key=..., mode=\"reschedule\", poke_interval=300, timeout=21600)"
+      },
+      {
+        "title": "Dataset-triggered DAG instead of a sensor",
+        "explanation": "If the upstream is another Airflow pipeline rather than an external partner, replace the file sensor with data-aware scheduling: have the producer update a dataset and schedule this DAG on that dataset, so it triggers exactly when the data is ready without polling at all."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is a deferrable sensor important when many runs wait during a backfill?",
+        "answer": "During a backfill you may have many DAG runs each with a waiting sensor. In poke mode each would occupy a worker slot for its entire wait, and enough of them can consume all workers, leaving none to run the load tasks that would satisfy the sensors, a deadlock. Deferrable sensors offload all those waits to the single async triggerer and release the worker slots, so workers stay free to do real work. This is exactly the scenario where deferrable sensors prevent slot exhaustion." },
+      {
+        "question": "How do catchup=False and max_active_runs work together for a safe backfill?",
+        "answer": "catchup=False ensures that simply deploying the DAG with a past start_date does not automatically enumerate and run every missed interval, which would be an uncontrolled flood. You then run an explicit airflow dags backfill for just the range you intend. max_active_runs caps how many of those backfill runs execute concurrently, and the pool caps concurrent load tasks on the fragile DB. Together they turn a potentially destructive mass replay into a deliberate, paced, resource-bounded operation, and because the load task is idempotent and interval-scoped, replaying the range is safe."
+      }
+    ],
+    "tags": ["airflow", "deferrable-sensor", "pool", "backfill", "catchup", "concurrency", "coding"]
+  }
+]

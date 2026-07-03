@@ -1,0 +1,224 @@
+[
+  {
+    "id": "streaming-coding-1",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Write a Kafka producer and a consumer in Python using confluent-kafka. The producer should send keyed JSON messages to a topic reliably, and the consumer should read them, process each, and commit offsets manually for at-least-once semantics.",
+    "thoughtProcess": "The interviewer wants to see idiomatic, reliable client usage, not just a hello-world. For the producer I would emphasize reliability settings: acks=all, enable.idempotence=true, and using a delivery callback plus flush() so I know messages were durably acknowledged rather than fire-and-forget. Keying matters for per-key ordering, so I set a key. For the consumer, the key decision is at-least-once semantics: disable auto-commit and commit only after successfully processing the batch, so a crash reprocesses rather than loses data. I would also handle poll() returning None and errors, and use a consumer group id. I would call out that at-least-once plus an idempotent downstream is the pragmatic default.",
+    "solution": {
+      "code": "import json\nfrom confluent_kafka import Producer, Consumer, KafkaError\n\n# ---- Producer (reliable, keyed JSON) ----\nproducer = Producer({\n    \"bootstrap.servers\": \"localhost:9092\",\n    \"acks\": \"all\",              # wait for all in-sync replicas\n    \"enable.idempotence\": True, # dedupe retries, preserve order\n    \"linger.ms\": 5,             # small batching for throughput\n    \"compression.type\": \"lz4\",\n})\n\ndef delivery_report(err, msg):\n    if err is not None:\n        print(f\"Delivery failed for key {msg.key()}: {err}\")\n    else:\n        print(f\"Delivered to {msg.topic()}[{msg.partition()}]@{msg.offset()}\")\n\nevents = [(\"user-1\", {\"action\": \"click\"}), (\"user-2\", {\"action\": \"view\"})]\nfor key, value in events:\n    producer.produce(\n        topic=\"events\",\n        key=key.encode(\"utf-8\"),\n        value=json.dumps(value).encode(\"utf-8\"),\n        callback=delivery_report,\n    )\nproducer.flush()  # block until all messages are delivered\n\n# ---- Consumer (manual commit, at-least-once) ----\nconsumer = Consumer({\n    \"bootstrap.servers\": \"localhost:9092\",\n    \"group.id\": \"events-processor\",\n    \"enable.auto.commit\": False,   # commit manually after processing\n    \"auto.offset.reset\": \"earliest\",\n})\nconsumer.subscribe([\"events\"])\n\ntry:\n    while True:\n        msg = consumer.poll(timeout=1.0)\n        if msg is None:\n            continue\n        if msg.error():\n            if msg.error().code() == KafkaError._PARTITION_EOF:\n                continue\n            raise Exception(msg.error())\n        record = json.loads(msg.value().decode(\"utf-8\"))\n        process(record)                 # do the work FIRST\n        consumer.commit(message=msg, asynchronous=False)  # then commit\nfinally:\n    consumer.close()",
+      "language": "python"
+    },
+    "lineByLine": "The Producer is configured with acks=all so a write is only acknowledged once all in-sync replicas have it, and enable.idempotence=True so retries never create duplicates or reorder within a partition; linger.ms and lz4 add batching/compression for throughput. produce() sends a keyed JSON message; keying by user id keeps a user's events ordered on one partition. The delivery_report callback confirms or reports each delivery, and flush() blocks until all are durably acknowledged rather than fire-and-forget. On the consumer, enable.auto.commit=False is the crucial at-least-once choice: we call process(record) FIRST and only then commit the offset synchronously, so a crash before commit reprocesses the record rather than losing it. poll() returning None means no message this cycle, and we handle partition-EOF and real errors. close() triggers a clean leave and final rebalance.",
+    "timeComplexity": "Producing is O(1) amortized per message plus batching; flush waits for outstanding deliveries. Consuming is O(1) per message for the poll/process/commit loop, so processing N messages is O(N) total.",
+    "spaceComplexity": "O(B) for the producer's in-memory batch buffer (bounded by buffer.memory) and O(F) for the consumer's fetched batch held in memory per poll; both are bounded, not proportional to the full topic.",
+    "alternativeApproaches": [
+      {
+        "title": "Batch commit for higher throughput",
+        "explanation": "Instead of committing after every single message, accumulate a batch from several polls, process them all, then commit once. This drastically reduces commit overhead while remaining at-least-once, at the cost of reprocessing a larger batch on failure.",
+        "code": "batch = []\nfor _ in range(500):\n    m = consumer.poll(1.0)\n    if m and not m.error():\n        batch.append(m)\nfor m in batch:\n    process(json.loads(m.value()))\nif batch:\n    consumer.commit(message=batch[-1], asynchronous=False)"
+      },
+      {
+        "title": "Exactly-once with transactions",
+        "explanation": "If the output is another Kafka topic, use a transactional producer (transactional.id, init_transactions, begin/commit) and send_offsets_to_transaction so the produce and the input offset commit are atomic, giving exactly-once for the consume-transform-produce loop instead of at-least-once."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why call process(record) before committing the offset rather than after?",
+        "answer": "Committing before processing gives at-most-once: if the consumer crashes after committing but before finishing the work, the record is marked consumed and is never reprocessed, so it is lost. Committing after processing gives at-least-once: a crash before the commit means the record is simply reprocessed on restart, so nothing is lost, at the risk of a duplicate. Since losing data is usually worse than a duplicate you can dedupe, process-then-commit is the standard, and you pair it with an idempotent downstream (upsert on a key) to neutralize the duplicates."
+      },
+      {
+        "question": "Why is flush() important on the producer?",
+        "answer": "produce() is asynchronous: it just enqueues the message into the producer's internal buffer and returns immediately, before the message is actually sent and acknowledged by the broker. If the program exits without flushing, buffered messages can be silently lost. flush() blocks until all outstanding messages have been delivered (and their delivery callbacks fired), so it is essential before shutdown or when you need to be sure a batch is durably stored. The delivery_report callback then tells you per-message whether delivery succeeded or failed so you can react to failures rather than assuming success."
+      }
+    ],
+    "tags": ["kafka", "producer", "consumer", "at-least-once", "manual-commit", "python", "beginner"]
+  },
+  {
+    "id": "streaming-coding-2",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Implement a tumbling event-time windowed aggregation in Python: given a stream of (event_time_epoch_seconds, user_id, value) records, compute the sum of value per user per fixed 60-second window. Model the streaming logic with a generator so it is testable without a real cluster.",
+    "thoughtProcess": "The interviewer wants to see that I understand event-time windowing mechanics, not just call a library. The core idea is to assign each event to a window by flooring its event time to the window size (window_start = event_time - event_time % 60), then key the aggregation by (window_start, user_id). I keep a dictionary of accumulators keyed that way. To emit results and bound memory, I use a simple watermark: track the max event time seen minus an allowance for lateness, and once the watermark passes a window's end I emit and drop that window's state. Events older than the watermark are late and I count/route them separately rather than silently corrupting closed windows. Modeling it as a generator makes it deterministic and unit-testable.",
+    "solution": {
+      "code": "from collections import defaultdict\n\ndef tumbling_window_sum(events, window_size=60, allowed_lateness=10):\n    \"\"\"events: iterable of (event_time, user_id, value), roughly time-ordered.\n    Yields (window_start, user_id, total) when a window is finalized.\"\"\"\n    state = defaultdict(float)          # (window_start, user_id) -> sum\n    watermark = float(\"-inf\")\n    late_events = 0\n\n    def window_start_of(ts):\n        return ts - (ts % window_size)\n\n    for event_time, user_id, value in events:\n        w_start = window_start_of(event_time)\n        w_end = w_start + window_size\n\n        # late data: window already finalized past the watermark\n        if w_end <= watermark:\n            late_events += 1\n            continue\n\n        state[(w_start, user_id)] += value\n\n        # advance watermark = max event time seen - allowed lateness\n        watermark = max(watermark, event_time - allowed_lateness)\n\n        # finalize and emit windows whose end is below the watermark\n        for (ws, uid) in [k for k in state if k[0] + window_size <= watermark]:\n            yield (ws, uid, state.pop((ws, uid)))\n\n    # flush remaining open windows at end of stream\n    for (ws, uid), total in sorted(state.items()):\n        yield (ws, uid, total)",
+      "language": "python"
+    },
+    "lineByLine": "state maps each (window_start, user_id) to a running sum, so it is keyed by both window and user. window_start_of floors the event time to the window boundary (ts minus ts modulo window_size), which is how an event is assigned to its tumbling window. For each event we compute its window, and if that window already ended before the current watermark we treat it as late and skip it (counting it) rather than corrupting an emitted window. Otherwise we add value to the accumulator. The watermark advances to the max event time seen minus allowed_lateness, modeling tolerance for out-of-order data. After each event we finalize any window whose end is at or below the watermark, yielding its totals and popping them from state to bound memory. At end-of-stream we flush whatever windows remain open.",
+    "timeComplexity": "O(N) to process N events for the accumulation, but the naive finalize scan over the state dict on each event makes it O(N * W) where W is open windows; with a heap or sorted structure of window ends this reduces to O(N log W).",
+    "spaceComplexity": "O(K) where K is the number of currently-open (window, user) pairs, which stays bounded because finalized windows are popped once the watermark passes them, rather than growing with the whole stream.",
+    "alternativeApproaches": [
+      {
+        "title": "Spark Structured Streaming equivalent",
+        "explanation": "In production you would express this declaratively with a watermark and window() so the engine handles state, late data, and fault tolerance for you, rather than hand-rolling the accumulator and watermark logic.",
+        "code": "from pyspark.sql import functions as F\n(df.withWatermark(\"event_time\", \"10 seconds\")\n   .groupBy(F.window(\"event_time\", \"60 seconds\"), \"user_id\")\n   .agg(F.sum(\"value\").alias(\"total\")))"
+      },
+      {
+        "title": "Heap-ordered window finalization",
+        "explanation": "Maintain a min-heap of window_end times so finalizing windows below the watermark is O(log W) per pop instead of scanning the whole state dict each event. This keeps throughput high when many windows are open concurrently."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "How does the watermark decide when a window is complete?",
+        "answer": "The watermark is the system's estimate of event-time progress: here it is the maximum event time seen so far minus the allowed_lateness bound. A tumbling window is considered complete and is emitted once the watermark passes its end, meaning we believe no more events for that window (within the lateness tolerance) will arrive. A larger allowed_lateness waits longer, capturing more out-of-order events at the cost of later emission and more open-window state; a smaller one emits sooner but risks classifying more events as late. This is the fundamental latency-versus-completeness trade-off of event-time windowing, made explicit in the watermark calculation."
+      },
+      {
+        "question": "What happens to events that arrive after their window has been finalized?",
+        "answer": "In this implementation, an event whose window end is at or below the current watermark is classified as late (w_end <= watermark), counted in late_events, and skipped so it does not corrupt an already-emitted window. In a real pipeline you would typically route such late events to a side output or a separate correction path, or, if within an allowed-lateness grace period, reopen and re-emit an updated window result. The key principle is that once a window is finalized and emitted, blindly adding late data to it would produce inconsistent, already-published results, so late events must be handled deliberately rather than silently merged."
+      }
+    ],
+    "tags": ["streaming", "windowing", "tumbling-window", "event-time", "watermark", "aggregation", "intermediate"]
+  },
+  {
+    "id": "streaming-coding-3",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Given the log-end offset and the last committed offset for each partition of a consumer group, compute the total consumer lag and the per-partition lag, and flag any partition whose lag exceeds a threshold. Input: two dicts keyed by partition id, or a list of records.",
+    "thoughtProcess": "Consumer lag is a fundamental operational metric, and the interviewer wants to see I know its exact definition: lag for a partition is the log-end offset (the offset of the next message to be produced, i.e. the high watermark) minus the committed offset (how far the consumer has read). I sum per-partition lags for the total. Edge cases matter: a partition may have no committed offset yet (consumer never committed), which I treat as lag equal to the full log-end offset or flag as unknown depending on policy; and committed offset should never exceed log-end offset, so I guard against negative lag (clamp to zero) which can happen transiently with stale metadata. I also flag partitions over a threshold for alerting. I keep it simple and pure so it is testable.",
+    "solution": {
+      "code": "def compute_consumer_lag(log_end_offsets, committed_offsets, threshold=None):\n    \"\"\"log_end_offsets: {partition: high_watermark}\n    committed_offsets: {partition: last_committed_offset or None}\n    Returns dict with per-partition lag, total lag, and flagged partitions.\"\"\"\n    per_partition = {}\n    flagged = []\n    total = 0\n\n    for partition, leo in log_end_offsets.items():\n        committed = committed_offsets.get(partition)\n        if committed is None:\n            # no committed offset yet: full backlog is unread\n            lag = leo\n        else:\n            lag = max(0, leo - committed)  # clamp against stale metadata\n        per_partition[partition] = lag\n        total += lag\n        if threshold is not None and lag > threshold:\n            flagged.append((partition, lag))\n\n    return {\n        \"per_partition_lag\": per_partition,\n        \"total_lag\": total,\n        \"flagged_partitions\": flagged,\n    }",
+      "language": "python"
+    },
+    "lineByLine": "We iterate every partition in the log_end_offsets map (the high watermark, i.e. the next offset to be written). For each we look up the committed offset. If there is no committed offset (the group never committed for this partition), the entire log is unread, so lag equals the log-end offset. Otherwise lag is log_end minus committed, wrapped in max(0, ...) to clamp any transient negative value caused by stale or racing metadata where committed appears ahead of the fetched high watermark. We accumulate the total lag across partitions and, if a threshold is given, flag partitions whose lag exceeds it for alerting. The result bundles per-partition lag, the total, and the flagged list so callers can both report and alert.",
+    "timeComplexity": "O(P) where P is the number of partitions, since we do a constant-time computation per partition in a single pass.",
+    "spaceComplexity": "O(P) for the per-partition result map plus the (at most P) flagged partitions.",
+    "alternativeApproaches": [
+      {
+        "title": "Lag from a list of records",
+        "explanation": "If input comes as rows of (partition, log_end_offset, committed_offset) (as kafka-consumer-groups --describe emits), iterate the rows instead of two dicts. The lag arithmetic is identical; only the input shape changes.",
+        "code": "def lag_from_rows(rows, threshold=None):\n    total, flagged = 0, []\n    for p, leo, committed in rows:\n        lag = leo if committed is None else max(0, leo - committed)\n        total += lag\n        if threshold and lag > threshold:\n            flagged.append((p, lag))\n    return total, flagged"
+      },
+      {
+        "title": "Time-based lag instead of offset-based",
+        "explanation": "Offset lag does not directly tell you how stale data is. A more actionable metric is time lag: the difference between now and the timestamp of the last committed record, which you get by fetching the record at the committed offset. This better reflects the actual freshness SLA than raw offset counts."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why clamp lag to a minimum of zero?",
+        "answer": "Lag should logically never be negative (a consumer cannot be ahead of the log end), but the log-end offset and the committed offset are often read at slightly different moments or from slightly stale metadata, so you can transiently observe a committed offset that appears greater than the fetched high watermark, producing a small negative value. Clamping with max(0, ...) prevents these artifacts from corrupting the total lag or triggering false alerts. It reflects the reality that any apparent negative lag is a measurement artifact, not a meaningful signal, so treating it as zero is the correct, robust behavior."
+      },
+      {
+        "question": "Why might offset lag be misleading, and what is a better measure of staleness?",
+        "answer": "Offset lag counts messages behind, but a large offset lag on a low-rate partition may represent only seconds of delay, while a small offset lag on a high-rate partition could still be minutes stale, so raw offset counts do not map cleanly to how out-of-date the data is. A more meaningful measure is time lag: the wall-clock difference between now and the event/ingestion timestamp of the record at the consumer's committed offset. Time lag directly answers how stale my processing is, which is what SLAs and alerts usually care about. Many monitoring tools compute this by looking up the timestamp of the committed offset, giving a latency figure in seconds rather than a message count."
+      }
+    ],
+    "tags": ["kafka", "consumer-lag", "offsets", "monitoring", "metrics", "intermediate"]
+  },
+  {
+    "id": "streaming-coding-4",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Implement an idempotent (exactly-once effect) sink pattern in Python: given a stream of records that may contain duplicates and be reprocessed after failures, apply each record to a target store exactly once. Model the target as a dict and use a deterministic key so replays are no-ops.",
+    "thoughtProcess": "This is the core exactly-once-to-external-system pattern, and the interviewer wants the idempotency mechanism, not a real database. The key insight is that at-least-once delivery guarantees no loss but allows duplicates, so I make the write idempotent using a deterministic unique key per record. If the record has a natural business key I use it; otherwise I derive one from the Kafka coordinates (topic, partition, offset), which are identical every time a record is reprocessed. I model the sink as an upsert into a dict keyed by that id, so applying the same record twice overwrites identically instead of duplicating. I also handle versioning: if the same key can carry newer data, I only apply when the incoming version is greater, so out-of-order reprocessing does not overwrite newer state with stale state. Finally I show tracking processed offsets so resumption is exact.",
+    "solution": {
+      "code": "class IdempotentSink:\n    def __init__(self):\n        self.store = {}            # id -> {\"value\":..., \"version\":...}\n        self.committed_offset = {} # partition -> last applied offset\n\n    def _record_id(self, rec):\n        # prefer a natural business key; else use Kafka coordinates\n        if rec.get(\"business_key\") is not None:\n            return (\"biz\", rec[\"business_key\"])\n        return (\"kafka\", rec[\"topic\"], rec[\"partition\"], rec[\"offset\"])\n\n    def apply(self, rec):\n        rid = self._record_id(rec)\n        incoming_version = rec.get(\"version\", 0)\n        existing = self.store.get(rid)\n\n        # idempotent + version-aware upsert\n        if existing is None or incoming_version > existing[\"version\"]:\n            self.store[rid] = {\"value\": rec[\"value\"], \"version\": incoming_version}\n            applied = True\n        else:\n            applied = False  # duplicate or stale replay: no-op\n\n        # advance offset only forward (resumption bookmark)\n        p, off = rec[\"partition\"], rec[\"offset\"]\n        self.committed_offset[p] = max(self.committed_offset.get(p, -1), off)\n        return applied\n\n\ndef process_stream(records):\n    sink = IdempotentSink()\n    for rec in records:  # may include duplicates / replays\n        sink.apply(rec)\n    return sink.store, sink.committed_offset",
+      "language": "python"
+    },
+    "lineByLine": "IdempotentSink holds the target store keyed by a deterministic record id and a committed_offset bookmark per partition. _record_id builds that id from a natural business key if present, otherwise from the Kafka coordinates (topic, partition, offset), which are stable across reprocessing so the same source record always maps to the same id. In apply, we compute the id and the incoming version; the upsert only writes when the key is new or the incoming version is strictly greater than the stored one, which makes duplicates no-ops and prevents out-of-order replays from overwriting newer data with stale data. We return whether the write was applied. We then advance the per-partition committed offset only forward with max(), so it acts as an exact resumption bookmark. process_stream drives records through the sink; feeding the same records twice yields the identical store, demonstrating the exactly-once effect.",
+    "timeComplexity": "O(N) to process N records, since each apply does constant-time dictionary lookups and updates.",
+    "spaceComplexity": "O(K) where K is the number of distinct record ids stored, plus O(P) for the per-partition offset bookmarks; it does not grow with the number of duplicate replays.",
+    "alternativeApproaches": [
+      {
+        "title": "Database MERGE / upsert",
+        "explanation": "In a real warehouse or database you replace the dict with an INSERT ... ON CONFLICT DO UPDATE or MERGE keyed by the deterministic id, and store the committed offsets in the same transaction as the data so resumption is atomic and exactly-once, not just idempotent.",
+        "code": "-- MERGE staging into target on the deterministic id\nMERGE INTO target t USING staging s ON t.id = s.id\nWHEN MATCHED AND s.version > t.version THEN UPDATE SET value = s.value, version = s.version\nWHEN NOT MATCHED THEN INSERT (id, value, version) VALUES (s.id, s.value, s.version);"
+      },
+      {
+        "title": "Kafka transactions for Kafka-to-Kafka",
+        "explanation": "If the sink is another Kafka topic rather than an external store, use a transactional producer with send_offsets_to_transaction so producing output and committing input offsets are atomic, achieving exactly-once within Kafka without a manual idempotency key."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why include a version check in addition to the idempotency key?",
+        "answer": "The idempotency key alone prevents duplicate rows: replaying the same record is a no-op because it maps to the same id. But it does not by itself handle the case where the value for a key legitimately changes over time and records can be reprocessed out of order. Without a version, a blind upsert could apply an older record after a newer one and overwrite the newer value with stale data. Adding a monotonic version (or event timestamp) and only applying when the incoming version is greater ensures the store converges to the latest correct value regardless of reprocessing order. Combined with Kafka's per-partition ordering, this gives both no-duplicates and no-stale-overwrite, which is what true exactly-once effect requires."
+      },
+      {
+        "question": "Why is storing the committed offset alongside the data important for exactly-once?",
+        "answer": "Idempotent upserts make reprocessing harmless, but to actually resume correctly after a crash you must know how far you got. If you commit the Kafka offset separately from writing the data, a failure between the two can leave them inconsistent (offset advanced without the data, causing loss, or data written without the offset advancing, causing extra reprocessing). Storing the committed offset in the same transaction/store as the data (as this model does by advancing committed_offset with the applied records) means resumption is exact: on restart you read from the stored offsets and any reprocessed records upsert idempotently. In a real system this is realized by writing the offsets into a control table within the same database transaction as the data MERGE, giving atomic, exactly-once resumption to the external store."
+      }
+    ],
+    "tags": ["kafka", "idempotent-sink", "exactly-once", "upsert", "versioning", "python", "advanced"]
+  },
+  {
+    "id": "streaming-coding-5",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Implement session windowing in Python: given per-user events as (user_id, event_time), group them into sessions where a new session starts whenever the gap since the previous event for that user exceeds an inactivity threshold (e.g. 30 minutes). Output each session with its start, end, and event count.",
+    "thoughtProcess": "Session windows are dynamic, data-driven windows, so I cannot floor to fixed boundaries. The pattern is: group events by user, sort each user's events by event time, then walk them, extending the current session while gaps are within the threshold and starting a new session when a gap exceeds it. I track the session start, the last event time (to compute gaps and the running end), and a count. When a gap breaks the session, I emit the completed session and begin a new one. Edge cases: the very first event of a user always starts a session, and out-of-order input must be sorted first since gap logic depends on order. I keep it as a pure function over a batch so it is deterministic and testable; in a real stream this maps to Flink/Spark session windows with watermarks.",
+    "solution": {
+      "code": "from collections import defaultdict\n\ndef session_windows(events, gap_seconds=30 * 60):\n    \"\"\"events: iterable of (user_id, event_time_epoch_seconds).\n    Returns list of sessions: (user_id, session_start, session_end, count).\"\"\"\n    by_user = defaultdict(list)\n    for user_id, ts in events:\n        by_user[user_id].append(ts)\n\n    sessions = []\n    for user_id, times in by_user.items():\n        times.sort()  # gap logic requires chronological order\n        start = prev = times[0]\n        count = 1\n        for ts in times[1:]:\n            if ts - prev > gap_seconds:\n                # gap exceeded: close current session, open a new one\n                sessions.append((user_id, start, prev, count))\n                start = ts\n                count = 1\n            else:\n                count += 1\n            prev = ts\n        sessions.append((user_id, start, prev, count))  # flush last session\n\n    return sorted(sessions)",
+      "language": "python"
+    },
+    "lineByLine": "First we bucket all events by user into by_user. For each user we sort their timestamps, because the gap-based session logic depends on chronological order and streams arrive out of order. We initialize the current session with start and prev set to the first event and a count of 1. Walking the remaining events, if the gap between the current event and the previous one exceeds gap_seconds, the inactivity threshold is breached, so we close the current session (emitting user, start, prev-as-end, count) and start a fresh session at this event. Otherwise the session continues and we increment the count. We update prev each step to measure the next gap and track the session end. After the loop we flush the final open session. The result is sorted for deterministic output.",
+    "timeComplexity": "O(N log N) dominated by sorting each user's events (total N events); the single linear walk per user to form sessions is O(N).",
+    "spaceComplexity": "O(N) to bucket events by user, plus O(S) for the emitted sessions where S is the number of sessions produced.",
+    "alternativeApproaches": [
+      {
+        "title": "Spark / Flink native session windows",
+        "explanation": "Production engines provide first-class session windows so you do not hand-roll gap logic or worry about state and late data. Spark 3.2+ has session_window and Flink has EventTimeSessionWindows with gap duration, both integrated with watermarks.",
+        "code": "from pyspark.sql import functions as F\n(df.withWatermark(\"event_time\", \"10 minutes\")\n   .groupBy(\"user_id\", F.session_window(\"event_time\", \"30 minutes\"))\n   .count())"
+      },
+      {
+        "title": "Streaming (single-pass) with lag + cumulative flag",
+        "explanation": "In a true streaming setting you avoid the global sort by processing an ordered per-key stream: use the previous event time (lag) to detect gaps and a cumulative counter to assign session ids incrementally, emitting sessions as inactivity is detected via timers/watermarks rather than at end-of-batch."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why must events be sorted before applying session-window logic?",
+        "answer": "Session windows are defined by gaps between consecutive events in time, so the algorithm must see each user's events in chronological order to correctly measure the inactivity gap and decide where sessions break. If events are processed out of order, the computed gaps would be wrong: an earlier-timestamped event arriving after a later one could spuriously appear to start a new session or fail to close one, producing incorrect session boundaries and counts. In a batch we sort each user's events up front. In a real stream you cannot fully sort an unbounded input, so engines rely on event-time ordering with watermarks to determine when enough events have arrived to safely finalize a session, and they merge sessions when late events bridge a previously-detected gap."
+      },
+      {
+        "question": "How do session windows behave differently from tumbling or sliding windows?",
+        "answer": "Tumbling and sliding windows have fixed, predefined sizes and boundaries set independently of the data, so every event maps to windows by clock arithmetic. Session windows have no fixed size or boundaries; they emerge from the data itself, growing as long as events keep arriving within the gap threshold and closing after inactivity, so each session's length varies per user and per burst of activity. This makes them ideal for modeling real user activity (a browsing session, a login period) but harder to implement: the engine must maintain a per-key variable window, close it only after an inactivity timeout (needing timers and watermarks), and merge two previously-separate sessions when a late event fills the gap between them, none of which fixed windows require."
+      }
+    ],
+    "tags": ["streaming", "session-window", "inactivity-gap", "windowing", "event-time", "python", "intermediate"]
+  },
+  {
+    "id": "streaming-coding-6",
+    "tech": "streaming",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Implement a bounded, ordered merge of multiple time-ordered partition streams into a single event-time-ordered stream, only emitting an event once you are sure no earlier event can still arrive (a watermark-based k-way merge). Each input is an iterator of (event_time, payload). Assume each individual partition is internally ordered by event_time.",
+    "thoughtProcess": "This is the mechanics behind how streaming engines produce a globally ordered, watermark-driven output from multiple ordered partitions. Because each partition is individually ordered, the global watermark is the minimum of the fronts of all partitions: I can safely emit any buffered event whose time is at or below that minimum, since no partition can later produce something earlier. This is a k-way merge with a twist: I use a min-heap over the current head of each partition, and I must respect that the watermark is bounded by the slowest (minimum) partition head. I also handle partitions ending (their contribution to the min is removed) and, importantly, idle partitions that would otherwise stall the watermark. I model the classic pattern: heap of (event_time, partition_index, payload), pop the global minimum, advance that partition. This yields globally event-time-ordered output.",
+    "solution": {
+      "code": "import heapq\n\ndef ordered_merge(partitions):\n    \"\"\"partitions: list of iterators, each yielding (event_time, payload)\n    in ascending event_time order. Yields (event_time, payload)\n    in global ascending event_time order.\"\"\"\n    iters = [iter(p) for p in partitions]\n    heap = []  # (event_time, partition_index, payload)\n\n    # seed the heap with the first event from each partition\n    for i, it in enumerate(iters):\n        nxt = next(it, None)\n        if nxt is not None:\n            event_time, payload = nxt\n            heapq.heappush(heap, (event_time, i, payload))\n\n    # repeatedly emit the globally smallest event, then refill from\n    # the partition it came from. The heap top is the safe watermark:\n    # no un-emitted event can be earlier than the current minimum,\n    # because every partition is internally ordered and represented\n    # in the heap by its earliest un-emitted event.\n    while heap:\n        event_time, i, payload = heapq.heappop(heap)\n        yield (event_time, payload)\n        nxt = next(iters[i], None)\n        if nxt is not None:\n            ne_time, ne_payload = nxt\n            heapq.heappush(heap, (ne_time, i, ne_payload))",
+      "language": "python"
+    },
+    "lineByLine": "We wrap each partition in an iterator and build a min-heap. Seeding: we push the first event of every partition onto the heap as (event_time, partition_index, payload), so the heap always holds each live partition's earliest un-emitted event. The heap's minimum is exactly the global watermark: because every partition is internally ordered and is represented by its current earliest event, nothing not yet emitted can have a smaller event_time than the current heap top, so it is safe to emit. In the loop we pop that minimum and yield it, guaranteeing global event-time order, then pull the next event from the same partition and push it, keeping each live partition represented. When a partition's iterator is exhausted, we simply stop refilling from it, and the merge continues among the remaining partitions until the heap drains.",
+    "timeComplexity": "O(N log P) where N is the total number of events and P is the number of partitions, since each of the N events is pushed and popped once from a heap of size at most P.",
+    "spaceComplexity": "O(P) for the heap, which holds at most one pending event per partition at any time, independent of the total stream length.",
+    "alternativeApproaches": [
+      {
+        "title": "Idle-partition handling with a timeout",
+        "explanation": "A partition that produces no events stalls the merge because the heap cannot advance past a missing head. Real engines mark a partition idle after a timeout and exclude it from the watermark minimum so the global stream keeps progressing, then reintegrate it when it resumes.",
+        "code": "# pseudocode: if a partition has no event within idle_timeout,\n# treat it as contributing +inf to the watermark min so it does\n# not block emission from active partitions, and re-add it on resume."
+      },
+      {
+        "title": "Bounded out-of-orderness within a partition",
+        "explanation": "If partitions are only approximately ordered (bounded lateness), you buffer events and hold emission until watermark = min(partition heads) - allowed_lateness, emitting only events at or below that adjusted watermark, mirroring how real watermark strategies subtract an out-of-orderness bound."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is the minimum across partition heads the correct watermark?",
+        "answer": "Each partition is internally ordered by event time, so within a partition every future (un-emitted) event has a time greater than or equal to that partition's current head. The heap holds the earliest un-emitted event of every live partition, so the smallest of those heads is a lower bound on every event that could still arrive from any partition. Therefore no event earlier than the current minimum can appear later, which makes it safe to emit the minimum immediately while preserving global ordering. This is exactly how streaming engines derive a global watermark from multiple sources: the overall watermark is the minimum of the per-partition watermarks, because progress is limited by the slowest (least-advanced) input."
+      },
+      {
+        "question": "What problem does an idle partition cause, and how is it handled?",
+        "answer": "Because the global watermark is the minimum across all partition heads, a partition that stops producing events keeps a stale (or missing) head, so the minimum never advances and the entire merged stream stalls, even though other partitions have plenty of data ready to emit. This is a well-known issue with empty or idle Kafka partitions freezing event-time pipelines. The standard fix is idleness detection: after a configured timeout with no new events, the partition is marked idle and excluded from the watermark minimum (effectively treated as contributing infinity), allowing the watermark and emission to advance based on the active partitions. When the idle partition resumes producing, it is reintegrated into the watermark calculation. This keeps the pipeline progressing while still preserving ordering guarantees among the active inputs."
+      }
+    ],
+    "tags": ["streaming", "k-way-merge", "watermark", "ordering", "heap", "python", "advanced"]
+  }
+]

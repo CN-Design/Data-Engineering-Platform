@@ -37,6 +37,7 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
+  const [trackFilter, setTrackFilter] = useState<string>('all');
   const [sqlDb, setSqlDb] = useState<any>(null);
   const [pyodide, setPyodide] = useState<any>(null);
 
@@ -157,6 +158,24 @@ export const PracticeTab: React.FC<PracticeTabProps> = ({
         return;
       }
 
+      if (selectedChallenge.runnable === false) {
+        // Declarative / environment-bound challenges (Airflow DAGs, dbt models)
+        // can't execute in the browser. Guide the user to the reference answer
+        // and how to verify locally.
+        const isDbt = (selectedChallenge.track || '').toLowerCase().includes('dbt');
+        setError(null);
+        setColumns(['note']);
+        setOutput([
+          { note: `${selectedChallenge.track || 'This challenge'} runs in a real project, not in the browser.` },
+          { note: 'Click "Reveal Solution" to study the commented reference implementation.' },
+          isDbt
+            ? { note: 'Verify locally with: dbt build --select <model>  (and dbt test for the assertions).' }
+            : { note: 'Verify locally with: airflow dags test <dag_id> <date>  after placing the file in your dags/ folder.' },
+        ]);
+        setStatus('idle');
+        return;
+      }
+
       if (selectedChallenge.type === 'sql') {
         if (!sqlDb) {
           setError("SQLite DB initializing...");
@@ -264,12 +283,19 @@ except Exception as e:
   const mediumSolved = challenges.filter(c => c.difficulty === 'medium' && solvedChallenges[c.id]).length;
   const hardSolved = challenges.filter(c => c.difficulty === 'hard' && solvedChallenges[c.id]).length;
 
+  // DE practice tracks present in the current challenge set (e.g. Build-a-DAG,
+  // dbt Model, Fix-the-Pipeline, Optimize Spark). Drives the Track filter.
+  const trackOptions = Array.from(
+    new Set(challenges.map(c => c.track).filter((t): t is string => !!t))
+  ).sort();
+
   const filtered = challenges.filter(c => {
-    const matchesSearch = c.title.toLowerCase().includes(search.toLowerCase()) || 
+    const matchesSearch = c.title.toLowerCase().includes(search.toLowerCase()) ||
                           c.question.toLowerCase().includes(search.toLowerCase());
     const matchesCat = categoryFilter === 'all' || c.category === categoryFilter;
     const matchesDiff = difficultyFilter === 'all' || c.difficulty === difficultyFilter;
-    return matchesSearch && matchesCat && matchesDiff;
+    const matchesTrack = trackFilter === 'all' || c.track === trackFilter;
+    return matchesSearch && matchesCat && matchesDiff && matchesTrack;
   });
 
   return (
@@ -359,6 +385,20 @@ except Exception as e:
               <option value="medium">Medium</option>
               <option value="hard">Hard</option>
             </select>
+
+            {trackOptions.length > 0 && (
+              <select
+                value={trackFilter}
+                onChange={(e) => setTrackFilter(e.target.value)}
+                style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-glass)', color: 'var(--text-primary)', padding: '8px 12px', borderRadius: '6px' }}
+                aria-label="Filter by practice track"
+              >
+                <option value="all">All Tracks</option>
+                {trackOptions.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* Challenges List Table */}
@@ -382,7 +422,12 @@ except Exception as e:
                         {isSolved ? <Check size={16} color="#10b981" /> : <BookOpen size={16} className="text-muted" />}
                       </td>
                       <td style={{ fontWeight: 600 }}>{c.title}</td>
-                      <td><span className="badge badge-sql">{c.category}</span></td>
+                      <td>
+                        <span className="badge badge-sql">{c.category}</span>
+                        {c.track && (
+                          <span className="badge" style={{ marginLeft: 6, background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', color: 'var(--text-secondary)', fontSize: '10px' }}>{c.track}</span>
+                        )}
+                      </td>
                       <td>
                         <span style={{
                           textTransform: 'capitalize',
@@ -452,11 +497,17 @@ except Exception as e:
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     <div>
                       <span className="badge badge-sql" style={{ marginRight: '8px' }}>{selectedChallenge.category}</span>
+                      {selectedChallenge.track && (
+                        <span className="badge" style={{ marginRight: '8px', background: 'var(--bg-inner)', border: '1px solid var(--border-glass)', color: 'var(--text-secondary)' }}>{selectedChallenge.track}</span>
+                      )}
                       <span style={{
                         textTransform: 'capitalize',
                         fontWeight: 700,
                         color: selectedChallenge.difficulty === 'hard' ? '#ef4444' : selectedChallenge.difficulty === 'medium' ? '#f97316' : '#10b981'
                       }}>{selectedChallenge.difficulty}</span>
+                      {selectedChallenge.runnable === false && (
+                        <span style={{ marginLeft: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>· study &amp; reveal (runs in a real project)</span>
+                      )}
                     </div>
 
                     <p>{selectedChallenge.question}</p>
@@ -562,7 +613,7 @@ except Exception as e:
                 <Editor
                   height="100%"
                   theme={theme === 'dark' ? 'vs-dark' : 'vs'}
-                  language={selectedChallenge.category === 'sql' ? 'sql' : selectedChallenge.type === 'golang' ? 'go' : 'python'}
+                  language={selectedChallenge.category === 'sql' || (selectedChallenge.track || '').toLowerCase().includes('dbt') ? 'sql' : selectedChallenge.type === 'golang' ? 'go' : 'python'}
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   options={{

@@ -4353,7 +4353,7 @@ export const deTopics: Topic[] = [
   },
   {
     "id": "data-engineering-intermediate-24",
-    "title": "Partitioning",
+    "title": "Partitioning Fundamentals",
     "category": "data-engineering",
     "difficulty": "intermediate",
     "concept": {
@@ -5178,7 +5178,7 @@ export const deTopics: Topic[] = [
   },
   {
     "id": "data-engineering-advanced-5",
-    "title": "Partitioning",
+    "title": "Partitioning at Scale (Distributed Engines)",
     "category": "data-engineering",
     "difficulty": "advanced",
     "concept": {

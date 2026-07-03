@@ -1,0 +1,466 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Idempotency is the property that running an operation once produces the same result as running it many times, which is what makes pipeline retries, backfills, and manual reruns safe instead of destructive.",
+      "In data engineering reliability, tasks fail and get retried constantly (transient network errors, killed executors, on-call reruns), so every load must be designed so that re-executing it does not create duplicates, double-counted metrics, or corrupted partitions.",
+      "The core techniques are partition-based overwrite (delete-insert or INSERT OVERWRITE by partition), MERGE/upsert on natural keys, and idempotency keys or dedup tokens, combined with deterministic transformations so the same input always yields the same output."
+    ],
+    "learningObjectives": [
+      "Define idempotency formally as f(f(x)) = f(x) and explain why reruns and retries require it.",
+      "Implement idempotent loads using partition overwrite, MERGE/upsert on natural keys, and idempotency keys.",
+      "Recognize and avoid non-idempotent side effects such as append-only inserts and external API/email calls, and reason about exactly-once versus at-least-once semantics."
+    ],
+    "formalDefinition": "An operation f is idempotent if applying it multiple times has the same effect as applying it once: f(f(x)) = f(x). In data engineering, an idempotent load is one where re-running the same task for the same logical input (partition, batch, or key set) converges the target to a single, correct state regardless of how many times it executes, producing no duplicate rows, no double-counted aggregates, and no accumulated side effects.",
+    "simpleExplanation": "Idempotency means you can safely press the button twice. Think of a light switch set to 'ON': flipping it to ON when it is already ON changes nothing. A non-idempotent action is like adding a scoop of sugar to coffee each time you 'retry' the pour, so ten retries means ten scoops. Idempotent pipelines replace the whole cup (overwrite the partition) or update-or-insert by a known key, so no matter how many times a failed job is retried, the final data looks exactly like it ran once.",
+    "historicalContext": "The term idempotency comes from mathematics (an operation where f(f(x)) = f(x)) and became central to distributed systems and HTTP semantics, where GET, PUT, and DELETE are defined as idempotent while POST is not. As data moved from nightly batch to always-on pipelines with automatic retries, the same principle became essential: Airflow (2014-2015) popularized templating tasks by execution date so each run owns a partition; Spark added dynamic partition overwrite; dbt introduced incremental models with merge; and Kafka added the idempotent producer (enable.idempotence) and transactions (~2017) to move from at-least-once toward exactly-once processing.",
+    "whyItMatters": {
+      "business": "Non-idempotent loads produce double-counted revenue, inflated user counts, and duplicate customer emails or charges, directly damaging financial reporting and customer trust; idempotency lets the business trust that a retried pipeline still reports the truth.",
+      "engineering": "On-call engineers must be able to rerun a failed task at 3 AM without fear of corrupting data; idempotency turns recovery from a risky manual surgery into a safe, repeatable one-click operation.",
+      "scalability": "Automatic retries and large backfills are only feasible at scale if each unit of work is idempotent, because a backfill of 400 days will re-run overlapping windows and partial failures many times.",
+      "cost": "Idempotent reruns avoid the expensive cleanup, deduplication jobs, and downstream reprocessing that non-idempotent double loads force, and they remove the need to rebuild entire tables to fix one bad partition.",
+      "reliability": "Idempotency is the foundation of at-least-once delivery becoming effectively exactly-once at the storage layer; retries can be aggressive and safe, which is what makes strict data SLAs achievable."
+    },
+    "coreComponents": [
+      {
+        "name": "Partition Overwrite (Delete-Insert)",
+        "definition": "A load pattern that fully replaces the data for a specific partition (usually a date) on every run rather than appending to it.",
+        "purpose": "To make each run own and rewrite exactly one slice of data so reruns converge to a single correct state.",
+        "responsibilities": "Delete or truncate the target partition for the run key, then insert the freshly computed rows for that same key, all within one atomic-as-possible unit.",
+        "examples": "Airflow task templated with {{ ds }} running DELETE FROM sales WHERE dt = '{{ ds }}' then INSERT; Spark df.write.mode('overwrite').insertInto('sales') with dynamic partition overwrite."
+      },
+      {
+        "name": "MERGE / Upsert on Natural Key",
+        "definition": "An update-or-insert operation keyed on a stable business identifier so matching rows are updated and new rows are inserted, never duplicated.",
+        "purpose": "To make loads idempotent when data cannot be neatly partitioned or when late-arriving updates must be reconciled by key.",
+        "responsibilities": "Match target and source on the unique key, update on match, insert on no match, and optionally delete rows absent from the source.",
+        "examples": "Snowflake or BigQuery MERGE on customer_id; dbt incremental model with unique_key and incremental_strategy='merge'."
+      },
+      {
+        "name": "Idempotency Key / Dedup Token",
+        "definition": "A unique token attached to each logical operation or record so the system can detect and skip work it has already performed.",
+        "purpose": "To guarantee at-most-once effect for operations that are not naturally overwrite-able, such as external side effects or event ingestion.",
+        "responsibilities": "Generate a deterministic key per unit of work, record processed keys durably, and check-before-act so a retry that sees the key does nothing.",
+        "examples": "A processed_batches control table keyed by batch_id; a Stripe-style Idempotency-Key header; a dedup on event_id with a watermark."
+      }
+    ],
+    "internalWorking": [
+      "Each unit of work is assigned a deterministic logical identity, typically a partition value like the execution date (Airflow {{ ds }}) or a batch/idempotency key, so a rerun refers to exactly the same slice of data.",
+      "For partition-based loads, the target partition is cleared (DELETE WHERE dt = key or INSERT OVERWRITE that partition) and then repopulated, so the effective rows after N runs equal the rows after one run.",
+      "For key-based loads, a MERGE matches source to target on the natural key and updates-or-inserts, so re-running the same source leaves the target unchanged after the first successful application.",
+      "For non-overwriteable side effects, the system records completed keys in a durable control table and performs a check-before-act, skipping any key already marked done so retries are no-ops.",
+      "Transformations are kept deterministic (no now(), no random(), no non-stable ordering) so the same input always maps to the same output, which is what allows overwrite and merge to converge.",
+      "In streaming, an idempotent producer (enable.idempotence) deduplicates on producer sequence numbers and transactions commit offsets and output atomically, turning at-least-once delivery into effectively exactly-once results."
+    ],
+    "architectureFlow": "Trigger / retry with logical key (ds or batch_id) -> Check control table for already-processed key -> Compute deterministic output for that key -> Overwrite partition OR MERGE on natural key (atomic) -> Record key as processed -> Downstream reads single correct state -> Safe to rerun: repeat converges to same result",
+    "dataFlowWalkthrough": [
+      "1. An Airflow DAG triggers the daily 'load_sales' task for execution date 2026-07-02, exposing that date to the task as {{ ds }}.",
+      "2. The task reads the raw sales for that date and computes aggregates deterministically (no wall-clock time, stable ordering by key).",
+      "3. It runs DELETE FROM analytics.sales WHERE dt = '2026-07-02' followed by INSERT of the recomputed rows, so the partition is fully replaced.",
+      "4. The task crashes after the DELETE but before the INSERT commits; the transaction rolls back (or the next retry re-runs the whole delete-insert), leaving no partial state.",
+      "5. Airflow retries the task; because the operation targets the same partition, the retry produces the identical final partition, so the effective result after two runs equals the result after one run."
+    ],
+    "keyTerminology": [
+      {
+        "term": "Idempotency",
+        "meaning": "The property that repeating an operation yields the same result as performing it once, f(f(x)) = f(x).",
+        "importance": "It is the precondition for safe retries, backfills, and on-call reruns without duplicating or corrupting data."
+      },
+      {
+        "term": "At-least-once vs Exactly-once",
+        "meaning": "At-least-once delivery may process a record more than once; exactly-once guarantees a single effective application.",
+        "importance": "Idempotent sinks turn cheap at-least-once delivery into effectively exactly-once results without expensive coordination."
+      },
+      {
+        "term": "MERGE / Upsert",
+        "meaning": "An update-or-insert keyed on a unique identifier: matched rows update, unmatched rows insert.",
+        "importance": "It is the standard way to make key-based loads idempotent and to reconcile late-arriving updates."
+      },
+      {
+        "term": "Dynamic Partition Overwrite",
+        "meaning": "A Spark write mode that overwrites only the partitions present in the output, leaving other partitions untouched.",
+        "importance": "It enables safe rerun of a single day without wiping the whole table, unlike static overwrite."
+      },
+      {
+        "term": "Idempotency Key",
+        "meaning": "A unique token per logical operation used to detect and skip work already performed.",
+        "importance": "It provides at-most-once side effects for operations that cannot be overwritten, like emails or API calls."
+      },
+      {
+        "term": "Watermark",
+        "meaning": "A moving threshold on event time used to bound how late data is accepted and to dedup around a window.",
+        "importance": "It makes stream processing deterministic and bounds the state needed for exactly-once dedup."
+      },
+      {
+        "term": "Backfill / Catchup",
+        "meaning": "Re-running historical intervals to (re)populate past partitions, often many at once.",
+        "importance": "Backfills only work safely if each interval's task is idempotent, since windows overlap and partially fail."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "Each run owns a partition",
+        "explanation": "What: design tasks so a single run is responsible for exactly one logical partition (usually a date). Why: ownership makes overwrite the natural, idempotent operation because a rerun replaces its own slice. How: template the load with the execution date (Airflow {{ ds }}) and overwrite that partition. Pitfall: appending across partitions or writing 'today's' data with now() breaks ownership and makes reruns duplicate rows."
+      },
+      {
+        "concept": "Overwrite or MERGE, never blind append",
+        "explanation": "What: replace-by-partition or update-by-key instead of INSERT-only. Why: append is inherently non-idempotent because every rerun adds rows again. How: use INSERT OVERWRITE / delete-insert for partitions and MERGE on the natural key otherwise. Pitfall: appending to a fact table then relying on a nightly dedup job hides the root cause and still double-counts within the window."
+      },
+      {
+        "concept": "Isolate non-idempotent side effects",
+        "explanation": "What: external actions like sending emails, calling payment APIs, or firing webhooks are not naturally repeatable. Why: a retry would send the email or charge the card twice. How: gate them behind an idempotency key with a check-before-act on a durable store, or move them to a separate step that reads already-committed, deduplicated data. Pitfall: mixing a side effect into the same transaction as the data load means a rerun re-triggers it."
+      },
+      {
+        "concept": "Determinism enables idempotency",
+        "explanation": "What: the same input must always produce the same output. Why: overwrite and merge only converge if recomputation is stable. How: avoid now(), random(), non-deterministic ordering, and reliance on execution wall-clock; derive time from the logical run date. Pitfall: using CURRENT_TIMESTAMP inside a transformation makes each rerun produce different rows, defeating overwrite."
+      }
+    ],
+    "variationsAndTypes": [
+      "**Partition overwrite (delete-insert):** rewrite one date/partition per run; simplest and most common for time-partitioned facts.",
+      "**INSERT OVERWRITE by partition:** engine-native atomic partition replacement (Hive/Spark/Snowflake/BigQuery) that avoids manual delete-insert races.",
+      "**MERGE / upsert on natural key:** update-or-insert for slowly changing or late-arriving data that is not cleanly partitioned.",
+      "**Idempotency-key check-before-act:** durable dedup token used for side effects and event ingestion (at-most-once effect).",
+      "**Idempotent producer + transactions (Kafka):** enable.idempotence and transactional.id to get exactly-once across produce, process, and commit.",
+      "**Deterministic full-refresh:** rebuild the whole table from immutable source; trivially idempotent but expensive at scale."
+    ],
+    "advantages": [
+      "**Safe retries and reruns:** failed tasks can be re-executed automatically or by on-call without risk of duplication.",
+      "**Trivial backfills:** historical intervals can be recomputed repeatedly and in overlapping ranges without corruption.",
+      "**Simpler recovery:** a bad partition is fixed by re-running that one partition instead of rebuilding the whole table.",
+      "**Exactly-once results cheaply:** an idempotent sink upgrades at-least-once delivery to effectively exactly-once without heavy coordination."
+    ],
+    "disadvantages": [
+      "**Rewrite cost:** overwriting a partition or running MERGE re-reads and rewrites data, which costs more than a plain append.",
+      "**Design discipline required:** transformations must be kept deterministic and side effects isolated, which constrains code.",
+      "**Key and partition dependence:** idempotency hinges on a stable natural key or clean partition scheme that some data lacks.",
+      "**State for dedup:** idempotency-key and streaming approaches require durable state (control tables, producer state) to track processed work."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use idempotent designs for every production load that can be retried or backfilled, especially time-partitioned facts, upserted dimensions, event ingestion, and any pipeline with automatic retries or strict SLAs.",
+      "whenToAvoid": "Avoid heavy overwrite/MERGE only where the cost clearly dominates and reruns are impossible or irrelevant, such as truly append-only immutable event logs written exactly once, or throwaway exploratory jobs; even then prefer idempotent-by-key over blind append."
+    },
+    "realWorldAnalogy": "Idempotency is like saving a document versus adding a page to it. If you 'save' the file, pressing save ten times still leaves one correct file (overwrite, idempotent). If instead each 'save' staples a new copy of the page onto the stack, ten retries leave a ten-inch pile (append, non-idempotent). A good pipeline saves over the file for a given day; a bad one keeps stapling, and every automatic retry makes the stack taller.",
+    "commonMisconceptions": [
+      {
+        "myth": "Retries are safe as long as the task eventually succeeds.",
+        "reality": "A retry after a partial success can double-load data unless the task is idempotent; success on the retry does not undo the rows the first attempt already committed."
+      },
+      {
+        "myth": "A nightly dedup job makes append-only loads effectively idempotent.",
+        "reality": "Dedup after the fact leaves a window where downstream sees duplicates, can pick the wrong survivor, and hides the real bug; overwrite or MERGE fixes the load itself rather than papering over it."
+      },
+      {
+        "myth": "Exactly-once delivery from the broker means my whole pipeline is exactly-once.",
+        "reality": "Exactly-once end-to-end also requires an idempotent or transactional sink; without it, at-least-once delivery plus a non-idempotent write still duplicates on retry."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Scope each rerun to a single partition or key range so a retry rewrites only the affected slice; use dynamic partition overwrite and partition pruning so backfills scale without touching untouched history.",
+      "reliability": "Wrap delete-insert or MERGE in a transaction where the engine supports it so a crash leaves no partial partition, and drive all time logic from the logical run date rather than wall-clock so retries are deterministic.",
+      "faultTolerance": "Assume every task can be killed mid-run and retried; design so a partial run followed by a full rerun converges, and route irrecoverable records to a DLQ instead of failing or partially loading the batch.",
+      "monitoring": "Track duplicate counts (COUNT(*) - COUNT(DISTINCT key)), post-load row-count stability across reruns, and retry counts per task so a non-idempotent load surfaces as a duplicate or row-count spike.",
+      "security": "Protect control tables and idempotency-key stores with least-privilege access since replaying or forging keys could skip or repeat sensitive operations like payments; avoid logging raw keys tied to PII.",
+      "costOptimization": "Overwrite or MERGE only the partitions actually changed, use CDC or incremental predicates to limit the rewrite footprint, and prefer merge over full-refresh once tables grow large.",
+      "performance": "Cluster or partition target tables on the MERGE/overwrite key so matches and partition pruning are cheap, and batch small event dedups instead of per-row check-before-act round trips."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "dbt Incremental Model with unique_key and merge Strategy",
+        "overview": "An idempotent dbt incremental model that upserts on a natural key so re-running for the same window never duplicates rows and correctly updates changed records.",
+        "code": "{{\n  config(\n    materialized='incremental',\n    unique_key='order_id',\n    incremental_strategy='merge',\n    on_schema_change='sync_all_columns'\n  )\n}}\n\nSELECT\n    order_id,\n    customer_id,\n    order_status,\n    amount,\n    updated_at\nFROM {{ source('raw', 'orders') }}\n\n{% if is_incremental() %}\n  -- only reprocess rows changed since the max already loaded\n  WHERE updated_at > (SELECT COALESCE(MAX(updated_at), '1900-01-01') FROM {{ this }})\n{% endif %}\n",
+        "language": "sql",
+        "breakdown": "materialized='incremental' with incremental_strategy='merge' tells dbt to MERGE into the target on unique_key='order_id' rather than append, so re-running updates matched orders and inserts new ones without duplicates. The is_incremental() block bounds the source scan to rows newer than the current max updated_at, keeping reruns cheap. Because the MERGE keys on order_id, running the same window twice leaves the table identical: f(f(x)) = f(x).",
+        "expectedOutput": "First run loads all orders. A rerun of the same window changes zero rows (matched rows re-updated to identical values, no inserts). A rerun after an order's status changes updates exactly that one row. duplicate order_id count stays 0.",
+        "commonIssues": "Choosing a non-unique unique_key causes MERGE to update the wrong rows or error on multiple matches; forgetting on_schema_change leaves new columns unmerged; a non-deterministic updated_at (e.g. load time) breaks the incremental predicate.",
+        "optimizationTips": "Cluster/partition the target on order_id or a date so the merge join prunes efficiently; use a composite unique_key list for grain that needs more than one column; run --full-refresh only when logic changes."
+      },
+      {
+        "title": "Snowflake / BigQuery MERGE (Upsert on Natural Key)",
+        "overview": "A hand-written MERGE that idempotently upserts a staging batch into a target dimension, safe to re-run for the same batch any number of times.",
+        "code": "MERGE INTO analytics.dim_customer AS t\nUSING (\n    -- de-duplicate the staging batch to one row per key first\n    SELECT customer_id, name, email, country, updated_at\n    FROM (\n        SELECT s.*,\n               ROW_NUMBER() OVER (\n                   PARTITION BY customer_id ORDER BY updated_at DESC\n               ) AS rn\n        FROM staging.customer_batch s\n    )\n    WHERE rn = 1\n) AS src\nON t.customer_id = src.customer_id\nWHEN MATCHED AND src.updated_at > t.updated_at THEN UPDATE SET\n    t.name       = src.name,\n    t.email      = src.email,\n    t.country    = src.country,\n    t.updated_at = src.updated_at\nWHEN NOT MATCHED THEN INSERT (customer_id, name, email, country, updated_at)\n    VALUES (src.customer_id, src.name, src.email, src.country, src.updated_at);\n",
+        "language": "sql",
+        "breakdown": "The USING subquery collapses the staging batch to one row per customer_id with ROW_NUMBER, which is essential because MERGE errors (Snowflake) or is non-deterministic when the source has duplicate keys. ON matches by the natural key; WHEN MATCHED updates only if the source is newer (guarding against stale reprocessing); WHEN NOT MATCHED inserts. Re-running the same batch re-updates rows to identical values and inserts nothing new, so the target converges: MERGE on key = idempotent upsert.",
+        "expectedOutput": "First run: inserts new customers, updates changed ones. Rerun of the same batch: 0 net changes (matched rows already at latest updated_at, so the AND src.updated_at > t.updated_at guard skips them). No duplicate customer_id rows ever appear.",
+        "commonIssues": "Source with duplicate keys and no de-dup causes non-deterministic or failed merges; omitting the updated_at guard lets an out-of-order rerun overwrite newer data with older; forgetting NULL-safe comparisons on the key.",
+        "optimizationTips": "Cluster the target on customer_id (Snowflake) or partition/cluster (BigQuery) to speed the join; filter the source to a recent window; consider MERGE ... WHEN NOT MATCHED BY SOURCE THEN DELETE only if the batch is a full snapshot."
+      },
+      {
+        "title": "Spark Dynamic Partition Overwrite (Safe Single-Day Rerun)",
+        "overview": "A Spark write that overwrites only the partitions present in the output using dynamic partition overwrite, so re-running one day replaces just that day and leaves other partitions intact.",
+        "code": "from pyspark.sql import SparkSession, functions as F\n\nspark = (SparkSession.builder\n    .appName(\"idempotent_daily_sales\")\n    # only overwrite partitions that appear in the DataFrame, not the whole table\n    .config(\"spark.sql.sources.partitionOverwriteMode\", \"dynamic\")\n    .getOrCreate())\n\nrun_date = \"2026-07-02\"  # driven by the orchestrator's logical date, NOT now()\n\ndaily = (spark.read.parquet(\"s3://raw/sales/\")\n         .filter(F.col(\"event_date\") == run_date)\n         .groupBy(\"event_date\", \"store_id\")\n         .agg(F.sum(\"amount\").alias(\"total_amount\"),\n              F.count(\"*\").alias(\"order_count\")))\n\n# insertInto respects the existing table's partitioning; with dynamic mode it\n# replaces ONLY event_date=2026-07-02, so a rerun is idempotent per partition\n(daily.write\n      .mode(\"overwrite\")\n      .format(\"parquet\")\n      .partitionBy(\"event_date\")\n      .insertInto(\"analytics.sales_daily\"))\n",
+        "language": "python",
+        "breakdown": "Setting spark.sql.sources.partitionOverwriteMode=dynamic is the key line: without it, mode('overwrite') would wipe the entire table. With it, only partitions present in the output DataFrame (here event_date=2026-07-02) are replaced. run_date comes from the orchestrator's logical date, not now(), keeping the job deterministic. insertInto writes by position into the partitioned table, so rerunning the same day rewrites exactly that partition and the effective rows after N reruns equal the rows after one run.",
+        "expectedOutput": "Table analytics.sales_daily has event_date=2026-07-02 fully replaced with the recomputed aggregates; all other dates untouched. Re-running the cell yields byte-identical partition content and no change to row counts.",
+        "commonIssues": "Forgetting dynamic mode and wiping the whole table; using .saveAsTable('overwrite') which can drop and recreate the table; column order mismatch with insertInto; deriving the date from now() so a rerun writes a different partition.",
+        "optimizationTips": "Prefer insertInto over saveAsTable for existing partitioned tables; coalesce to control file counts per partition; on Delta/Iceberg use replaceWhere or a MERGE for transactional single-partition overwrite."
+      },
+      {
+        "title": "Python Idempotent Load with an Idempotency Key (Check-Before-Act)",
+        "overview": "An event/batch loader that records processed batch IDs in a control table and skips any batch it has already applied, making retries no-ops even for non-overwriteable targets.",
+        "code": "import hashlib\nimport psycopg2\n\ndef batch_key(source_file: str, run_date: str) -> str:\n    # deterministic key for this logical unit of work\n    return hashlib.sha256(f\"{source_file}|{run_date}\".encode()).hexdigest()\n\ndef load_batch(conn, source_file: str, run_date: str, rows: list[tuple]):\n    key = batch_key(source_file, run_date)\n    with conn:  # single transaction: check, load, and record together\n        with conn.cursor() as cur:\n            # 1. check-before-act: has this exact batch already been applied?\n            cur.execute(\n                \"SELECT 1 FROM etl.processed_batches WHERE batch_key = %s\",\n                (key,),\n            )\n            if cur.fetchone():\n                print(f\"batch {key[:12]} already processed, skipping (idempotent no-op)\")\n                return\n\n            # 2. apply the load (MERGE keeps the target itself idempotent too)\n            cur.executemany(\n                \"\"\"INSERT INTO analytics.events (event_id, payload, run_date)\n                       VALUES (%s, %s, %s)\n                   ON CONFLICT (event_id) DO NOTHING\"\"\",\n                rows,\n            )\n\n            # 3. record the key so any retry becomes a no-op\n            cur.execute(\n                \"INSERT INTO etl.processed_batches (batch_key, loaded_at) \"\n                \"VALUES (%s, now())\",\n                (key,),\n            )\n    print(f\"batch {key[:12]} loaded ({len(rows)} rows)\")\n",
+        "language": "python",
+        "breakdown": "batch_key derives a deterministic idempotency key from the logical inputs (source file + run date), so the same batch always maps to the same key. The whole check-load-record sequence runs in one transaction (with conn:), so a crash rolls back all three steps and the batch is retried cleanly. The ON CONFLICT (event_id) DO NOTHING makes the row-level insert idempotent even within a batch. On retry, the SELECT finds the key and returns early, so the load is a no-op: at-most-once effect.",
+        "expectedOutput": "First call: 'batch a1b2c3d4e5f6 loaded (1000 rows)'. Any retry of the same source_file/run_date: 'batch a1b2c3d4e5f6 already processed, skipping (idempotent no-op)' with zero additional rows inserted.",
+        "commonIssues": "Recording the key in a separate transaction from the load (crash between them either double-loads or loses the marker); non-deterministic key inputs (including now()); relying only on the control table without ON CONFLICT so a mid-batch retry duplicates rows.",
+        "optimizationTips": "Keep check, load, and record in one transaction; add a unique constraint on batch_key; for high throughput dedup at the row level with ON CONFLICT/MERGE and reserve the control table for coarse batch gating."
+      },
+      {
+        "title": "Airflow Idempotent Task with {{ ds }} Delete-Then-Insert",
+        "overview": "An Airflow task templated with the logical execution date that deletes and re-inserts its own partition, so retries and backfills for any date are safe.",
+        "code": "from airflow import DAG\nfrom airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator\nimport pendulum\n\nwith DAG(\n    dag_id=\"idempotent_sales_daily\",\n    schedule=\"@daily\",\n    start_date=pendulum.datetime(2026, 1, 1, tz=\"UTC\"),\n    catchup=True,            # backfill safely because the task is idempotent\n    max_active_runs=1,\n    default_args={\"retries\": 3},\n) as dag:\n\n    # {{ ds }} is the logical execution date; each run owns exactly one partition\n    load_partition = SQLExecuteQueryOperator(\n        task_id=\"load_partition\",\n        conn_id=\"warehouse\",\n        sql=\"\"\"\n            BEGIN;\n            -- 1. clear this run's partition so a rerun replaces (not appends) it\n            DELETE FROM analytics.sales_daily WHERE dt = '{{ ds }}';\n            -- 2. recompute deterministically from the same logical date\n            INSERT INTO analytics.sales_daily (dt, store_id, total_amount, order_count)\n            SELECT '{{ ds }}', store_id, SUM(amount), COUNT(*)\n            FROM raw.sales\n            WHERE event_date = '{{ ds }}'\n            GROUP BY store_id;\n            COMMIT;\n        \"\"\",\n    )\n",
+        "language": "python",
+        "breakdown": "The task is templated with {{ ds }}, Airflow's logical execution date, so each run and each backfilled interval owns exactly one dt partition. The DELETE...WHERE dt = '{{ ds }}' followed by INSERT wraps in BEGIN/COMMIT so the partition is replaced atomically; a crash rolls back to the prior state. Because both delete and insert key on the same logical date (not now()), retries=3 and catchup=True are safe: re-running any date reproduces its partition exactly. delete WHERE partition = ds is the idempotent primitive.",
+        "expectedOutput": "For each scheduled or backfilled date, analytics.sales_daily has exactly one set of rows for that dt. Retrying a failed run or re-clearing a date's backfill leaves identical partition contents; no duplicate dt/store_id rows accumulate.",
+        "commonIssues": "Using CURRENT_DATE or now() instead of {{ ds }} so reruns hit the wrong partition; catchup=True with a non-idempotent task causing mass duplication; delete and insert in separate statements without a transaction leaving an empty partition on failure.",
+        "optimizationTips": "Prefer engine-native INSERT OVERWRITE PARTITION where available to avoid the delete-insert race; keep max_active_runs bounded during large backfills; add a data-quality check task downstream to assert 0 duplicates per dt."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A payments analytics team reports daily settled revenue to finance and sends a daily 'settlement summary' email to merchants. Automatic Airflow retries after transient warehouse timeouts occasionally re-ran the load, double-counting revenue and, worse, sending duplicate merchant emails. The goal is to make the entire daily pipeline idempotent so retries and backfills are safe and no merchant is emailed twice.",
+    "inputData": "Raw settlement events landing in S3 partitioned by event_date; each event has settlement_id (natural key), merchant_id, amount, currency, and settled_at. A separate merchant contact list is used for the summary email.",
+    "architecture": "S3 raw -> Spark job with dynamic partition overwrite writing analytics.settlements_daily partitioned by dt -> Snowflake MERGE upserting a merchant-level rollup keyed on (dt, merchant_id) -> a separate email step gated by an idempotency key in a processed_emails control table. Airflow orchestrates with {{ ds }}, retries=3, and catchup for backfills.",
+    "processingSteps": [
+      "1. Airflow triggers the DAG for logical date {{ ds }}; the Spark job reads only event_date = ds and aggregates by (dt, merchant_id) deterministically (no now()).",
+      "2. Spark writes with spark.sql.sources.partitionOverwriteMode=dynamic and mode('overwrite'), replacing only the dt = ds partition of settlements_daily.",
+      "3. A Snowflake MERGE upserts the merchant rollup on the natural key (dt, merchant_id), updating changed totals and inserting new merchants, so a rerun changes nothing.",
+      "4. A data-quality task asserts 0 duplicate (dt, merchant_id) rows and that total revenue for dt is stable across reruns before publishing.",
+      "5. The email step computes an idempotency key sha256(merchant_id|ds), checks processed_emails, sends only for keys not yet present, and records each sent key in the same transaction as the send acknowledgment."
+    ],
+    "output": "A settlements_daily partition and a merchant rollup for the date that are byte-stable across any number of reruns, and exactly one settlement summary email per merchant per day regardless of retries.",
+    "monitoring": "Dashboards track duplicate counts per key (must be 0), daily revenue stability across reruns, task retry counts, and emails-sent count versus distinct merchants; an alert fires if emails-sent exceeds distinct merchants for a date.",
+    "errorHandling": "Warehouse timeouts trigger Airflow retries that safely re-run the delete-insert/MERGE; a crash mid-write rolls back the transaction; malformed events go to a DLQ; the email step is idempotency-keyed so a retry after a partial send resumes without re-emailing already-notified merchants.",
+    "finalResult": "After the redesign, retries and a 90-day backfill ran without a single duplicate row or duplicate email. Revenue reported to finance became stable across reruns, and on-call could safely rerun any failed date at any hour, cutting incident recovery from a manual dedup exercise to a one-click retry."
+  },
+  "industryUseCases": [
+    {
+      "company": "Stripe",
+      "problem": "Network failures made clients unsure whether a charge request succeeded, so retries risked charging customers twice.",
+      "solution": "Stripe's API accepts an Idempotency-Key header; the server records the key and result so a retried request returns the original response instead of creating a second charge.",
+      "benefits": "Clients can safely retry any request; charges, refunds, and other side effects happen at most once, which is the same idempotency-key pattern data pipelines use for non-overwriteable side effects."
+    },
+    {
+      "company": "Airbnb",
+      "problem": "Nightly Airflow pipelines needed to be retried and backfilled across many dates without duplicating rows in derived tables.",
+      "solution": "Standardized on idempotent, date-partitioned tasks templated with the execution date that overwrite (delete-insert / INSERT OVERWRITE) their own partition on every run.",
+      "benefits": "Any run or backfill can be re-executed safely, making recovery and historical recomputation routine rather than risky, a pattern that shaped Airflow's design philosophy."
+    },
+    {
+      "company": "Netflix",
+      "problem": "Large-scale Spark and streaming jobs are retried aggressively on spot/transient failures, which would duplicate output for non-idempotent writes.",
+      "solution": "Idempotent sinks using partition overwrite and, for streaming, exactly-once semantics with checkpointing and idempotent/transactional writes so replayed data converges.",
+      "benefits": "Aggressive automatic retries and reprocessing become safe, enabling high reliability on cheap, preemptible compute without corrupting analytics tables."
+    },
+    {
+      "company": "Confluent (Kafka)",
+      "problem": "At-least-once producers duplicate messages on retry, and multi-step process-then-produce flows could double-emit results.",
+      "solution": "The idempotent producer (enable.idempotence=true) dedups on producer id and sequence numbers, and transactions (transactional.id) commit reads, processing, and writes atomically for exactly-once processing.",
+      "benefits": "Downstream consumers and sinks receive each result once, turning at-least-once delivery into effectively exactly-once and removing bespoke dedup logic."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Scope each rerun to one partition or key range and use dynamic partition overwrite plus predicate pushdown so a retry rewrites only the affected slice; large backfills parallelize per-partition tasks that are each independently idempotent, so overlapping windows and partial failures do not accumulate duplicates.",
+    "faultTolerance": "Design every task assuming it can be killed mid-write and retried: wrap delete-insert or MERGE in a transaction so a crash rolls back, drive time from the logical run date so retries are deterministic, and route unrecoverable records to a DLQ instead of failing or half-loading the batch.",
+    "highAvailability": "Run idempotent loads under an orchestrator with bounded retries and single active run per interval so concurrent reruns cannot race on the same partition; keep control tables and idempotency-key stores on durable, replicated storage so dedup state survives node failures.",
+    "disasterRecovery": "Because loads are idempotent and keyed on logical dates, recovery is simply re-running affected intervals from immutable source; a corrupted partition is fixed by re-running that partition, and processed-key control tables let side-effect steps resume without repeating completed work.",
+    "performanceOptimization": "Cluster or partition targets on the MERGE/overwrite key so joins prune and partition replacement is cheap, bound incremental scans with an updated_at or event-time predicate, and batch row-level dedup (ON CONFLICT / MERGE) rather than per-row check-before-act round trips.",
+    "costOptimization": "Rewrite only changed partitions or keys via CDC and incremental predicates instead of full refresh, prefer merge over rebuild once tables grow, and reserve expensive full recomputation for logic changes so day-to-day reruns touch minimal data.",
+    "securityConsiderations": "Guard idempotency-key and control tables with least-privilege access because forging or replaying keys could skip or repeat sensitive operations like payments or emails; avoid logging raw keys derived from PII and encrypt DLQ and control stores at rest.",
+    "monitoringAndObservability": "Track duplicate counts (COUNT(*) - COUNT(DISTINCT key)) as a first-class SLO, assert row-count and metric stability across reruns, and monitor retry counts and side-effect counts (e.g., emails sent) versus distinct targets to catch non-idempotent regressions.",
+    "dataQualityValidation": "Add a post-load check per partition that asserts zero duplicates on the natural key and that recomputing the same input yields identical totals; treat a duplicate-count breach as a hard gate that blocks publication and pages the owner.",
+    "loggingAndAlerting": "Log each run's logical key (ds / batch_key), whether it was a fresh apply or an idempotent no-op, and the affected partition, and alert when a rerun changes row counts unexpectedly or when side-effect counts exceed distinct targets, indicating a broken idempotency guarantee."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Template every task by its logical date** (Airflow {{ ds }}) so each run owns exactly one partition and reruns replace it.",
+      "**Overwrite by partition or MERGE on a natural key**, never blind append, so f(f(x)) = f(x) holds for the load.",
+      "**Isolate non-idempotent side effects** (emails, payments, webhooks) behind an idempotency-key check-before-act on durable state.",
+      "**Keep transformations deterministic**, deriving time from the run date and avoiding now(), random(), and unstable ordering.",
+      "**Make the check-load-record sequence transactional** so a crash cannot leave a half-applied load or an orphaned marker."
+    ],
+    "engineeringStandards": [
+      "Every production load is idempotent by design and is proven with a rerun test in CI that asserts zero net change on the second run.",
+      "Time-partitioned facts use INSERT OVERWRITE / delete-insert by the logical date; keyed tables use MERGE on a documented natural key.",
+      "Side effects live in a separate, idempotency-keyed step that reads only already-committed, deduplicated data."
+    ],
+    "designRecommendations": [
+      "Prefer engine-native atomic partition overwrite (INSERT OVERWRITE, Delta replaceWhere, Iceberg overwrite) over manual delete-insert to avoid races.",
+      "Choose and document a stable natural key up front; add a surrogate only when no natural key exists, never for dedup convenience.",
+      "For streaming, combine an idempotent/transactional producer with an idempotent sink and watermarking rather than relying on delivery guarantees alone."
+    ],
+    "namingConventions": [
+      "Name control tables and columns clearly, e.g. etl.processed_batches(batch_key, loaded_at) and processed_emails(idempotency_key).",
+      "Name partition columns consistently (dt or event_date) and align them with the orchestrator's logical date variable.",
+      "Name idempotency keys by their inputs, e.g. sha256(merchant_id|ds), so the key's provenance is self-documenting."
+    ],
+    "documentationStandards": [
+      "Document each table's idempotency mechanism (overwrite-by-dt vs MERGE-on-key) and its unique/natural key.",
+      "Document which steps have external side effects and how they are made at-most-once (the idempotency-key store and TTL).",
+      "Document the safe rerun and backfill procedure for on-call, including which partitions a rerun affects."
+    ],
+    "testingStrategies": [
+      "Run each load twice in CI on the same input and assert the target is byte/row identical (idempotency regression test).",
+      "Inject partial-failure faults (kill after delete, before insert) and verify a retry converges to the correct partition.",
+      "Test MERGE with duplicate-keyed source data to confirm de-dup logic and the updated_at guard prevent wrong-row updates and out-of-order overwrites."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Appending to a fact table and relying on a nightly dedup job.",
+      "whyItHappens": "INSERT-only is the simplest write and the duplicate problem is deferred to a separate cleanup step.",
+      "impact": "Downstream sees duplicates within the window, dedup may pick the wrong survivor, and every retry double-counts until cleanup runs.",
+      "correctApproach": "Overwrite the partition (delete-insert / INSERT OVERWRITE by dt) or MERGE on the natural key so the load itself is idempotent."
+    },
+    {
+      "mistake": "Using now() / CURRENT_TIMESTAMP inside transformations.",
+      "whyItHappens": "It seems convenient to stamp rows with load time or filter by 'today'.",
+      "impact": "Each rerun produces different rows or targets a different partition, so overwrite and merge no longer converge and reruns diverge.",
+      "correctApproach": "Derive all time logic from the orchestrator's logical run date ({{ ds }}) and keep transformations deterministic."
+    },
+    {
+      "mistake": "Mixing an external side effect into the data-load transaction.",
+      "whyItHappens": "Sending the email or calling the API in the same task feels efficient and keeps logic together.",
+      "impact": "A retry after a partial success re-sends emails or re-charges cards because the side effect is not overwriteable.",
+      "correctApproach": "Move side effects to a separate idempotency-keyed step with check-before-act on durable state, reading only committed, deduplicated data."
+    },
+    {
+      "mistake": "Enabling Airflow catchup/backfill on a non-idempotent task.",
+      "whyItHappens": "catchup=True is on by default and seems like a free way to fill history.",
+      "impact": "The scheduler fires many historical runs that each append, mass-duplicating rows across dozens of partitions.",
+      "correctApproach": "Make the task idempotent (overwrite by {{ ds }}) before enabling catchup, and bound max_active_runs during backfills."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Write pattern",
+      "optionA": "Append (INSERT only)",
+      "optionB": "Overwrite / MERGE",
+      "explanation": "Append is not idempotent: every rerun adds rows again, so retries and backfills duplicate data. Overwrite-by-partition or MERGE-on-key converges to a single state, so f(f(x)) = f(x). Append is only acceptable for truly write-once immutable logs."
+    },
+    {
+      "feature": "Delivery vs effect semantics",
+      "optionA": "At-least-once delivery",
+      "optionB": "Exactly-once effect (idempotent sink)",
+      "explanation": "At-least-once is cheap but may deliver a record twice. Pairing it with an idempotent sink (overwrite/MERGE/idempotency key) yields exactly-once effect without expensive distributed coordination, which is how most production pipelines achieve correctness."
+    },
+    {
+      "feature": "Idempotency mechanism",
+      "optionA": "Partition overwrite",
+      "optionB": "MERGE on natural key",
+      "explanation": "Partition overwrite is simplest for time-partitioned facts where each run owns a date. MERGE fits data that cannot be cleanly partitioned or has late-arriving updates keyed by a business id. Many pipelines use overwrite for facts and MERGE for dimensions."
+    },
+    {
+      "feature": "Recovering a bad load",
+      "optionA": "Re-run the affected partition",
+      "optionB": "Rebuild the whole table",
+      "explanation": "With idempotent partition loads, a corrupted day is fixed by re-running just that partition, which is fast and low-risk. Non-idempotent designs often force a full-table rebuild to purge duplicates, which is slow, costly, and disruptive."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What does it mean for a data pipeline task to be idempotent?",
+        "answer": "It means running the task multiple times has the same effect as running it once (f(f(x)) = f(x)): a retry or rerun produces no duplicate rows, no double-counted metrics, and no repeated side effects, so the target converges to a single correct state.",
+        "explanation": "A strong answer states the f(f(x)) = f(x) property and connects it directly to safe retries and reruns."
+      },
+      {
+        "question": "Why do retries and backfills require idempotency?",
+        "answer": "Tasks fail on transient errors and get retried, and backfills re-run overlapping historical windows, so if a task is not idempotent a partial success followed by a retry double-loads data. Idempotency guarantees the final state is correct no matter how many times a task runs.",
+        "explanation": "The interviewer wants you to link automatic retries and backfill re-execution to the risk of duplication."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "How would you make an append-only daily fact load idempotent?",
+        "answer": "Give each run ownership of its partition using the logical execution date and replace that partition on every run: DELETE FROM t WHERE dt = '{{ ds }}' then INSERT, or engine-native INSERT OVERWRITE PARTITION, wrapped in a transaction. Keep the transform deterministic (no now()). Then a rerun rewrites the same partition instead of appending.",
+        "explanation": "Good answers name the partition-ownership pattern, the delete-insert/overwrite primitive, and determinism."
+      },
+      {
+        "question": "How do you make a non-overwriteable side effect like sending an email idempotent?",
+        "answer": "Attach a deterministic idempotency key (e.g. sha256(merchant_id|ds)), record processed keys in a durable control table, and check-before-act so a retry that sees the key does nothing. Keep the check, the send acknowledgment, and the record in one transaction so a crash cannot double-send or lose the marker.",
+        "explanation": "The interviewer is checking that you know overwrite doesn't work for external effects and that idempotency keys with check-before-act do."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How do you achieve exactly-once processing across Kafka, Spark, and a warehouse?",
+        "answer": "Use an idempotent producer (enable.idempotence) and transactions (transactional.id) so produce+offset-commit are atomic, checkpoint stream state for deterministic replay, and write to an idempotent sink (partition overwrite or MERGE keyed on a natural key). At-least-once delivery plus an idempotent sink gives exactly-once effect end to end; broker guarantees alone are not enough.",
+        "explanation": "Strong answers stress that exactly-once effect needs an idempotent/transactional sink, not just delivery guarantees."
+      },
+      {
+        "question": "What breaks idempotency and how do you detect it in production?",
+        "answer": "Non-determinism (now(), random(), unstable ordering), blind appends, side effects inside the load transaction, and catchup on non-idempotent tasks all break it. Detect it by tracking duplicate counts (COUNT(*) - COUNT(DISTINCT key)) as an SLO, asserting row-count/metric stability across reruns, and running a double-run idempotency test in CI.",
+        "explanation": "Mention both the causes and concrete detection: duplicate-count monitoring and rerun-stability tests."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "An Airflow task timed out, retried, and now yesterday's revenue is double. The task does INSERT INTO fact_sales SELECT ... How do you fix it and prevent recurrence?",
+        "thinkingProcess": "Doubled revenue after a retry screams a non-idempotent append: the first attempt committed rows, then the retry appended them again. Confirm with duplicate count and row-count spike, remediate the bad partition, then convert the load to overwrite-by-date.",
+        "expectedAnswer": "Confirm with duplicate_rows = COUNT(*) - COUNT(DISTINCT sale_id) and a row-count spike versus baseline for that dt. Remediate by clearing and re-loading the affected partition (DELETE WHERE dt = ds; INSERT). Prevent recurrence by making the task idempotent: template with {{ ds }}, replace the append with DELETE FROM fact_sales WHERE dt = '{{ ds }}' then INSERT (or INSERT OVERWRITE PARTITION) in a transaction, keep the transform deterministic, and add a post-load 0-duplicates check that gates publication."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design an idempotent daily ingestion pipeline that loads raw events into a warehouse, upserts a dimension, and notifies customers, with automatic retries and 90-day backfills.",
+        "designApproach": "Orchestrate with Airflow templated by {{ ds }}. Load the fact with dynamic partition overwrite / INSERT OVERWRITE by dt. Upsert the dimension with MERGE on a natural key. Put the customer notification in a separate step gated by an idempotency key in a durable processed table with check-before-act. Keep all transforms deterministic and add a per-partition 0-duplicates data-quality gate.",
+        "tradeOffs": "Overwrite/MERGE cost more compute than append but guarantee correctness under retries; the idempotency-key store adds state to maintain; transactional writes add latency but prevent partial loads. Tier: overwrite for facts, MERGE for dimensions, keys only for side effects.",
+        "scalingStrategy": "Partition-scope each rerun so backfills parallelize per date with each task independently idempotent; prune scans with event-time/updated_at predicates; cluster targets on the merge/overwrite key; bound max_active_runs during backfills and keep control tables on durable replicated storage."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between at-least-once and exactly-once, and how does an idempotent sink bridge them?",
+      "Why is determinism a prerequisite for idempotent overwrite and merge?",
+      "When would you choose partition overwrite over MERGE and vice versa?",
+      "How do Kafka's idempotent producer and transactions differ?",
+      "How would you prove a load is idempotent in CI?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Idempotency means re-running an operation gives the same result as running it once (f(f(x)) = f(x)), achieved in data engineering via partition overwrite, MERGE/upsert on a natural key, and idempotency keys, so retries, backfills, and on-call reruns are safe.",
+    "keyConcepts": [
+      "f(f(x)) = f(x): running once equals running many times.",
+      "Each run owns a partition; overwrite it, do not append.",
+      "MERGE on a natural key upserts idempotently for keyed/late data.",
+      "Idempotency keys with check-before-act make side effects at-most-once.",
+      "At-least-once delivery + idempotent sink = exactly-once effect.",
+      "Determinism (no now()/random()) is required for overwrite/merge to converge."
+    ],
+    "formulas": [
+      "f(f(x)) = f(x)  (idempotency identity)",
+      "MERGE on key = upsert (update matched, insert unmatched)",
+      "DELETE FROM t WHERE partition = ds  (partition overwrite primitive)",
+      "effective rows after N reruns = rows after 1 run",
+      "duplicate_count = COUNT(*) - COUNT(DISTINCT natural_key)  (must be 0)"
+    ],
+    "commands": [
+      "dbt: config(materialized='incremental', unique_key='id', incremental_strategy='merge')",
+      "SQL: MERGE INTO t USING src ON t.k = src.k WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...",
+      "Spark: .config('spark.sql.sources.partitionOverwriteMode','dynamic'); df.write.mode('overwrite').insertInto('t')",
+      "Kafka: enable.idempotence=true; transactional.id=<id> for exactly-once",
+      "Airflow: DELETE FROM t WHERE dt = '{{ ds }}'; INSERT ...  (templated, retries=3)"
+    ],
+    "interviewPoints": [
+      "State the f(f(x)) = f(x) property and tie it to safe retries.",
+      "Overwrite-by-partition or MERGE-on-key, never blind append.",
+      "Isolate side effects behind idempotency keys with check-before-act.",
+      "Determinism (drive time from {{ ds }}, not now()) enables idempotency.",
+      "Idempotent sink upgrades at-least-once to exactly-once effect."
+    ],
+    "quickNotes": [
+      "Use {{ ds }} so each run owns one partition.",
+      "Set partitionOverwriteMode=dynamic or the whole table is wiped.",
+      "De-dup the MERGE source to one row per key first.",
+      "Keep check-load-record in a single transaction.",
+      "Monitor duplicate_count and rerun stability as SLOs."
+    ]
+  },
+  "keyTakeaways": [
+    "Idempotency (f(f(x)) = f(x)) is the property that makes retries, backfills, and on-call reruns safe: re-running a task converges to the same correct state instead of duplicating data.",
+    "The core primitives are partition overwrite (delete-insert / INSERT OVERWRITE by the logical date), MERGE/upsert on a natural key, and idempotency keys with check-before-act for non-overwriteable side effects.",
+    "Determinism is a prerequisite: drive time from the orchestrator's logical run date ({{ ds }}) and avoid now()/random() so overwrite and merge actually converge.",
+    "External side effects like emails and payments must be isolated behind idempotency keys because they cannot be overwritten; a retry must be a no-op.",
+    "An idempotent (or transactional) sink turns cheap at-least-once delivery into effectively exactly-once results, and duplicate_count = 0 across reruns is the SLO that proves it."
+  ]
+}

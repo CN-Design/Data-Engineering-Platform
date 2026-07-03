@@ -1,0 +1,379 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Incremental models are a dbt materialization that builds a table once, then on every subsequent run inserts or merges only the new or changed rows instead of rebuilding the whole table from scratch - the standard way to keep huge fact and event tables fresh cheaply.",
+      "The behavior is controlled by config(materialized='incremental'), the is_incremental() macro that guards a filter, an optional unique_key for updating/deduping existing rows, and an incremental_strategy (append, merge, delete+insert, insert_overwrite, or the newer microbatch) chosen per warehouse.",
+      "In real ELT, incremental models power clickstream, event, and log tables that grow by millions of append-mostly rows per day, where a full rebuild would scan terabytes, blow the warehouse budget, and miss SLAs - while --full-refresh remains the escape hatch to rebuild from scratch when logic changes."
+    ],
+    "learningObjectives": [
+      "Explain the five dbt materializations (view, table, incremental, ephemeral, materialized_view) and choose incremental for large, append-mostly tables.",
+      "Write a correct incremental model using config(materialized='incremental'), the is_incremental() guard, unique_key, and a max(event_time) lookback filter.",
+      "Select the right incremental_strategy (append/merge/delete+insert/insert_overwrite/microbatch) per warehouse, handle on_schema_change, late-arriving data, and know when to use --full-refresh."
+    ],
+    "formalDefinition": "An incremental model in dbt is a model materialized as a persistent table that dbt populates in two distinct modes. On the first run (or when the target does not exist, or when --full-refresh is passed) dbt executes a CREATE TABLE AS SELECT over the full query. On subsequent runs, dbt wraps the model's SELECT so that only a filtered subset - typically rows newer than the maximum timestamp already present in {{ this }} - is computed, then applies those rows to the existing table using the configured incremental_strategy (append/insert, merge on a unique_key, delete+insert, insert_overwrite of partitions, or microbatch by event_time). The is_incremental() macro returns true only in this second mode, letting the model contain a conditional filter that dbt honors automatically.",
+    "simpleExplanation": "Rebuilding a billion-row events table every hour is like re-reading an entire book cover to cover just to find out what happened on the last page. An incremental model is a bookmark: dbt remembers where it left off (the latest timestamp already loaded), reads only the new pages, and appends them. The is_incremental() guard is the 'if I've read this book before' check - on the very first read it reads everything, and after that only the new chapters. unique_key is a way to say 'if a chapter got edited, replace the old version instead of adding a duplicate,' and --full-refresh is 'forget the bookmark and re-read from page one.'",
+    "historicalContext": "dbt introduced incremental materializations early as core teams hit the wall of rebuilding ever-larger warehouse tables. The is_incremental() macro and unique_key became the canonical pattern for append/merge logic. As adapters matured, dbt exposed incremental_strategy so each warehouse could use its native efficient operation - MERGE on Snowflake/BigQuery/Databricks, DELETE+INSERT on Redshift/Postgres, and insert_overwrite for partition replacement on BigQuery/Spark. on_schema_change (added to handle evolving columns) let incremental tables absorb new columns without a manual rebuild. Most recently, dbt introduced the microbatch incremental strategy (event_time, begin, batch_size), which splits an incremental run into discrete time batches for cleaner backfills, reprocessing, and parallelism - the modern approach for large time-series data.",
+    "whyItMatters": {
+      "business": "Fresh dashboards, funnels, and revenue reports depend on large fact tables being updated on time; incremental models let those tables refresh in minutes instead of hours, so decisions run on current data and analytics SLAs are met without ballooning warehouse bills.",
+      "engineering": "Incremental models turn an O(all history) rebuild into an O(new rows) operation, so pipeline runtime stays roughly constant as history grows; correct is_incremental() and unique_key logic is the difference between a maintainable model and one that silently duplicates or drops rows.",
+      "scalability": "Processing only new/changed partitions or rows keeps run cost proportional to daily volume rather than total table size, which is what lets a table scale to billions of rows while the daily job still finishes in the same window.",
+      "cost": "Warehouses bill by scanned/compute; a full rebuild of a terabyte-scale table can cost hundreds of dollars per run, while an incremental run scans only the new slice, cutting compute cost by orders of magnitude for high-frequency schedules.",
+      "reliability": "Deterministic merge on a unique_key makes reruns idempotent (no duplicates), lookback windows tolerate late-arriving data, and --full-refresh provides a clean, well-understood recovery path when logic changes or data is found to be wrong."
+    },
+    "coreComponents": [
+      {
+        "name": "materialized='incremental' and is_incremental()",
+        "definition": "config(materialized='incremental') tells dbt to persist the model as a table and use incremental logic; is_incremental() is a Jinja macro that returns true only when the table already exists and the run is not a --full-refresh.",
+        "purpose": "To make dbt build the full table on first run and thereafter compute and apply only new/changed rows.",
+        "responsibilities": "Select the materialization, guard the incremental WHERE filter, and switch the model between full-build and incremental SQL automatically.",
+        "examples": "{{ config(materialized='incremental') }} | {% if is_incremental() %} where event_time > (select max(event_time) from {{ this }}) {% endif %}"
+      },
+      {
+        "name": "unique_key",
+        "definition": "A config naming one column (or a list of columns) that uniquely identifies a row, enabling dbt to update/replace existing rows instead of blindly appending.",
+        "purpose": "To make incremental runs idempotent and to handle updates/deduplication of rows that arrive again with the same key.",
+        "responsibilities": "Drive the MERGE/DELETE+INSERT match condition so re-processed rows overwrite rather than duplicate existing ones.",
+        "examples": "unique_key='order_id' | unique_key=['order_id', 'order_date'] | (used by merge and delete+insert strategies)"
+      },
+      {
+        "name": "incremental_strategy and on_schema_change",
+        "definition": "incremental_strategy chooses how new rows are applied (append, merge, delete+insert, insert_overwrite, microbatch); on_schema_change (ignore/append_new_columns/sync_all_columns/fail) controls how column changes are handled.",
+        "purpose": "To use each warehouse's most efficient write operation and to keep an incremental table's schema in sync as source columns evolve.",
+        "responsibilities": "Generate the correct DML per adapter and reconcile the target table's columns with the model's output on each run.",
+        "examples": "incremental_strategy='merge' (Snowflake/BigQuery/Databricks) | 'delete+insert' (Redshift/Postgres) | 'insert_overwrite' (BigQuery/Spark) | on_schema_change='append_new_columns'"
+      }
+    ],
+    "internalWorking": [
+      "On the first run, dbt checks the target relation {{ this }}; if it does not exist (or --full-refresh is passed), is_incremental() is false, so the model's WHERE guard is omitted and dbt issues a CREATE TABLE AS SELECT over the entire query, materializing all history at once.",
+      "On subsequent runs the target exists and it is not a full refresh, so is_incremental() returns true and the guarded filter (typically event_time > (select max(event_time) from {{ this }})) is compiled into the SELECT, so the warehouse computes only the new slice of rows rather than the whole history.",
+      "dbt materializes the filtered result into a temporary/staging relation, then applies it to the target using the incremental_strategy: append simply INSERTs the new rows; merge runs a MERGE INTO target USING staging ON (unique_key) to UPDATE matched rows and INSERT new ones; delete+insert deletes matching keys then inserts; insert_overwrite replaces whole partitions that appear in the new data.",
+      "Before applying rows, dbt reconciles schema per on_schema_change: 'ignore' leaves the target as-is (extra model columns are dropped from the write), 'append_new_columns' ALTERs the target to add new columns, 'sync_all_columns' adds new and removes/renames to match exactly, and 'fail' raises an error so a human reviews the drift.",
+      "For the microbatch strategy, dbt reads the model's event_time, begin, and batch_size config and splits the run into independent time batches (e.g. one per day); each batch computes and overwrites its own time window, which makes backfills and reprocessing a bounded, retryable, and parallelizable operation instead of one giant merge."
+    ],
+    "architectureFlow": "source/staging models -> incremental model with {{ config(materialized='incremental', unique_key, incremental_strategy) }} -> is_incremental() guard filters to new rows using max(event_time) from {{ this }} -> dbt builds staging relation -> apply via strategy (append/merge/delete+insert/insert_overwrite) to target table -> downstream marts",
+    "dataFlowWalkthrough": [
+      "1. On the first `dbt run --select events`, the target table does not exist, so is_incremental() is false; dbt compiles the model without the WHERE guard and runs CREATE TABLE events AS (full SELECT over all source rows).",
+      "2. Source data grows; on the next scheduled run the events table now exists, so is_incremental() is true and dbt compiles `... where event_time > (select max(event_time) from events)` into the SELECT, scanning only rows newer than what is already loaded.",
+      "3. dbt writes that filtered result to a temporary staging relation, then (with incremental_strategy='merge' and unique_key='event_id') issues MERGE INTO events USING staging ON events.event_id = staging.event_id WHEN MATCHED THEN UPDATE WHEN NOT MATCHED THEN INSERT.",
+      "4. Matched rows (e.g. a late correction to an existing event) are updated in place and genuinely new rows are inserted, so the run is idempotent - re-running it does not create duplicates - and the table stays current while only a tiny slice of data was actually scanned and written."
+    ],
+    "keyTerminology": [
+      {
+        "term": "is_incremental()",
+        "meaning": "A dbt Jinja macro that is true only when the target table already exists and the run is not --full-refresh, used to wrap the incremental WHERE filter.",
+        "importance": "It is what lets one model file do a full build on first run and an incremental build thereafter; forgetting the guard causes either full rebuilds every time or errors on the first run."
+      },
+      {
+        "term": "unique_key",
+        "meaning": "One column or a list of columns identifying a row uniquely, used by merge/delete+insert strategies to update existing rows instead of duplicating them.",
+        "importance": "Without it, re-processing the same source rows appends duplicates; with it, incremental runs are idempotent and support updates/corrections."
+      },
+      {
+        "term": "{{ this }}",
+        "meaning": "A dbt relation reference to the model's own target table (its current, already-built version) in the database.",
+        "importance": "It lets the model query its own latest state (e.g. select max(event_time) from {{ this }}) to decide which new rows to load."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "The two run modes and why the guard is conditional",
+        "explanation": "An incremental model must work in two situations: a cold start where the table does not yet exist and a warm run where it does. dbt distinguishes them with is_incremental(), which returns false on the first build (or under --full-refresh) and true afterward. Because the WHERE filter that limits work to new rows only makes sense when there is already data to compare against, it is wrapped in {% if is_incremental() %}. This is why the canonical pattern is `select ... from source {% if is_incremental() %} where event_time > (select max(event_time) from {{ this }}) {% endif %}`. Getting this wrong is the most common incremental bug: either the guard is missing (so the model rebuilds everything or errors on first run because {{ this }} has no rows) or the filter is too strict and silently drops rows that arrived late."
+      },
+      {
+        "concept": "Late-arriving data and lookback windows",
+        "explanation": "A filter like event_time > max(event_time) assumes data always arrives in strict time order, which is rarely true - events can be delayed by network, batching, or upstream retries. If a record for yesterday arrives after today's max timestamp, a naive filter skips it forever. The fix is a lookback window: filter on event_time >= (select max(event_time) from {{ this }}) minus an interval (e.g. dateadd(day, -3, ...)), reprocessing a small overlapping window each run. Combined with a unique_key and merge, the reprocessed rows overwrite rather than duplicate, so late data is captured correctly. The microbatch strategy formalizes this by letting you reprocess specific time batches, and insert_overwrite handles it cleanly by fully replacing affected partitions."
+      }
+    ],
+    "variationsAndTypes": [
+      "**append:** Simply INSERTs the new rows with no matching; fastest and simplest, but produces duplicates if source rows are reprocessed - use only for pure append-only, deduped sources.",
+      "**merge:** Runs a native MERGE on unique_key to UPDATE matched rows and INSERT new ones; the default and recommended strategy on Snowflake, BigQuery, and Databricks, and the way to handle updates/late corrections idempotently.",
+      "**delete+insert:** Deletes rows in the target whose unique_key appears in the new batch, then inserts the batch; the strategy for warehouses without efficient MERGE such as Redshift and Postgres.",
+      "**insert_overwrite:** Replaces entire partitions present in the new data (no row-level match), ideal on BigQuery (with partition_by) and Spark/Databricks for partition-level reloads and late data within a day.",
+      "**microbatch:** The modern time-based strategy using event_time, begin, and batch_size to split a run into independent, retryable time batches - excellent for large time-series backfills and reprocessing."
+    ],
+    "advantages": [
+      "**Cheap and fast refreshes:** Processes only new/changed rows, so runtime and warehouse cost scale with daily volume, not total table size.",
+      "**Scales to huge tables:** Billion-row event/fact tables stay refreshable within a fixed window because history is never re-scanned on a normal run.",
+      "**Idempotent updates:** With unique_key and merge, reruns and late corrections overwrite rather than duplicate, keeping the table correct.",
+      "**Flexible per warehouse:** incremental_strategy maps to each engine's most efficient write (MERGE, DELETE+INSERT, partition overwrite), and --full-refresh gives a clean rebuild path."
+    ],
+    "disadvantages": [
+      "**Correctness is subtle:** A wrong is_incremental() guard, missing lookback, or wrong unique_key silently drops or duplicates rows - failures that are hard to notice.",
+      "**Late/out-of-order data risk:** A naive max(timestamp) filter permanently misses late-arriving records unless a lookback window or partition overwrite is used.",
+      "**Schema drift friction:** New source columns are not picked up automatically unless on_schema_change is configured, and full rebuilds may be needed after logic changes.",
+      "**Debugging complexity:** Because state depends on prior runs, reproducing and testing incremental behavior is harder than for a stateless full-rebuild table or view."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use incremental for large, append-mostly tables (events, clickstream, logs, immutable facts) where full rebuilds are slow or expensive, and freshness matters. Use merge + unique_key when rows can be updated or late-corrected, and insert_overwrite/microbatch for partitioned time-series data.",
+      "whenToAvoid": "Avoid incremental for small tables (a full table rebuild is simpler and cheaper to reason about), for heavily mutable data where most rows change every run, or when transformation logic changes so often that you would --full-refresh constantly anyway; a plain table or view is clearer there."
+    },
+    "realWorldAnalogy": "An incremental model is like a bank statement rather than re-counting all the money in your account every day. The bank doesn't recompute your entire balance history each night; it starts from yesterday's balance (the bookmark, max(event_time)) and applies only today's new transactions. If a delayed transaction from last week finally clears, the merge-on-unique_key is the bank matching it to your account and correcting the record instead of adding a phantom duplicate. And --full-refresh is the rare full audit where they recompute everything from the first deposit to be sure the books are right.",
+    "commonMisconceptions": [
+      {
+        "myth": "Incremental models always add only new rows, so they can never duplicate or update data.",
+        "reality": "append does only insert (and will duplicate if you reprocess), while merge and delete+insert can update existing rows via unique_key. Without a unique_key and matching strategy, reprocessing the same source rows creates duplicates - correctness depends entirely on the strategy and key you configure."
+      },
+      {
+        "myth": "Once a model is incremental, dbt will always run it incrementally.",
+        "reality": "dbt runs it as a full build whenever the target table does not exist or when you pass --full-refresh. Schema changes, dropped tables, or a scheduled full refresh all trigger a complete rebuild, so the model's SELECT must produce correct results in both the full-build and incremental modes."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "Filter incremental runs on a partition/cluster key (event_time, event_date) so the warehouse prunes to only the new slice; on BigQuery use partition_by plus insert_overwrite, on Snowflake rely on clustering and merge, and adopt the microbatch strategy with a sensible batch_size for very large time-series so each run and backfill stays bounded.",
+      "reliability": "Always pair a unique_key with merge/delete+insert to make runs idempotent, use a lookback window for late data, and keep the model's SELECT correct in both full-build and incremental modes so a --full-refresh reproduces the same table.",
+      "faultTolerance": "Design runs to be safely retryable: merge/insert_overwrite reapplied over the same window converge to the same result; use microbatch so a failed batch can be retried in isolation without reprocessing the whole table; keep source data immutable so any batch can be rebuilt.",
+      "monitoring": "Track rows inserted/updated per run, bytes/partitions scanned, run duration, and the freshness gap (now - max(event_time)); alert when a run scans far more than expected (a sign the guard broke) or when freshness lags SLA.",
+      "security": "Apply the same grants/row-access policies to the incremental target as to source tables, avoid leaking PII into staging relations that persist, and restrict who can run --full-refresh in production since it can be expensive and disruptive.",
+      "costOptimization": "Never full-refresh on a schedule when an incremental run suffices; ensure the incremental filter hits a partitioned/clustered column so the warehouse scans only new data, and reserve --full-refresh for logic changes or corrections. Right-size batch_size for microbatch to balance parallelism and per-batch overhead.",
+      "performance": "Prefer the warehouse-native strategy (merge on Snowflake/BigQuery/Databricks, delete+insert on Redshift), index/cluster on the merge key, keep the lookback window as small as correctness allows, and use insert_overwrite for partition-level reloads which avoids row-by-row merge cost."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "Incremental model with is_incremental() guard, unique_key, and merge",
+        "overview": "The canonical incremental fact model: full build on first run, then merge only new/changed rows on a unique_key with a lookback window for late data.",
+        "code": "-- models/marts/fct_orders.sql\n{{\n  config(\n    materialized='incremental',\n    unique_key='order_id',\n    incremental_strategy='merge',\n    on_schema_change='append_new_columns'\n  )\n}}\n\nwith source as (\n    select\n        order_id,\n        customer_id,\n        status,\n        amount,\n        updated_at\n    from {{ ref('stg_orders') }}\n\n    {% if is_incremental() %}\n    -- only process rows newer than what we already have,\n    -- with a 3-day lookback to catch late-arriving updates\n    where updated_at >= (\n        select dateadd(day, -3, max(updated_at)) from {{ this }}\n    )\n    {% endif %}\n)\n\nselect * from source\n",
+        "language": "sql",
+        "breakdown": "config sets materialized='incremental', a unique_key of order_id, the merge strategy, and append_new_columns so new columns are added automatically. On the first run is_incremental() is false, the WHERE block is omitted, and dbt runs CREATE TABLE fct_orders AS (full select). On later runs the block compiles in, filtering to rows updated in the last few days relative to the current max. dbt then MERGEs the staging rows into fct_orders on order_id, updating matched orders (e.g. a status change) and inserting new ones. The lookback plus merge makes late updates land correctly without duplicates.",
+        "expectedOutput": "First run: `1 of 1 OK created sql incremental model analytics.fct_orders [CREATE TABLE (4,120,553 rows) in 41.2s]`. Next run: `1 of 1 OK created sql incremental model analytics.fct_orders [MERGE (18,204 rows, 12 updated) in 3.1s]`.",
+        "commonIssues": "Omitting {% if is_incremental() %} rebuilds everything each run (or errors on first run because {{ this }} is empty). A too-tight filter (updated_at > max) with no lookback silently drops late rows. Forgetting unique_key with merge causes dbt to error or append duplicates.",
+        "optimizationTips": "Filter on a partitioned/clustered column so the warehouse prunes; keep the lookback window as small as correctness allows; use merge_update_columns to limit which columns are overwritten when only some should change."
+      },
+      {
+        "title": "BigQuery insert_overwrite with partition_by (and a microbatch variant)",
+        "overview": "Partition-level replacement for time-series data on BigQuery using insert_overwrite, plus the modern microbatch strategy for bounded backfills.",
+        "code": "-- models/marts/fct_events.sql  (BigQuery: insert_overwrite)\n{{\n  config(\n    materialized='incremental',\n    incremental_strategy='insert_overwrite',\n    partition_by={'field': 'event_date', 'data_type': 'date'},\n    cluster_by=['event_type']\n  )\n}}\n\nselect\n    event_id,\n    event_type,\n    user_id,\n    event_timestamp,\n    date(event_timestamp) as event_date\nfrom {{ ref('stg_events') }}\n{% if is_incremental() %}\nwhere date(event_timestamp) >= date_sub(current_date(), interval 3 day)\n{% endif %}\n\n-- Alternative: microbatch strategy (dbt 1.9+)\n-- {{ config(\n--     materialized='incremental',\n--     incremental_strategy='microbatch',\n--     event_time='event_timestamp',\n--     begin='2024-01-01',\n--     batch_size='day'\n-- ) }}\n-- select event_id, event_type, user_id, event_timestamp\n-- from {{ ref('stg_events') }}\n",
+        "language": "sql",
+        "breakdown": "With insert_overwrite and partition_by on event_date, dbt computes the new rows, determines which date partitions they touch (the last 3 days here), and replaces those whole partitions atomically - no row-level matching, so late data within a day is handled by rewriting the day. cluster_by improves scan pruning within a partition. The commented microbatch variant declares event_time, a begin date, and batch_size='day'; dbt then runs one bounded batch per day, overwriting each day's window independently, which makes backfills and reprocessing retryable and parallel without a giant merge.",
+        "expectedOutput": "`1 of 1 OK created sql incremental model analytics.fct_events [SCRIPT (3 partitions overwritten, 9,441,207 rows) in 22.8s]`. Microbatch: `... [MICROBATCH 3 batches (2026-06-30, 2026-07-01, 2026-07-02) in 18.4s]`.",
+        "commonIssues": "insert_overwrite requires partition_by; without it BigQuery falls back to a full-table replace. A lookback narrower than actual late-data delay leaves stale partitions untouched. Mixing insert_overwrite with a unique_key does nothing useful - overwrite works at partition granularity, not row.",
+        "optimizationTips": "Choose partition granularity (day vs hour) to match query and reload patterns; keep clustered columns high-cardinality/filterable; for microbatch, set batch_size to match how you reprocess and use --event-time-start/--event-time-end to backfill a range."
+      },
+      {
+        "title": "Running incremental models from the CLI",
+        "overview": "Everyday commands to run an incremental model, force a full rebuild, and target changed models via state comparison.",
+        "code": "# Normal incremental run: processes only new/changed rows\ndbt run --select fct_orders\n\n# Force a complete rebuild (CREATE OR REPLACE TABLE from scratch)\ndbt run --full-refresh --select fct_orders\n\n# Build (run + test) everything tagged incremental\ndbt build --select tag:incremental\n\n# Run only models changed vs a stored manifest, plus their children\ndbt run --select state:modified+ --state ./prod-artifacts\n\n# Inspect the compiled SQL / preview rows for a model\ndbt show --select fct_orders --limit 5\n",
+        "language": "bash",
+        "breakdown": "`dbt run --select fct_orders` executes the model in incremental mode (is_incremental() true if the table exists). `--full-refresh` drops/recreates the table, ignoring the incremental filter - use it after changing model logic. `dbt build --select tag:incremental` runs and tests every model carrying that tag in one command. `state:modified+` compares the current project to a saved manifest and runs only changed models and their downstream children, a common CI/production pattern. `dbt show` compiles and previews the model's output without materializing, useful for debugging the incremental SELECT.",
+        "expectedOutput": "`Running with dbt=1.9.x`\n`1 of 1 START sql incremental model analytics.fct_orders ...`\n`1 of 1 OK created sql incremental model analytics.fct_orders [MERGE (18,204 rows) in 3.1s]`\n`Finished running 1 incremental model in 4.06s. Completed successfully.`",
+        "commonIssues": "Scheduling --full-refresh by habit defeats the purpose and inflates cost. state:modified+ needs a valid --state manifest from a prior/prod run or it selects nothing. Running a model that references an unbuilt upstream fails; use +/build to include dependencies.",
+        "optimizationTips": "Use tags and state:modified+ so CI only rebuilds what changed; reserve --full-refresh for logic changes; use `dbt build` to run models and their tests together for safer deploys."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A product analytics team needs an events fact table refreshed every 30 minutes to power funnels and dashboards. The raw events table grows by ~10 million rows/day and already holds over 4 billion rows; a full rebuild scans terabytes, costs hundreds of dollars per run, and misses the freshness SLA. Some events also arrive late (mobile clients batch offline events), so the pipeline must capture stragglers without creating duplicates.",
+    "inputData": "A partitioned staging model stg_events (from raw clickstream) with columns event_id, event_type, user_id, event_timestamp, and properties. Events are append-mostly but occasionally arrive 1-2 days late; event_id is unique per event.",
+    "architecture": "raw.events -> stg_events (view) -> fct_events (incremental, merge on event_id, 3-day lookback, partitioned by event_date) -> downstream marts (funnels, retention). dbt runs on a 30-minute schedule via the orchestrator; state:modified+ is used in CI.",
+    "processingSteps": [
+      "1. First deploy: fct_events does not exist, so is_incremental() is false and dbt runs CREATE TABLE fct_events AS (full SELECT over all 4B rows), building the initial partitioned table once.",
+      "2. Every 30 minutes `dbt run --select fct_events` runs; the table now exists, is_incremental() is true, and dbt compiles `where event_timestamp >= dateadd(day, -3, max(event_timestamp))`, scanning only recent partitions.",
+      "3. dbt materializes the filtered rows to a staging relation, then MERGEs into fct_events on event_id: genuinely new events are inserted, and any event_id that reappears (a late-arriving straggler already loaded) is updated in place - never duplicated.",
+      "4. on_schema_change='append_new_columns' means when the product team adds a new event property column, dbt ALTERs fct_events to add it automatically without a manual rebuild.",
+      "5. A weekly `dbt run --full-refresh --select fct_events` (off-peak) rebuilds from scratch to absorb any historical corrections and validate that the incremental logic still reproduces the full table."
+    ],
+    "output": "A continuously fresh, partitioned fct_events table where each 30-minute run typically merges tens of thousands of rows in a few seconds, with late events correctly captured and no duplicates.",
+    "monitoring": "Emit rows_inserted, rows_updated, bytes_scanned, run_duration, and freshness_gap (now - max(event_timestamp)) per run; alert if bytes_scanned spikes (a broken guard causing a near-full scan) or freshness_gap exceeds the 30-minute SLA.",
+    "errorHandling": "Because the merge is idempotent and source data is immutable, a failed run is simply retried and reconverges. The lookback window covers late data; if a batch fails repeatedly, the microbatch strategy (or a targeted --full-refresh of recent partitions via insert_overwrite) isolates and reprocesses only the affected window.",
+    "finalResult": "A billion-row fact table that refreshes in seconds every 30 minutes at a tiny fraction of full-rebuild cost, tolerates late-arriving events without duplicates, adapts to new columns automatically, and remains fully reproducible via --full-refresh - meeting the freshness SLA while keeping warehouse spend flat as history grows."
+  },
+  "industryUseCases": [
+    {
+      "company": "Consumer product / clickstream analytics (e.g. a mobile app company)",
+      "problem": "Billions of clickstream events grow daily and must feed near-real-time funnels; full rebuilds are far too slow and expensive to run on a tight schedule.",
+      "solution": "An incremental fct_events model partitioned by event_date using insert_overwrite (or merge on event_id) with a lookback window to capture events batched from offline mobile clients.",
+      "benefits": "Sub-minute refreshes on a huge table, correct handling of late mobile events, and warehouse cost proportional to daily volume rather than total history."
+    },
+    {
+      "company": "SaaS / subscription business (e.g. a billing platform)",
+      "problem": "Order and subscription facts are updated (status changes, refunds, plan upgrades) after initial creation, so pure append would duplicate and a full rebuild is costly at scale.",
+      "solution": "An incremental fct_orders model with merge on unique_key='order_id' and merge_update_columns to update only mutable fields (status, amount) when a row is re-processed.",
+      "benefits": "Idempotent, correct updates to existing orders with no duplicates, fast refreshes, and clean recovery via --full-refresh after logic changes."
+    },
+    {
+      "company": "Observability / log analytics (e.g. an infrastructure monitoring vendor)",
+      "problem": "Enormous append-only log/metric tables must stay queryable and fresh while ingesting massive continuous volume with occasional out-of-order arrival.",
+      "solution": "A microbatch incremental model keyed on event_time with batch_size='hour', so each hourly batch is built independently and backfills/reprocessing are bounded and parallel.",
+      "benefits": "Bounded, retryable batches enable safe backfills and reprocessing of specific hours, high throughput, and predictable per-batch cost at extreme scale."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "Scale by ensuring the incremental filter prunes on a partitioned/clustered column (event_date/event_timestamp) so only the new slice is scanned; use BigQuery partition_by + insert_overwrite or Snowflake clustering + merge, and adopt microbatch with a tuned batch_size so a single run and any backfill remain bounded regardless of total table size.",
+    "faultTolerance": "Keep source data immutable and runs idempotent (merge/insert_overwrite reconverge on retry). With microbatch, a failed batch is retried in isolation; without it, re-running over the same lookback window is safe because the unique_key merge overwrites rather than duplicates.",
+    "highAvailability": "insert_overwrite and merge apply changes atomically at partition/statement level, so consumers always read a consistent table state; staging-then-apply means a mid-run failure leaves the target unchanged rather than partially updated.",
+    "disasterRecovery": "Because source data is immutable and the model is deterministic, --full-refresh reproduces the entire table from scratch; store dbt artifacts (manifest) and keep raw/staging data retained long enough to rebuild any window if the target is lost or found to be corrupt.",
+    "performanceOptimization": "Use the warehouse-native strategy (merge on Snowflake/BigQuery/Databricks, delete+insert on Redshift/Postgres, insert_overwrite for partition reloads), keep the lookback window minimal, cluster/index on the merge key, and use merge_update_columns to avoid rewriting columns that never change.",
+    "costOptimization": "Never full-refresh on a routine schedule; make sure the filter hits a pruned column so scanned bytes stay small; reserve --full-refresh for logic changes or corrections and run it off-peak. For microbatch, right-size batch_size to balance parallelism against per-batch overhead.",
+    "securityConsiderations": "Propagate the same grants and row-access/masking policies from source to the incremental target, avoid persisting sensitive columns in long-lived staging relations, and restrict --full-refresh in production since it is expensive and can disrupt downstream consumers.",
+    "monitoringAndObservability": "Track rows inserted/updated, bytes/partitions scanned, run duration, and freshness gap per run; a sudden jump in scanned bytes usually signals a broken is_incremental() guard doing a near-full scan, and a growing freshness gap signals a stalled schedule or missed lookback.",
+    "dataQualityValidation": "Add dbt tests (unique and not_null on the unique_key, relationships to dimensions, accepted_values on status/type) so a broken merge or duplicate is caught; use dbt build to run models and tests together so failures block promotion.",
+    "loggingAndAlerting": "Log the compiled incremental SQL and per-run row/byte counts; alert on scanned-bytes spikes, freshness-gap SLA breaches, unique_key test failures (indicating duplicates), and repeated batch failures under microbatch."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Always guard the incremental filter with {% if is_incremental() %}** so the model does a correct full build on first run and processes only new rows thereafter.",
+      "**Set a unique_key and use merge (or delete+insert)** for any table where rows can be updated or re-processed, making runs idempotent and duplicate-free.",
+      "**Add a lookback window** (e.g. max(event_time) minus a few days) to capture late-arriving data instead of a strict greater-than filter.",
+      "**Filter on a partitioned/clustered column** so the warehouse prunes to the new slice, and choose the incremental_strategy that is native to your warehouse."
+    ],
+    "engineeringStandards": [
+      "Configure on_schema_change explicitly (append_new_columns or sync_all_columns) so evolving source columns are handled predictably rather than silently dropped.",
+      "Ensure the model's SELECT is correct in both full-build and incremental modes so a --full-refresh reproduces the same table exactly.",
+      "Test the unique_key with dbt's unique and not_null tests, and run models with dbt build so tests gate deployment."
+    ],
+    "designRecommendations": [
+      "Prefer merge on Snowflake/BigQuery/Databricks, delete+insert on Redshift/Postgres, and insert_overwrite (with partition_by) for partitioned time-series reloads.",
+      "Adopt the microbatch strategy for very large time-series tables to make backfills and reprocessing bounded, retryable, and parallel.",
+      "Keep raw/staging sources immutable so any incremental window can be safely rebuilt or reprocessed."
+    ],
+    "namingConventions": [
+      "Prefix incremental fact models with fct_ (e.g. fct_orders, fct_events) and staging models with stg_ to make materialization intent clear.",
+      "Name the timestamp column consistently (event_timestamp/updated_at) and use it uniformly for the incremental filter across models.",
+      "Tag incremental models with a tag like 'incremental' so they can be selected/built as a group (dbt build --select tag:incremental)."
+    ],
+    "documentationStandards": [
+      "Document the unique_key, incremental_strategy, and lookback window in the model's YAML description so operators understand its behavior.",
+      "Note when and why a --full-refresh is required (e.g. after changing the SELECT logic) in the model docs.",
+      "Document the partition/cluster keys and expected per-run row/byte volume so anomalies are easy to spot."
+    ],
+    "testingStrategies": [
+      "Add unique and not_null tests on the unique_key to catch duplicates or nulls introduced by a broken merge.",
+      "Test both modes: run once to full-build, then run again to exercise the incremental path, and verify counts and no duplicates.",
+      "Simulate late-arriving and re-processed rows to confirm the lookback window plus merge updates in place rather than duplicating."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Forgetting the {% if is_incremental() %} guard around the WHERE filter.",
+      "whyItHappens": "Developers copy a filter that references max(event_time) but leave it unconditional, or omit the guard entirely while prototyping on an empty table.",
+      "impact": "Without the guard the model either rebuilds the full table every run (no cost savings) or errors on the first run because {{ this }} has no rows to take a max of; an unconditional filter can also skip the initial full build.",
+      "correctApproach": "Wrap the incremental-only filter in {% if is_incremental() %} ... {% endif %} so it is applied only on warm runs, letting the first run build the full table."
+    },
+    {
+      "mistake": "Using a strict timestamp filter (event_time > max) with no lookback window.",
+      "whyItHappens": "It looks correct and is the simplest pattern; the assumption that data always arrives in time order is easy to make.",
+      "impact": "Late-arriving records with a timestamp older than the current max are filtered out permanently, silently dropping data with no error - a subtle correctness bug.",
+      "correctApproach": "Use a lookback window (event_time >= max minus an interval) combined with unique_key + merge so overlapping rows are reprocessed and overwritten rather than lost or duplicated."
+    },
+    {
+      "mistake": "Choosing append (or omitting unique_key) for a table whose rows can change or be reprocessed.",
+      "whyItHappens": "append is the default mental model for 'incremental' and the simplest strategy, so it is picked without considering updates or reruns.",
+      "impact": "Re-processing the same source rows inserts duplicates, inflating counts and corrupting aggregates; updates to existing rows never take effect.",
+      "correctApproach": "Set a unique_key and use incremental_strategy='merge' (or delete+insert) so re-processed rows update in place, keeping the table idempotent and correct."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "How new rows are applied",
+      "optionA": "merge (unique_key)",
+      "optionB": "insert_overwrite (partition_by)",
+      "explanation": "merge matches rows on a unique_key and updates matched rows while inserting new ones - ideal when individual rows can be updated or corrected (orders, subscriptions) and available natively on Snowflake/BigQuery/Databricks. insert_overwrite works at partition granularity: it replaces whole partitions present in the new data with no row-level matching, which is faster and cleaner for append-mostly time-series where you reload entire days, and is the go-to on BigQuery/Spark with partition_by. Choose merge for mutable, row-level data and insert_overwrite for partitioned, reload-by-window data."
+    },
+    {
+      "feature": "Full rebuild vs incremental refresh",
+      "optionA": "incremental run (only new rows)",
+      "optionB": "--full-refresh (rebuild from scratch)",
+      "explanation": "A normal incremental run processes only the new/changed slice, so it is fast and cheap and is what you schedule routinely. --full-refresh drops and recreates the entire table via CREATE OR REPLACE, scanning all history - expensive but necessary after you change the model's SELECT logic, fix a historical bug, or need to guarantee the table matches current code. Best practice is to run incrementally on schedule and reserve --full-refresh for logic changes or corrections, ideally off-peak."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What is an incremental model in dbt and why would you use one?",
+        "answer": "An incremental model is materialized as a persistent table that dbt builds fully on the first run and then, on subsequent runs, updates by processing only new or changed rows instead of rebuilding the whole table. You use it for large, append-mostly tables (events, logs, facts) where a full rebuild would be too slow and expensive, so runtime and cost scale with daily volume rather than total table size.",
+        "explanation": "Emphasize the two run modes (full build first, incremental after) and the motivation: avoiding full rebuilds of huge tables to save time and warehouse cost."
+      },
+      {
+        "question": "What does the is_incremental() macro do?",
+        "answer": "is_incremental() returns true only when the target table already exists and the run is not a --full-refresh. It is used to wrap the WHERE filter that limits the model to new rows, so the filter is applied on warm runs but skipped on the first run (or a full refresh), when dbt builds the entire table.",
+        "explanation": "The key point is that it distinguishes the cold-start full build from warm incremental runs; the filter must be conditional on it."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "What is unique_key for, and what happens if you omit it?",
+        "answer": "unique_key names the column(s) that uniquely identify a row so dbt can update/replace existing rows via merge or delete+insert instead of only inserting. If you omit it (or use the append strategy), re-processing the same source rows appends duplicates and updates to existing rows never take effect, so the table can become incorrect.",
+        "explanation": "Tie it to idempotency: with unique_key + merge, reruns and late corrections overwrite rather than duplicate."
+      },
+      {
+        "question": "How do incremental_strategy options differ across warehouses?",
+        "answer": "merge (match on unique_key, update+insert) is the default and best on Snowflake, BigQuery, and Databricks. delete+insert (delete matching keys, then insert) is used on Redshift and Postgres which lack efficient MERGE. insert_overwrite replaces whole partitions and is ideal on BigQuery (with partition_by) and Spark. append only inserts. microbatch splits the run into time batches by event_time.",
+        "explanation": "Show you know the strategy should match the warehouse's native efficient operation and the data's mutability."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "How do you handle late-arriving / out-of-order data in an incremental model?",
+        "answer": "Replace a strict event_time > max filter with a lookback window: filter on event_time >= max(event_time) minus an interval (e.g. 3 days), reprocessing a small overlapping window each run. Combine it with a unique_key and merge so reprocessed rows overwrite rather than duplicate. On partitioned data, insert_overwrite reloads affected partitions cleanly, and the microbatch strategy lets you reprocess specific time batches directly.",
+        "explanation": "The interviewer wants the lookback-window idea plus idempotency via merge/overwrite so late data is captured without duplication."
+      },
+      {
+        "question": "When and why would you run --full-refresh, and what are the risks?",
+        "answer": "You run --full-refresh after changing the model's SELECT logic, fixing a historical bug, or when you need the table to exactly match current code - it drops and recreates the table over all history. The risks are cost (it scans everything, potentially terabytes) and disruption to downstream consumers, so it should be reserved for logic changes/corrections, run off-peak, and restricted in production.",
+        "explanation": "Demonstrate awareness that incremental models depend on prior runs and that full-refresh is the reconciliation/escape hatch with a real cost."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your incremental fct_orders table is showing duplicate order_ids and inflated revenue after you started reprocessing a source that occasionally re-emits orders. What went wrong and how do you fix it?",
+        "thinkingProcess": "Duplicates on reprocessing point to an append strategy (or missing unique_key) - each re-emitted order is inserted again rather than matched. The fix is to make the run idempotent by matching on the order identifier and updating in place. I also need to confirm the incremental filter isn't so tight that it misses/duplicates around boundaries.",
+        "expectedAnswer": "Set unique_key='order_id' and switch incremental_strategy to 'merge' (or delete+insert on Redshift) so re-emitted orders update the existing row instead of inserting a duplicate. Add unique/not_null dbt tests on order_id to catch regressions, use a lookback window with the merge so boundary/late rows are overwritten, and run a one-time --full-refresh to clean out the existing duplicates."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design a dbt pipeline that keeps a 4-billion-row events fact table fresh every 30 minutes at low cost, tolerating late-arriving mobile events without duplicates.",
+        "designApproach": "Model fct_events as incremental, partitioned by event_date and clustered on event_type. Use merge on unique_key='event_id' (or insert_overwrite of recent partitions) with a lookback window (max(event_timestamp) minus a few days) guarded by is_incremental(). Schedule dbt run every 30 minutes; use on_schema_change='append_new_columns' for new properties, add unique/not_null tests on event_id, and run a periodic off-peak --full-refresh for reconciliation.",
+        "tradeOffs": "merge handles row-level late corrections but costs more than insert_overwrite; insert_overwrite is cheaper and cleaner for whole-day reloads but only works at partition granularity. A larger lookback captures more late data at higher scan cost; microbatch adds bounded/retryable batches at the price of more moving parts.",
+        "scalingStrategy": "Ensure the filter prunes on the partition key so scanned bytes stay proportional to the lookback window, not total history; adopt the microbatch strategy with batch_size='hour' for parallel, retryable batches and backfills; keep source data immutable so any window can be rebuilt, and monitor scanned bytes and freshness gap to catch a broken guard early."
+      }
+    ],
+    "followUpQuestions": [
+      "What is the difference between the merge, delete+insert, and insert_overwrite strategies?",
+      "How does on_schema_change (ignore/append_new_columns/sync_all_columns/fail) change an incremental run?",
+      "What does the {{ this }} relation refer to, and how is it used in an incremental filter?",
+      "How does the microbatch strategy (event_time, begin, batch_size) improve backfills over a classic merge?",
+      "How do merge_update_columns and merge_exclude_columns control which columns a merge overwrites?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "An incremental model builds a table fully on the first run, then uses is_incremental() to process only new/changed rows and apply them via a strategy (append/merge/delete+insert/insert_overwrite/microbatch), avoiding costly full rebuilds of huge tables.",
+    "keyConcepts": [
+      "config(materialized='incremental'); is_incremental() is true only on warm, non-full-refresh runs.",
+      "Guard the filter: {% if is_incremental() %} where event_time > (select max(event_time) from {{ this }}) {% endif %}.",
+      "unique_key + merge/delete+insert makes runs idempotent (update instead of duplicate); append only inserts.",
+      "Strategy per warehouse: merge (Snowflake/BigQuery/Databricks), delete+insert (Redshift/Postgres), insert_overwrite (BigQuery/Spark), microbatch (time batches).",
+      "Use a lookback window for late data; on_schema_change handles new columns; --full-refresh rebuilds from scratch."
+    ],
+    "formulas": [],
+    "commands": [
+      "dbt run --select events",
+      "dbt run --full-refresh --select events",
+      "dbt build --select tag:incremental",
+      "dbt run --select state:modified+",
+      "dbt show --select events"
+    ],
+    "interviewPoints": [
+      "Two run modes: full build first (is_incremental() false), incremental after (true).",
+      "unique_key + merge = idempotent updates; append duplicates on reprocessing.",
+      "Late data needs a lookback window plus merge/insert_overwrite, not a strict > max filter.",
+      "Pick incremental_strategy to match the warehouse's native efficient write.",
+      "--full-refresh rebuilds everything - reserve it for logic changes/corrections, it is expensive."
+    ],
+    "quickNotes": [
+      "{{ this }} is the model's own target table; use it for select max(event_time).",
+      "insert_overwrite needs partition_by; it replaces whole partitions, not rows.",
+      "on_schema_change='append_new_columns' adds new columns automatically; 'fail' blocks on drift.",
+      "microbatch (event_time, begin, batch_size) splits runs into bounded, retryable time batches.",
+      "merge_update_columns / merge_exclude_columns limit which columns a merge overwrites."
+    ]
+  },
+  "keyTakeaways": [
+    "Incremental models build a table fully once and then process only new/changed rows on later runs, turning an O(all history) rebuild into an O(new rows) operation so huge event and fact tables stay fresh cheaply.",
+    "The pattern hinges on is_incremental() guarding a filter like `where event_time > (select max(event_time) from {{ this }})`; the guard makes the first run a full build and every later run incremental.",
+    "Use a unique_key with incremental_strategy='merge' (or delete+insert) to make runs idempotent - updating or deduping existing rows instead of appending duplicates - and choose the strategy that is native to your warehouse.",
+    "Handle late-arriving data with a lookback window plus merge/insert_overwrite (not a strict greater-than filter), use on_schema_change for evolving columns, and consider the microbatch strategy for bounded, retryable backfills of large time-series data.",
+    "--full-refresh rebuilds the table from scratch and is the escape hatch after logic changes or corrections; keep the model's SELECT correct in both modes, filter on a partitioned/clustered column, and monitor scanned bytes and freshness to catch a broken guard early."
+  ]
+}

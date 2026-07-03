@@ -4789,7 +4789,7 @@ export const sqlTopics: Topic[] = [
   },
   {
     "id": "sql-advanced-11",
-    "title": "Recursive Queries",
+    "title": "Recursive Queries: Hierarchies & Graph Traversal",
     "category": "sql",
     "difficulty": "advanced",
     "concept": {

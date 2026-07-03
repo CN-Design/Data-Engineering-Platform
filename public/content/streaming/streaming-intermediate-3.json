@@ -1,0 +1,413 @@
+{
+  "coreConcept": {
+    "overview": [
+      "Delivery semantics describe the guarantee a pipeline gives about how many times each message is processed: at-most-once (may lose messages, never duplicates), at-least-once (never loses, may duplicate), and exactly-once (each message affects the result once and only once). These are not just Kafka settings but a spectrum of tradeoffs between latency, throughput, complexity, and correctness that you choose per pipeline.",
+      "In practice the guarantee you get is decided by two timing choices working together: the producer's acks and retry settings on the write side, and when the consumer commits its offsets relative to processing on the read side. Committing offsets before processing gives at-most-once; committing after processing gives at-least-once; tying processing and offset commits into a transaction gives exactly-once.",
+      "For real data-engineering pipelines the pragmatic answer is usually at-least-once plus an idempotent downstream sink: you accept that Kafka may replay a record after a failure, but you make the final write (an upsert keyed by a primary key or event id into Postgres, a lake table, or a warehouse) safe to apply more than once, so the observable end state is exactly-once even though delivery is at-least-once."
+    ],
+    "learningObjectives": [
+      "Distinguish at-most-once, at-least-once, and exactly-once semantics and explain the latency/throughput/correctness tradeoffs of each.",
+      "Explain how offset-commit timing (before vs after processing) and producer acks/retries/idempotence determine which guarantee a pipeline actually provides.",
+      "Configure an at-least-once consumer (commit after processing) and understand how to make an at-most-once consumer, and enable the idempotent producer to remove retry duplicates.",
+      "Choose the right semantic for a given pipeline and use idempotent downstream sinks to achieve effectively-exactly-once end state without full Kafka transactions."
+    ],
+    "formalDefinition": "Delivery semantics are the end-to-end processing guarantees of a messaging pipeline. At-most-once means every message is processed zero or one times (loss is possible, duplicates are not), typically achieved by committing consumer offsets before processing or producing with acks=0. At-least-once means every message is processed one or more times (no loss, duplicates possible), achieved by committing offsets only after successful processing with producer retries and acks>=1. Exactly-once means every message affects the result once and only once despite retries and failures, achieved within Kafka by combining the idempotent producer (deduplicating retries) with transactions that atomically bind output writes and consumer-offset commits, and extended to external systems via idempotent or transactional sinks. The guarantee a pipeline delivers is the composition of the producer configuration (acks, retries, enable.idempotence), the consumer offset-commit timing, and the idempotency of the final sink.",
+    "simpleExplanation": "Imagine reading tasks off a to-do list and doing them. At-most-once is crossing off a task the moment you pick it up: if you get interrupted mid-task it never gets done, but you never do it twice. At-least-once is crossing it off only after you finish: you never skip a task, but if you get interrupted after finishing but before crossing it off, you will redo it, so some tasks happen twice. Exactly-once is doing the task and crossing it off in one inseparable action so it can never be half-done, plus the person receiving your work throws away anything they have already received. Most real pipelines use at-least-once but make the receiving side ignore duplicates (an upsert keyed by an id), so even if you redo a task the end result looks like it happened exactly once.",
+    "historicalContext": "Kafka originally provided only at-most-once and at-least-once, and any stronger guarantee had to be built by the application with deduplication tables and idempotency keys. Kafka 0.11 (2017) introduced the idempotent producer and the transactions API (KIP-98), plus read_committed consumers, making exactly-once possible inside Kafka and giving Kafka Streams an exactly_once mode. Kafka 3.0 (2021) made the idempotent producer the default (enable.idempotence=true) and, alongside it, changed producer defaults so durable, no-duplicate writes are the out-of-the-box behavior rather than something you opt into. The practical result for data engineers is that at-least-once with idempotent producers is now the effortless default, and exactly-once is a deliberate, heavier choice for the pipelines that truly need it.",
+    "whyItMatters": {
+      "business": "The right semantic is a correctness and cost decision. Billing, ledger, and inventory pipelines cannot double-count or drop events without financial errors and disputes, so they justify exactly-once or idempotent sinks; analytics on clickstream can tolerate rare duplicates, so paying for exactly-once there just wastes money and adds latency. Choosing consciously per pipeline is what keeps both the numbers and the budget right.",
+      "engineering": "Understanding where the guarantee comes from (acks, offset timing, sink idempotency) lets engineers reason about failures instead of hoping. It turns vague fears about 'losing data' into concrete, testable choices, and it clarifies that a robust and simple pattern, at-least-once plus idempotent upserts, covers most needs without the complexity of full transactions.",
+      "scalability": "At-least-once with idempotent sinks scales trivially because it needs no coordinator or transaction markers, so high-throughput ingestion pipelines can process millions of events per second and simply upsert on a key. Exactly-once via transactions adds coordination overhead, so reserving it for the topics that need it keeps large pipelines fast.",
+      "cost": "At-most-once is cheapest but risks loss; exactly-once is most expensive in latency and broker overhead. At-least-once with idempotent downstream writes is usually the best cost/correctness balance for data pipelines, avoiding both reconciliation costs from duplicates and the overhead of transactions.",
+      "reliability": "Explicit semantics make recovery predictable: an at-least-once consumer reprocesses cleanly from the last committed offset, and an idempotent sink absorbs the resulting duplicates, so a crash or rebalance never produces wrong end state. Knowing the guarantee is what lets you promise a specific recovery behavior."
+    },
+    "coreComponents": [
+      {
+        "name": "Producer acks and retries",
+        "definition": "The producer settings acks (0, 1, or all) and retries that determine whether and how strongly a write is confirmed durable, and whether failed sends are retried.",
+        "purpose": "Control the write-side guarantee: acks=0 can lose data (at-most-once write), acks=all with retries never loses acknowledged data but can duplicate without idempotence.",
+        "responsibilities": "Decide how long to wait for acknowledgment; retry transient failures; with retries enabled, potentially resend a batch that actually succeeded, which is the source of write-side duplicates.",
+        "examples": "A CDC producer with acks=all and retries retries a timed-out send; without idempotence that retry can append the same change event twice."
+      },
+      {
+        "name": "Idempotent producer (enable.idempotence)",
+        "definition": "A producer with enable.idempotence=true (the default since Kafka 3.0) that gets a producer ID and stamps each message with a per-partition sequence number so the broker discards duplicate retried appends.",
+        "purpose": "Remove duplicates caused by producer retries so at-least-once on the write side does not manufacture extra copies from resends.",
+        "responsibilities": "Obtain a producer ID; sequence-number each record; require acks=all and bounded max.in.flight.requests.per.connection (<=5) to preserve ordering; rely on the broker to dedup by (PID, partition, sequence).",
+        "examples": "With enable.idempotence=true, a retried batch after a network blip is recognized by the broker as already written and not appended again."
+      },
+      {
+        "name": "Consumer offset-commit timing",
+        "definition": "The choice of when a consumer commits its position: before processing (at-most-once), after successful processing (at-least-once), or inside a transaction (exactly-once), and whether commits are automatic or manual.",
+        "purpose": "Decide the read-side guarantee, because the committed offset defines where processing resumes after a crash or rebalance.",
+        "responsibilities": "Disable enable.auto.commit for precise control; commit only after downstream side effects succeed for at-least-once; understand that auto-commit ticks on a timer regardless of processing progress.",
+        "examples": "A sink consumer commits offsets only after the batch is written to the lake, so a crash before the write means the batch is reprocessed, not lost."
+      },
+      {
+        "name": "Transactions (intro)",
+        "definition": "The Kafka feature that lets a transactional producer atomically write output and commit consumer offsets together via a transaction coordinator, giving exactly-once for read-process-write inside Kafka.",
+        "purpose": "Provide exactly-once when duplicates are unacceptable and the sink cannot easily be made idempotent, by making output and offset advance an all-or-nothing unit.",
+        "responsibilities": "Use a stable transactional.id, begin/commit/abort transactions, send offsets through the transaction, and require downstream consumers to use isolation.level=read_committed.",
+        "examples": "A stream job reads orders, computes totals, and writes results plus commits input offsets in one transaction so a crash never leaves a partial result."
+      },
+      {
+        "name": "Idempotent downstream sink",
+        "definition": "A final write that is safe to apply more than once, typically a keyed upsert (INSERT ... ON CONFLICT DO UPDATE) or a deduplication on a unique event id in the target store.",
+        "purpose": "Turn at-least-once delivery into an exactly-once end state cheaply, absorbing any duplicates that reprocessing produces without needing Kafka transactions.",
+        "responsibilities": "Key writes on a stable business or event id; make repeated application converge to the same result; be the trust boundary where end-to-end correctness is enforced.",
+        "examples": "A lake sink upserts each CDC change by primary key, so reprocessing the same change after a crash yields the identical row rather than a duplicate."
+      }
+    ],
+    "internalWorking": [
+      "At-most-once is produced by committing the consumer offset (or acknowledging work) before the processing actually completes, or by producing with acks=0. Because the offset has already advanced, a crash mid-processing means that record is never reprocessed and its effect is lost; the upside is no record is ever processed twice and there is no waiting, so latency is minimal.",
+      "At-least-once is produced by committing the offset only after processing and any downstream write succeed, combined with producer retries and acks>=1. If the consumer crashes after processing but before committing, it resumes from the last committed offset and reprocesses the in-flight records, so nothing is lost but those records are handled again, producing duplicates unless the sink deduplicates.",
+      "The idempotent producer eliminates one specific source of duplicates: producer retries. It requests a producer ID (PID) and stamps a per-partition sequence number on each record; the broker tracks the last sequence per (PID, partition) and silently drops any append whose sequence it has already seen, so a retried batch after a timeout is not written twice. It requires acks=all and max.in.flight.requests.per.connection<=5 to preserve ordering, and is on by default since Kafka 3.0.",
+      "Exactly-once inside Kafka combines idempotence with transactions: a transactional producer registers with a coordinator, writes output records, and calls sendOffsetsToTransaction so the consumer offsets commit as part of the same transaction. On commit the coordinator makes the output and the offset advance visible atomically; on abort both are discarded. Consumers must set isolation.level=read_committed so they never read data from uncommitted or aborted transactions.",
+      "End-to-end exactly-once for a pipeline that writes to an external system does not come from Kafka alone, because the external write is outside any Kafka transaction. The common data-engineering pattern is at-least-once delivery plus an idempotent sink: the consumer reprocesses on failure, and the keyed upsert or event-id dedup at the sink absorbs the duplicates, so the final table reflects each event once even though Kafka may deliver it more than once."
+    ],
+    "architectureFlow": "Producer writes with acks and retries (idempotent by default, dedups retries) -> record appended to partition -> consumer polls a batch -> application processes and writes to a downstream sink -> offset-commit timing decides the guarantee: commit before processing (at-most-once, loss on crash) OR commit after successful write (at-least-once, duplicates on crash) OR produce output and commit offsets in one transaction (exactly-once, read_committed downstream) -> idempotent sink (keyed upsert / event-id dedup) absorbs any at-least-once duplicates -> downstream table reflects each event exactly once",
+    "dataFlowWalkthrough": [
+      "1. An idempotent producer (acks=all, enable.idempotence=true) writes CDC change events to a topic; a retried send after a network timeout is deduplicated by the broker via (PID, sequence), so no write-side duplicate is created.",
+      "2. A sink consumer with enable.auto.commit=false polls a batch of change events and begins processing them into a staging buffer for the lake.",
+      "3. The consumer writes the batch to the lake using an upsert keyed on the primary key, so applying the same change twice converges to the same row (idempotent sink).",
+      "4. Only after the upsert succeeds does the consumer commit the offsets for that batch, giving at-least-once: if it had crashed before committing, it would reprocess the batch on restart.",
+      "5. Because the sink is idempotent, any reprocessed batch produces identical rows rather than duplicates, so the lake table reflects each change exactly once even though delivery was at-least-once; no Kafka transaction was required."
+    ],
+    "keyTerminology": [
+      {
+        "term": "At-most-once",
+        "meaning": "A guarantee where each message is processed zero or one time: loss is possible on failure, duplicates never occur, typically from committing offsets before processing or acks=0.",
+        "importance": "It is the fastest option and acceptable only when occasional loss is harmless (some metrics/telemetry); recognizing it prevents accidentally using it for data that must not be lost."
+      },
+      {
+        "term": "At-least-once",
+        "meaning": "A guarantee where each message is processed one or more times: no loss, but duplicates are possible, from committing offsets after processing with retries.",
+        "importance": "It is the practical default for data pipelines and, combined with an idempotent sink, gives correct end state cheaply; knowing it clarifies that the remaining problem to solve is duplicates, not loss."
+      },
+      {
+        "term": "Offset-commit timing",
+        "meaning": "When the consumer commits its position relative to processing, which directly determines whether a pipeline is at-most-once (commit first) or at-least-once (commit last).",
+        "importance": "It is the single most important read-side control; getting it wrong (or leaving auto-commit on) silently changes the guarantee the pipeline actually provides."
+      },
+      {
+        "term": "enable.idempotence",
+        "meaning": "The producer setting (default true since Kafka 3.0) that uses a producer ID and per-partition sequence numbers so the broker discards duplicate retried appends.",
+        "importance": "It removes write-side duplicates from retries so at-least-once does not manufacture extra copies; it is the cheap, always-on first step toward correctness."
+      },
+      {
+        "term": "Idempotent sink",
+        "meaning": "A downstream write designed to be safe to apply repeatedly, typically a keyed upsert or dedup on a unique event id, so duplicates from reprocessing do not change the end result.",
+        "importance": "It is how most pipelines get an exactly-once end state without Kafka transactions, by absorbing at-least-once duplicates at the final write."
+      }
+    ],
+    "importantConcepts": [
+      {
+        "concept": "The guarantee comes from offset-commit timing, not from Kafka magic",
+        "explanation": "Kafka does not decide your semantic for you; you choose it by when you commit offsets and how you configure the producer. Committing before processing yields at-most-once, committing after yields at-least-once, and only wrapping processing and offset commit in a transaction yields exactly-once. Leaving enable.auto.commit=true (the default) means offsets advance on a timer independent of whether processing succeeded, which usually gives at-least-once but with a fuzzy, hard-to-reason-about boundary; for precise control you disable auto-commit and commit explicitly after side effects."
+      },
+      {
+        "concept": "Idempotence solves retry duplicates, not reprocessing duplicates",
+        "explanation": "The idempotent producer only prevents duplicates from a single producer session's retries; it does not stop duplicates that arise when a consumer reprocesses records after a crash under at-least-once. Those reprocessing duplicates are handled either by full Kafka transactions (exactly-once) or, far more commonly, by an idempotent sink. Conflating the two leads teams to believe enabling idempotence gives end-to-end exactly-once when it does not."
+      },
+      {
+        "concept": "At-least-once plus idempotent sink is the pragmatic exactly-once for pipelines",
+        "explanation": "For most data-engineering pipelines writing to a database, lake, or warehouse, the simplest correct design is at-least-once delivery with a keyed upsert at the sink. The consumer reprocesses on failure and the sink converges any duplicate to the same result, giving an exactly-once end state without a transaction coordinator, transactional.ids, or read_committed consumers. It scales better and is easier to operate than full Kafka transactions, and is the right default unless the sink genuinely cannot be made idempotent."
+      },
+      {
+        "concept": "Full exactly-once (transactions) is for atomic multi-write or non-idempotent sinks",
+        "explanation": "Kafka transactions are worth their overhead when you need atomic writes across multiple Kafka topics/partitions tied to offset commits (read-process-write, as in Kafka Streams exactly_once_v2), or when the downstream effect cannot be made idempotent. They add coordinator round-trips, require stable transactional.ids and read_committed consumers, and reduce throughput, so they are a deliberate choice for the subset of pipelines whose correctness cannot be achieved with an idempotent sink alone."
+      }
+    ],
+    "variationsAndTypes": [
+      "**At-most-once (commit-before / acks=0):** Commit offsets before processing or fire-and-forget produce; lowest latency, may lose data on failure, never duplicates. Use only for lossy telemetry.",
+      "**At-least-once (commit-after + retries):** Commit offsets only after processing succeeds, with acks>=1 and retries; never loses data but may reprocess and duplicate. The common default.",
+      "**At-least-once + idempotent sink:** At-least-once delivery with keyed upserts or event-id dedup at the sink so duplicates converge; gives an exactly-once end state cheaply, the pragmatic default for DE pipelines.",
+      "**Exactly-once via transactions (read-process-write):** Transactional producer ties output and offset commit atomically with read_committed consumers; used when duplicates are unacceptable and the sink is not idempotent.",
+      "**Kafka Streams processing.guarantee=exactly_once_v2:** A config-only way to get exactly-once for entire topologies including state stores, built on transactions; used for stateful stream processing that must be exact."
+    ],
+    "advantages": [
+      "**Right-sized correctness:** Choosing the semantic per pipeline avoids both silent data loss and unnecessary transaction overhead, matching guarantee to business need.",
+      "**Simple, scalable default:** At-least-once with an idempotent sink is easy to build, needs no coordinator, and scales to very high throughput while still giving a correct end state.",
+      "**Predictable recovery:** Explicit offset-commit timing makes crash and rebalance behavior deterministic, so you can reason about and test exactly what happens on failure.",
+      "**Free write-side dedup:** The idempotent producer, on by default, removes retry duplicates at no meaningful cost, strengthening every producer automatically."
+    ],
+    "disadvantages": [
+      "**At-most-once risks loss:** Committing before processing silently drops records on failure, which is catastrophic for authoritative data if chosen by accident.",
+      "**At-least-once needs a dedup story:** Without an idempotent sink or transactions, reprocessing produces duplicates that corrupt counts and require reconciliation.",
+      "**Exactly-once costs latency and complexity:** Transactions add coordinator overhead, stable transactional.ids, and read_committed consumers, and are easy to misconfigure.",
+      "**Auto-commit blurs the guarantee:** The default enable.auto.commit=true advances offsets on a timer, making the effective semantic hard to reason about at failure boundaries."
+    ],
+    "tradeOffs": {
+      "whenToUse": "Use at-most-once only for high-volume, low-value, loss-tolerant data like some metrics or debug logs where latency and cost dominate. Use at-least-once plus an idempotent sink for the vast majority of data pipelines (CDC into a lake/warehouse, event ingestion) where the sink can upsert by key. Use full exactly-once (transactions or Kafka Streams exactly_once_v2) when you need atomic multi-topic writes tied to offsets, or when duplicates are unacceptable and the sink cannot be made idempotent.",
+      "whenToAvoid": "Avoid at-most-once for any data treated as authoritative, since silent loss is usually worse than duplicates. Avoid full Kafka transactions when a simple idempotent upsert already gives a correct end state, because the coordinator overhead, transactional.id management, and read_committed requirement add complexity and latency you do not need."
+    },
+    "realWorldAnalogy": "Think of shipping packages. At-most-once is dropping a package at the door and leaving immediately: fast, but if no one is home it is lost, and it is never delivered twice. At-least-once is requiring a signature and re-attempting delivery until you get one: nothing is lost, but a confused courier might deliver the same package twice. Exactly-once is delivering and logging the signature as one inseparable act, plus a mailroom that checks a tracking number and refuses any package it has already logged (the idempotent sink). Most warehouses run at-least-once shipping but rely on the mailroom's tracking-number check, so even a re-attempted delivery only ever counts once.",
+    "commonMisconceptions": [
+      {
+        "myth": "Turning on enable.idempotence gives my pipeline exactly-once.",
+        "reality": "Idempotence only removes duplicates from a single producer's retries. It does nothing about consumer reprocessing under at-least-once; end-to-end exactly-once needs either Kafka transactions or an idempotent downstream sink."
+      },
+      {
+        "myth": "At-least-once means I will definitely get duplicates, so my data is unreliable.",
+        "reality": "Duplicates only occur on failure/reprocessing, and an idempotent sink (keyed upsert or event-id dedup) makes them harmless, so the end state is exactly-once even though delivery is at-least-once."
+      },
+      {
+        "myth": "The default consumer configuration gives me exactly-once out of the box.",
+        "reality": "The default enable.auto.commit=true gives a loose at-least-once (offsets advance on a timer), not exactly-once. For precise semantics you disable auto-commit and commit explicitly after processing, and add transactions or an idempotent sink for exactly-once."
+      }
+    ],
+    "productionConsiderations": {
+      "scalability": "At-least-once with idempotent sinks scales almost linearly with partitions and needs no coordinator, so prefer it for high-throughput ingestion; reserve transactions for the pipelines that require them since coordinator round-trips and markers add overhead that limits per-partition throughput.",
+      "reliability": "Use acks=all with enable.idempotence=true (default) and retries so the write side never loses acknowledged data or manufactures retry duplicates; disable enable.auto.commit and commit after side effects so recovery from the last committed offset is deterministic.",
+      "faultTolerance": "Design consumers to be safely reprocessable: idempotent sink writes and deterministic processing mean a crash or rebalance replaying records produces identical end state. For transactional pipelines, rely on stable transactional.ids and read_committed consumers so a crash leaves fully committed or fully rolled-back state.",
+      "monitoring": "Track consumer lag, commit rate, and rebalance frequency; for at-least-once measure duplicate rate at the sink (should be near zero in steady state, spiking only around failures) and confirm upserts converge; for transactions track commit/abort rate and read_committed lag.",
+      "security": "Standard Kafka security applies (TLS, SASL, ACLs); for transactional pipelines restrict TransactionalId and IdempotentWrite ACLs; ensure the sink's idempotency key cannot be spoofed to overwrite unrelated rows.",
+      "costOptimization": "Match the semantic to the data's value: at-least-once plus idempotent upserts avoids both reconciliation costs from duplicates and the throughput/latency cost of transactions; do not pay for exactly-once on loss-tolerant telemetry.",
+      "performance": "Keep max.in.flight.requests.per.connection<=5 with idempotence for ordering; batch consumer processing and commit per batch rather than per record to amortize commit overhead; for transactions, size transactions to amortize coordinator round-trips without inflating latency."
+    }
+  },
+  "practicalImplementation": {
+    "codeExamples": [
+      {
+        "title": "At-least-once vs at-most-once consumer (confluent-kafka Python)",
+        "overview": "Show how offset-commit timing alone flips the guarantee: committing after processing gives at-least-once (safe, may reprocess), committing before processing gives at-most-once (fast, may lose). Auto-commit is disabled so the timing is explicit.",
+        "code": "from confluent_kafka import Consumer, KafkaException\n\nconf = {\n    \"bootstrap.servers\": \"localhost:9092\",\n    \"group.id\": \"lake-sink\",\n    \"enable.auto.commit\": False,      # commit explicitly for precise semantics\n    \"auto.offset.reset\": \"earliest\",\n}\nconsumer = Consumer(conf)\nconsumer.subscribe([\"cdc.public.orders\"])\n\nAT_LEAST_ONCE = True  # flip to False to see at-most-once\n\ntry:\n    while True:\n        msg = consumer.poll(1.0)\n        if msg is None:\n            continue\n        if msg.error():\n            raise KafkaException(msg.error())\n\n        if AT_LEAST_ONCE:\n            upsert_to_lake(msg)          # side effect FIRST\n            consumer.commit(msg)         # commit AFTER success -> at-least-once\n            # crash between the two lines => reprocess (duplicate, absorbed by upsert)\n        else:\n            consumer.commit(msg)         # commit BEFORE processing -> at-most-once\n            upsert_to_lake(msg)          # crash here => record is LOST\nfinally:\n    consumer.close()\n\n\ndef upsert_to_lake(msg):\n    # idempotent sink: keyed upsert so reprocessing converges to the same row\n    # INSERT ... ON CONFLICT (order_id) DO UPDATE SET ...\n    ...\n",
+        "language": "python",
+        "breakdown": "enable.auto.commit is disabled so the code, not a timer, decides when the offset advances. In the at-least-once branch the record is written to the lake first and only then is the offset committed, so a crash between the two causes reprocessing (a duplicate that the keyed upsert absorbs). In the at-most-once branch the offset is committed before the write, so a crash after the commit but before the write loses the record permanently. The identical code with only the order of two lines swapped produces opposite guarantees, illustrating that offset-commit timing is the control.",
+        "expectedOutput": "In steady state both branches process each order once and the lake table matches the source. If you kill the process mid-loop under at-least-once, on restart it resumes from the last committed offset, reprocesses the in-flight record, and the upsert produces the identical row (no visible duplicate). Under at-most-once, a kill after commit but before upsert leaves that order missing from the lake, demonstrating silent loss.",
+        "commonIssues": "Leaving enable.auto.commit=true, which advances offsets on a timer and gives a fuzzy at-least-once that is hard to reason about; committing per message hurting throughput (commit per batch instead); assuming at-least-once is safe without an idempotent sink, so reprocessing creates real duplicates; forgetting that at-most-once loses data silently, which is dangerous for authoritative streams.",
+        "optimizationTips": "Commit offsets once per processed batch rather than per record to amortize commit overhead; always pair at-least-once with a keyed upsert or event-id dedup at the sink so duplicates are harmless; use auto.offset.reset deliberately; for higher throughput process a batch (consumer.consume(num_messages=...)) then upsert and commit the batch atomically at the sink."
+      },
+      {
+        "title": "Idempotent producer configuration (Python and CLI)",
+        "overview": "Enable the idempotent producer so retries never create write-side duplicates, and verify the required companion settings. This is the always-on first step that makes at-least-once safe on the write side.",
+        "code": "from confluent_kafka import Producer\n\nproducer = Producer({\n    \"bootstrap.servers\": \"localhost:9092\",\n    \"enable.idempotence\": True,   # default true since Kafka 3.0; dedups retries\n    \"acks\": \"all\",                # required by idempotence\n    \"retries\": 2147483647,        # retry safely; broker dedups by (PID, seq)\n    \"max.in.flight.requests.per.connection\": 5,  # <=5 to preserve ordering\n})\n\nfor change in read_cdc_changes():\n    producer.produce(\"cdc.public.orders\", key=change.pk, value=change.payload)\nproducer.flush()\n\n# --- verify from the CLI that a durable, idempotent write path is in place ---\n# min.insync.replicas=2 so acks=all needs two in-sync copies (durable + no dup)\n# kafka-configs.sh --bootstrap-server localhost:9092 \\\n#   --entity-type topics --entity-name cdc.public.orders \\\n#   --alter --add-config min.insync.replicas=2\n",
+        "language": "python",
+        "breakdown": "enable.idempotence=true makes the broker assign a producer ID and dedup retried appends by per-partition sequence number, so even with retries set to effectively infinite a timed-out-but-actually-succeeded send is not written twice. acks=all and max.in.flight.requests.per.connection<=5 are required so ordering is preserved under retries; these are the defaults in modern Kafka. The commented CLI sets min.insync.replicas=2 on the topic so an acks=all write needs two in-sync replicas, combining durability with the no-duplicate guarantee. This gives a safe write side on which at-least-once (plus an idempotent sink) or transactions can be built.",
+        "expectedOutput": "The producer sends all changes and flush() returns once they are acknowledged; retried sends after transient errors do not create duplicate records in the topic (a consumer sees each change once per production). The kafka-configs.sh command prints 'Completed updating config for topic cdc.public.orders.'. If enable.idempotence were false, an injected retry could produce a visible duplicate record.",
+        "commonIssues": "Manually setting acks=1 or max.in.flight>5 with idempotence enabled causes a configuration error or disables the guarantee; assuming idempotence also removes consumer-reprocessing duplicates (it does not); disabling retries, which turns transient errors into lost sends (at-most-once write); not setting min.insync.replicas, so acks=all can still acknowledge a single copy.",
+        "optimizationTips": "Keep enable.idempotence=true (the default) on every producer, it is nearly free; leave retries high and rely on delivery.timeout.ms to bound total attempt time; pair with min.insync.replicas=2 and RF=3 for durability; key records on a stable business/primary key so downstream idempotent sinks can dedup and so ordering per key is preserved."
+      }
+    ]
+  },
+  "endToEndExample": {
+    "businessProblem": "A company streams CDC change events from Postgres into a lakehouse for analytics. Analysts and finance query the lake tables, so no change event may be lost, and duplicate rows would corrupt counts and revenue. The team wants correctness without the operational weight of full Kafka transactions if a simpler design suffices.",
+    "inputData": "Topic cdc.public.orders receives one Kafka record per row-level change from a Debezium Postgres connector, keyed by the order primary key, at a few thousand events per second with sale-time bursts.",
+    "architecture": "The producer uses acks=all with enable.idempotence=true (so retries never duplicate on the write side) and min.insync.replicas=2. A sink consumer runs with enable.auto.commit=false, processes each batch, upserts by primary key into the lake (idempotent sink), and only then commits offsets, giving at-least-once delivery with an exactly-once end state. Full transactions are deliberately not used because the keyed upsert already makes duplicates harmless.",
+    "processingSteps": [
+      "1. The idempotent producer writes change events; a retried send after a timeout is deduplicated by the broker, so the topic has no write-side duplicates.",
+      "2. The sink consumer polls a batch of change events with auto-commit disabled and stages them for the lake.",
+      "3. The consumer upserts the batch into the lake keyed on the order primary key, so applying the same change again produces the identical row.",
+      "4. Only after the upsert succeeds does the consumer commit the batch's offsets, so a crash before commit causes reprocessing rather than loss.",
+      "5. On any crash or rebalance the consumer resumes from the last committed offset and reprocesses in-flight records; the idempotent upsert absorbs the duplicates, so the lake reflects each change exactly once."
+    ],
+    "output": "The lake tables hold each order change exactly once and never miss a change, matching the Postgres source, achieved with at-least-once delivery plus an idempotent sink and without any Kafka transaction coordinator.",
+    "monitoring": "Dashboards track consumer lag, commit rate, rebalance frequency, and a sink-side duplicate-detection metric (upsert conflicts), which should be near zero in steady state and spike only briefly around failures; producer error/retry rate is watched to confirm idempotence is holding.",
+    "errorHandling": "A crash after processing but before commit causes safe reprocessing (duplicates absorbed by the upsert). A crash before processing loses nothing because the offset was not committed. Producer transient errors are retried and deduplicated by idempotence. If the sink write fails, offsets are not committed, so the batch is retried until the write succeeds.",
+    "finalResult": "The pipeline delivers an exactly-once end state (no loss, no duplicate rows) using the simple, scalable at-least-once-plus-idempotent-sink pattern, avoiding the coordinator overhead and configuration complexity of full transactions while still satisfying finance's correctness requirement."
+  },
+  "industryUseCases": [
+    {
+      "company": "CDC-to-lakehouse data platforms",
+      "problem": "Streaming database changes into a lake must not lose events and must not create duplicate rows that corrupt analytics, but teams want to avoid heavy transaction machinery if possible.",
+      "solution": "At-least-once consumers (commit after processing) with idempotent producers on the write side and keyed upserts at the lake sink, so reprocessing on failure converges to the correct rows.",
+      "benefits": "Correct, deduplicated tables at high throughput with a simple, scalable design and no transaction coordinator to operate."
+    },
+    {
+      "company": "Usage metering and billing pipelines",
+      "problem": "Billing by usage cannot double-count events (over-billing) or drop them (under-billing), so the delivery semantic directly affects invoices.",
+      "solution": "Exactly-once processing via Kafka Streams exactly_once_v2 for the aggregation, or at-least-once with event-id dedup at the billing store when the sink can enforce uniqueness on an event id.",
+      "benefits": "Accurate invoices, fewer customer credits from over-billing, and a guarantee matched to the data's high value."
+    },
+    {
+      "company": "Observability and telemetry ingestion",
+      "problem": "High-volume metrics and logs prioritize throughput and cost; occasional loss is acceptable, and paying for exactly-once would be wasteful.",
+      "solution": "At-most-once or loose at-least-once ingestion with cheap producer settings, deliberately trading a small loss risk for lower latency and cost.",
+      "benefits": "Maximum throughput at minimal cost and latency, with the semantic consciously chosen to fit loss-tolerant data."
+    }
+  ],
+  "productionDeepDive": {
+    "scalability": "At-least-once with idempotent sinks scales almost linearly by partition and needs no coordinator, making it the choice for high-throughput ingestion; transactions add coordinator round-trips and markers that cap per-partition throughput, so reserve exactly-once for pipelines that require it and scale those by partition count with exactly_once_v2 to keep producer/marker counts down.",
+    "faultTolerance": "Make consumers safely reprocessable: disable auto-commit, commit after side effects, and use idempotent sink writes and deterministic processing so a crash or rebalance replaying records yields identical end state. For transactional pipelines, stable transactional.ids and read_committed consumers ensure a crash leaves fully committed or fully rolled-back state.",
+    "highAvailability": "Run multiple consumer instances in a group so partitions rebalance to healthy members on failure; because processing is idempotent (or transactional), a rebalance that reprocesses a few records does not corrupt the end state, so availability does not come at the cost of correctness.",
+    "disasterRecovery": "Cross-cluster replication (MirrorMaker 2, Cluster Linking) preserves data but transactional state is cluster-local, so a DR cluster typically treats replicated data as at-least-once and relies on the same idempotent-sink dedup on failover; ensure the sink's idempotency key is stable across clusters so dedup still works after a failover.",
+    "performanceOptimization": "Commit per batch not per record to amortize commit overhead; keep max.in.flight.requests.per.connection<=5 with idempotence for ordering; batch sink writes (bulk upserts) so at-least-once processing stays fast; for transactions, size transactions to amortize coordinator cost without inflating latency.",
+    "costOptimization": "Match semantic to data value: at-least-once plus idempotent upserts avoids reconciliation costs from duplicates and the throughput/latency cost of transactions, while at-most-once suits cheap loss-tolerant telemetry; do not pay transaction overhead where a keyed upsert already gives a correct end state.",
+    "securityConsiderations": "Apply TLS, SASL, and ACLs as standard; for transactional pipelines restrict TransactionalId and IdempotentWrite ACLs; ensure the sink's idempotency key is derived from trusted fields so a malicious or malformed event cannot overwrite unrelated rows via the upsert.",
+    "monitoringAndObservability": "Expose consumer lag, commit rate, rebalance count, producer retry/error rate, and a sink-side duplicate or upsert-conflict metric; for transactions add commit/abort rate and read_committed lag. Alert when duplicate rate stays elevated (indicates a broken idempotent sink) or when lag or rebalances spike.",
+    "dataQualityValidation": "Reconcile source-system event counts against distinct rows in the sink (counts in == distinct keys out) to confirm no loss and no net duplicates; assert that reprocessing a known batch after a forced crash produces identical sink rows; periodically verify the idempotency key is truly unique per logical event.",
+    "loggingAndAlerting": "Log offset commit boundaries with the processed offset range and any sink write failures with the affected keys; for transactions log begin/commit/abort with the transactional.id. Alert on sustained elevated duplicate rate, rising consumer lag, frequent rebalances, and, for transactions, rising abort rate or timeouts."
+  },
+  "bestPractices": {
+    "recommendedPractices": [
+      "**Choose the semantic per pipeline, deliberately:** map at-most-once to loss-tolerant telemetry, at-least-once-plus-idempotent-sink to most data pipelines, and full exactly-once to non-idempotent or atomic-multi-write cases.",
+      "**Disable enable.auto.commit and commit after side effects:** commit offsets only once the downstream write succeeds so at-least-once behaves deterministically on crash.",
+      "**Make the sink idempotent with a keyed upsert or event-id dedup:** absorb reprocessing duplicates so the end state is exactly-once without transactions.",
+      "**Keep enable.idempotence=true and acks=all on every producer:** remove retry duplicates and never acknowledge non-durable writes; it is nearly free and on by default."
+    ],
+    "engineeringStandards": [
+      "Commit offsets per processed batch, not per record, to balance throughput and recovery granularity.",
+      "Key records on a stable business or primary key so downstream idempotent sinks can dedup and per-key ordering is preserved.",
+      "Set min.insync.replicas=2 with RF=3 so acks=all writes are durable across brokers, underpinning any semantic."
+    ],
+    "designRecommendations": [
+      "Prefer at-least-once plus an idempotent sink over Kafka transactions unless the sink cannot be made idempotent or you need atomic multi-topic writes.",
+      "Reserve Kafka Streams exactly_once_v2 for stateful stream processing whose output and state must be exact.",
+      "Isolate loss-tolerant, high-volume telemetry into its own topics/pipelines so cheap semantics do not have to coexist with durable ones."
+    ],
+    "namingConventions": [
+      "Name topics so the intended semantic/value is discoverable (e.g., cdc.public.orders vs metrics.raw.debug).",
+      "Use consistent, descriptive consumer group ids per logical sink so offset ownership and reprocessing scope are clear.",
+      "Name the sink idempotency key explicitly (e.g., order_id, event_uuid) and document it as the dedup key."
+    ],
+    "documentationStandards": [
+      "Document each pipeline's intended semantic and where it comes from (offset-commit timing, producer acks, sink idempotency).",
+      "Record the idempotency key and the exact upsert/dedup logic at each sink so its correctness is auditable.",
+      "Note whether transactions are used and, if so, the transactional.id scheme and read_committed requirement downstream."
+    ],
+    "testingStrategies": [
+      "Kill the consumer between processing and commit and verify at-least-once reprocesses with no loss and the idempotent sink shows no duplicate.",
+      "Inject producer retries and confirm enable.idempotence prevents write-side duplicates in the topic.",
+      "Run a reprocessing/replay of a known batch and assert the sink rows are byte-for-byte identical (idempotency holds)."
+    ]
+  },
+  "commonMistakes": [
+    {
+      "mistake": "Believing enable.idempotence alone gives end-to-end exactly-once.",
+      "whyItHappens": "Idempotence is on by default and named suggestively, so teams assume it covers the whole pipeline including consumer reprocessing.",
+      "impact": "Duplicates still appear when consumers reprocess after crashes or rebalances, corrupting downstream counts despite 'idempotence' being enabled.",
+      "correctApproach": "Treat idempotence as removing only write-side retry duplicates; add an idempotent sink (keyed upsert/event-id dedup) or Kafka transactions to handle reprocessing duplicates for true exactly-once end state."
+    },
+    {
+      "mistake": "Leaving enable.auto.commit=true and assuming precise semantics.",
+      "whyItHappens": "Auto-commit is the default and 'just works', so teams do not realize offsets advance on a timer independent of processing success.",
+      "impact": "The effective guarantee is a fuzzy at-least-once (or even loss if commits fire before processing completes), making failure behavior unpredictable and duplicates or gaps appear unexpectedly.",
+      "correctApproach": "Disable enable.auto.commit and commit explicitly after the downstream side effect succeeds, so the commit boundary and thus the guarantee are precise and testable."
+    },
+    {
+      "mistake": "Using at-most-once (commit before processing) for authoritative data to reduce latency.",
+      "whyItHappens": "Committing early or using acks=0 is faster, and the loss risk is invisible until a failure actually happens.",
+      "impact": "A crash mid-processing silently drops records, so authoritative tables miss events and reconciliations fail, often discovered late during an audit.",
+      "correctApproach": "Use at-least-once (commit after processing) with an idempotent sink for authoritative data; reserve at-most-once for explicitly loss-tolerant telemetry only."
+    }
+  ],
+  "comparisonSection": [
+    {
+      "feature": "Offset-commit timing and its guarantee",
+      "optionA": "Commit before processing (at-most-once)",
+      "optionB": "Commit after processing (at-least-once)",
+      "explanation": "Committing before processing means a crash loses the in-flight record but never duplicates it (fast, lossy). Committing after processing means a crash reprocesses the record (no loss, possible duplicate). At-least-once is the right default for data pipelines because loss is usually worse than duplicates, which an idempotent sink can absorb."
+    },
+    {
+      "feature": "Achieving an exactly-once end state",
+      "optionA": "At-least-once + idempotent sink",
+      "optionB": "Kafka transactions (exactly-once)",
+      "explanation": "At-least-once with a keyed upsert gives an exactly-once end state cheaply, with no coordinator and high throughput, whenever the sink can dedup on a key. Kafka transactions give in-Kafka exactly-once atomically across topics and offsets but add coordinator overhead, stable transactional.ids, and read_committed consumers; use them when the sink is not idempotent or you need atomic multi-write."
+    },
+    {
+      "feature": "Write-side duplicate handling",
+      "optionA": "enable.idempotence=false",
+      "optionB": "enable.idempotence=true (default)",
+      "explanation": "With idempotence off, a producer retry after a timeout can append the same record twice. With it on (the default since Kafka 3.0), the broker deduplicates retries via producer ID and sequence numbers at negligible cost, so retries are safe. It handles only write-side retry duplicates, not consumer reprocessing."
+    }
+  ],
+  "interviewPreparation": {
+    "beginnerQuestions": [
+      {
+        "question": "What are the three delivery semantics and how do they differ?",
+        "answer": "At-most-once processes each message zero or one time: it can lose data but never duplicates (e.g., committing offsets before processing or acks=0). At-least-once processes each message one or more times: no loss but possible duplicates (commit after processing with retries). Exactly-once ensures each message affects the result once and only once, via Kafka transactions or an idempotent sink. At-least-once is the common default.",
+        "explanation": "Interviewers want the clear tradeoff triangle and the recognition that at-least-once trades duplicates for no loss and is the practical default."
+      },
+      {
+        "question": "How does offset-commit timing decide whether a consumer is at-most-once or at-least-once?",
+        "answer": "If the consumer commits its offset before processing, a crash means the record is skipped on restart (at-most-once, possible loss). If it commits only after processing succeeds, a crash means the record is reprocessed on restart (at-least-once, possible duplicate). To control this precisely you disable enable.auto.commit and commit explicitly at the right point.",
+        "explanation": "Tests whether the candidate knows the guarantee is a consequence of when you commit, not a magic Kafka property, and that auto-commit blurs it."
+      }
+    ],
+    "intermediateQuestions": [
+      {
+        "question": "What does enable.idempotence do, and what does it NOT solve?",
+        "answer": "It gives the producer a producer ID and stamps each message with a per-partition sequence number so the broker discards duplicate retried appends, removing write-side duplicates from retries (it requires acks=all and max.in.flight<=5 and is on by default since Kafka 3.0). It does NOT remove duplicates that come from a consumer reprocessing records after a crash under at-least-once; those need transactions or an idempotent sink.",
+        "explanation": "Looks for the precise scope: idempotence fixes retry duplicates only, a very common misconception in interviews."
+      },
+      {
+        "question": "How do you get an exactly-once end state in a CDC-to-database pipeline without full Kafka transactions?",
+        "answer": "Use at-least-once delivery (commit offsets after the write succeeds) with an idempotent sink: write each change with a keyed upsert (INSERT ... ON CONFLICT DO UPDATE) or dedup on a unique event id. Reprocessing after a crash then converges to the same rows, so the database reflects each event exactly once even though delivery is at-least-once, with no coordinator or transactional.id needed.",
+        "explanation": "Rewards the pragmatic pattern most real pipelines use and shows the candidate knows exactly-once end state does not require Kafka transactions."
+      }
+    ],
+    "advancedQuestions": [
+      {
+        "question": "When are Kafka transactions worth their overhead compared with at-least-once plus an idempotent sink?",
+        "answer": "Transactions are worth it when you need atomic writes across multiple Kafka topics/partitions tied to offset commits (read-process-write, as in Kafka Streams exactly_once_v2), or when the downstream effect genuinely cannot be made idempotent (no natural dedup key, or a non-transactional multi-step effect). They add coordinator round-trips, require stable transactional.ids and read_committed consumers, and reduce throughput, so for a simple keyed-upsert sink the idempotent-sink pattern is preferable.",
+        "explanation": "Probes judgment about matching mechanism to need rather than reflexively choosing transactions; strong answers cite the specific cases transactions actually solve."
+      },
+      {
+        "question": "Why can the default consumer configuration surprise you on failure, and how do you make it deterministic?",
+        "answer": "The default enable.auto.commit=true commits offsets on a timer (auto.commit.interval.ms) independent of whether processing finished, so on a crash you can get either reprocessing (duplicates) or, if a commit fired after fetch but before processing, effectively skipped work, making the semantic fuzzy. To make it deterministic, disable auto-commit and commit explicitly only after the side effect succeeds, committing per batch, so the crash boundary is well defined and the guarantee is a clear at-least-once.",
+        "explanation": "Tests deep understanding that auto-commit timing does not align with processing, which causes subtle production bugs."
+      }
+    ],
+    "scenarioBasedQuestions": [
+      {
+        "scenario": "Your at-least-once CDC pipeline is producing occasional duplicate rows in the target Postgres table after consumer rebalances. What is the root cause and how do you fix it without adding Kafka transactions?",
+        "thinkingProcess": "At-least-once inherently reprocesses in-flight records on a rebalance/crash, so duplicates are expected at the delivery layer; the problem is that the sink is not absorbing them. The fix is to make the sink idempotent rather than to chase the delivery layer with transactions. Check whether the writes are plain inserts (which duplicate) versus keyed upserts.",
+        "expectedAnswer": "Explain that at-least-once will replay records on rebalance, so the sink must be idempotent. Convert the sink writes to a keyed upsert (INSERT ... ON CONFLICT (order_id) DO UPDATE) or dedup on a unique event id so reprocessed records converge to the same row. Also confirm offsets are committed only after the write succeeds and per batch. This yields an exactly-once end state without transactions, keeping the pipeline simple and high-throughput."
+      }
+    ],
+    "systemDesignQuestions": [
+      {
+        "problemStatement": "Design the delivery-semantics strategy for a platform that ingests both high-volume clickstream (loss-tolerant) and CDC order changes (must be exactly-once in the lake), on the same Kafka cluster.",
+        "designApproach": "Split into separate topics/pipelines by value. For clickstream, use cheap producer settings and at-most-once or loose at-least-once ingestion prioritizing throughput. For CDC orders, use acks=all with enable.idempotence=true and min.insync.replicas=2 on the write side, and an at-least-once consumer that commits offsets only after a keyed upsert into the lake (idempotent sink), giving an exactly-once end state without transactions. Reserve Kafka transactions/exactly_once_v2 only for any stateful aggregation that cannot use an idempotent sink.",
+        "tradeOffs": "At-least-once plus idempotent sink for CDC avoids coordinator overhead and scales well while guaranteeing correct rows; the cost is that the sink must have a stable dedup key. Cheap at-most-once for clickstream maximizes throughput at the price of rare loss, which is acceptable there. Mixing semantics per topic keeps each pipeline right-sized rather than over-paying for exactly-once everywhere.",
+        "scalingStrategy": "Scale each pipeline by partition count and consumer-group parallelism; commit per batch and bulk-upsert at the sink to keep the CDC path fast; monitor lag, rebalance rate, and sink duplicate/upsert-conflict metrics; only introduce transactions for the specific sub-pipelines that need atomic multi-write, and scale those with exactly_once_v2 to limit producer/marker overhead."
+      }
+    ],
+    "followUpQuestions": [
+      "How does auto.commit.interval.ms interact with processing time to create surprising duplicates or gaps?",
+      "What makes a sink write truly idempotent, and how do you choose a good dedup key for CDC events?",
+      "How does the idempotent producer preserve ordering, and why is max.in.flight.requests.per.connection<=5 required?",
+      "When would you choose Kafka Streams exactly_once_v2 over an idempotent sink in a stateful pipeline?",
+      "How do rebalances affect at-least-once processing, and how do you minimize reprocessing during them?"
+    ]
+  },
+  "cheatSheet": {
+    "oneLineDefinition": "Delivery semantics are the pipeline's guarantee on processing count: at-most-once (commit before processing / acks=0, may lose), at-least-once (commit after processing + retries, may duplicate), and exactly-once (transactions or an idempotent sink); the guarantee is set by offset-commit timing, producer acks/idempotence, and sink idempotency.",
+    "keyConcepts": [
+      "At-most-once: commit before processing or acks=0; fast, may lose, never duplicates.",
+      "At-least-once: commit after processing with acks>=1 and retries; no loss, may duplicate. The common default.",
+      "enable.idempotence (default true) removes only write-side retry duplicates, not consumer-reprocessing duplicates.",
+      "At-least-once + idempotent sink (keyed upsert / event-id dedup) = exactly-once end state without transactions.",
+      "Full exactly-once (transactions / exactly_once_v2) is for atomic multi-write or non-idempotent sinks."
+    ],
+    "formulas": [],
+    "commands": [
+      "producer config: enable.idempotence=true, acks=all, retries=2147483647, max.in.flight.requests.per.connection=5",
+      "consumer config: enable.auto.commit=false  # commit explicitly after processing for at-least-once",
+      "kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic t --group g --from-beginning",
+      "kafka-configs.sh --bootstrap-server localhost:9092 --entity-type topics --entity-name t --alter --add-config min.insync.replicas=2",
+      "kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group g   # inspect committed offsets / lag"
+    ],
+    "interviewPoints": [
+      "Name the three semantics and their loss/duplicate tradeoffs.",
+      "Explain that offset-commit timing (before vs after) sets at-most vs at-least-once.",
+      "State that enable.idempotence removes only retry duplicates, not reprocessing duplicates.",
+      "Describe at-least-once + idempotent sink as the pragmatic exactly-once end state.",
+      "Say when full transactions are worth it (atomic multi-write / non-idempotent sink)."
+    ],
+    "quickNotes": [
+      "enable.idempotence is default true since Kafka 3.0; requires acks=all and max.in.flight<=5.",
+      "Disable enable.auto.commit and commit after side effects for precise at-least-once.",
+      "Commit per batch, not per record, to amortize overhead.",
+      "Key records and sink writes on a stable id so upserts dedup correctly.",
+      "Match the semantic to data value: at-most-once for telemetry, at-least-once+idempotent sink for pipelines, transactions only when needed."
+    ]
+  },
+  "keyTakeaways": [
+    "There are three delivery semantics, at-most-once (may lose, never duplicates), at-least-once (never loses, may duplicate), and exactly-once (once and only once), forming a tradeoff spectrum of latency, throughput, complexity, and correctness.",
+    "The guarantee is determined by offset-commit timing (commit before vs after processing) and producer settings (acks, retries, enable.idempotence), not by any automatic Kafka behavior; the default auto-commit gives only a loose at-least-once.",
+    "enable.idempotence (default since Kafka 3.0) removes duplicates from producer retries only; it does not remove duplicates from consumer reprocessing under at-least-once.",
+    "For most data-engineering pipelines the pragmatic exactly-once end state is at-least-once delivery plus an idempotent sink (keyed upsert or event-id dedup), which is simple, scalable, and needs no transaction coordinator.",
+    "Full Kafka exactly-once via transactions (or Kafka Streams exactly_once_v2) is a deliberate, heavier choice reserved for atomic multi-topic writes tied to offsets or sinks that cannot be made idempotent."
+  ]
+}

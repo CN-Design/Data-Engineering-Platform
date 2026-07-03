@@ -1,0 +1,225 @@
+[
+  {
+    "id": "sre-coding-1",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write an idempotent upsert that loads a batch of records into a target table so that re-running the same batch never creates duplicates or double-counts. Show a SQL MERGE and note how the same idea maps to a Delta/Iceberg-style merge. Input: a staging table stg(id, updated_at, amount) and a target tgt(id, updated_at, amount).",
+    "thoughtProcess": "The core reliability requirement is idempotency: the load must be safe to retry after a partial failure, which is the whole point of an upsert keyed on a stable identifier. I would restate that appending is unsafe because a retry after a crash re-inserts already-loaded rows, so I need MERGE (upsert) on the business key id. A subtle correctness concern is out-of-order or duplicate arrivals: if the staging batch itself contains duplicate ids, or an older version of a row than what is already in the target, a naive MERGE could overwrite newer data with older. So I first deduplicate the staging batch to one row per id keeping the latest updated_at, then MERGE with a condition that only updates when the incoming updated_at is newer. This makes the operation both idempotent and monotonic. I would mention that lakehouse formats like Delta and Iceberg expose the same MERGE INTO semantics with ACID guarantees, so the pattern is identical there.",
+    "solution": {
+      "code": "-- 1) Deduplicate staging to one row per id (latest wins)\nWITH deduped AS (\n  SELECT id, updated_at, amount\n  FROM (\n    SELECT s.*,\n           ROW_NUMBER() OVER (\n             PARTITION BY id ORDER BY updated_at DESC\n           ) AS rn\n    FROM stg s\n  ) t\n  WHERE rn = 1\n)\n-- 2) Idempotent, monotonic upsert on the stable key\nMERGE INTO tgt AS target\nUSING deduped AS src\n  ON target.id = src.id\nWHEN MATCHED AND src.updated_at > target.updated_at THEN\n  UPDATE SET target.updated_at = src.updated_at,\n             target.amount     = src.amount\nWHEN NOT MATCHED THEN\n  INSERT (id, updated_at, amount)\n  VALUES (src.id, src.updated_at, src.amount);",
+      "language": "sql"
+    },
+    "lineByLine": "The deduped CTE uses ROW_NUMBER partitioned by id and ordered by updated_at descending to keep only the newest row per id, protecting against duplicate ids within the batch. The MERGE joins the deduped source to the target on the stable key id. WHEN MATCHED AND src.updated_at > target.updated_at updates only when the incoming row is strictly newer, which makes the load monotonic so a replay of an old batch cannot regress the target. WHEN NOT MATCHED inserts new ids. Because the whole operation is keyed on id and gated on updated_at, re-running the identical batch is a no-op on already-current rows, giving idempotency.",
+    "timeComplexity": "O(N log N) driven by the window sort for deduplication over N staging rows, plus the MERGE join which is roughly O(N + M) with hash join semantics against M matched target rows (indexes or clustering on id reduce the target-side scan).",
+    "spaceComplexity": "O(N) for the deduplicated staging set materialized for the merge; the engine also needs join buffers proportional to the smaller side. No unbounded growth since output replaces rather than accumulates.",
+    "alternativeApproaches": [
+      {
+        "title": "Delta / Iceberg MERGE INTO",
+        "explanation": "Lakehouse table formats expose the same MERGE INTO with ACID transactions, so the identical dedup-then-merge pattern works with snapshot isolation and safe concurrent reads. The only change is the table reference and that the format guarantees atomic commit of the merge.",
+        "code": "MERGE INTO tgt AS target\nUSING deduped AS src ON target.id = src.id\nWHEN MATCHED AND src.updated_at > target.updated_at THEN UPDATE SET *\nWHEN NOT MATCHED THEN INSERT *"
+      },
+      {
+        "title": "Overwrite-by-partition",
+        "explanation": "If the load is naturally partitioned (for example by date) and each run fully reproduces a partition, you can skip MERGE entirely and overwrite the whole partition. This is the simplest idempotency pattern and avoids per-row matching, but it only works when a run deterministically reproduces the complete partition contents."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why deduplicate the staging batch before the MERGE?",
+        "answer": "Because MERGE requires that each target row match at most one source row; if the staging batch contains multiple rows with the same id, many engines raise an error or, worse, produce nondeterministic results by picking an arbitrary one. Deduplicating to the latest row per id both satisfies the one-match requirement and ensures the newest version wins. Without it, the load could apply an older duplicate over a newer one or fail outright, so the dedup step is essential for both correctness and determinism, not just tidiness."
+      },
+      {
+        "question": "How does the updated_at guard make the load resilient to out-of-order or replayed batches?",
+        "answer": "The WHEN MATCHED AND src.updated_at > target.updated_at condition makes the merge monotonic: it only advances a row to a strictly newer version and never regresses it. So if an old batch is replayed, or a late-arriving batch carries stale versions, the guard skips those updates, leaving the target at its latest state. This means the operation is not just idempotent for identical replays but also safe against out-of-order delivery, which is common in distributed and streaming ingestion, ensuring the target always reflects the newest known version of each record regardless of the order batches arrive."
+      }
+    ],
+    "tags": ["idempotency", "merge", "upsert", "sql", "deduplication", "coding"]
+  },
+  {
+    "id": "sre-coding-2",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Implement a reusable retry decorator with exponential backoff and jitter that retries a flaky operation up to a max number of attempts, only on retryable exceptions, and gives up cleanly otherwise. Language: Python.",
+    "thoughtProcess": "This is a bread-and-butter reliability primitive. The interviewer wants to see that I understand exponential backoff (delays grow multiplicatively), jitter (randomize delays to avoid synchronized retry storms across many callers, the thundering-herd problem), a cap on attempts so a permanent failure does not loop forever, and selective retrying so I only retry transient errors and immediately re-raise non-retryable ones like a validation error. I would also cap the maximum backoff so delays do not grow unbounded, and preserve the last exception when giving up so the caller sees the real cause. I will implement it as a decorator for reuse, parameterized by max_attempts, base delay, factor, max delay, jitter, and the set of retryable exception types. I would mention observability: logging each retry is valuable in production.",
+    "solution": {
+      "code": "import random\nimport time\nimport functools\n\ndef retry(\n    max_attempts=5,\n    base_delay=0.5,\n    factor=2.0,\n    max_delay=30.0,\n    jitter=True,\n    retryable=(ConnectionError, TimeoutError),\n):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            attempt = 0\n            while True:\n                try:\n                    return fn(*args, **kwargs)\n                except retryable as exc:\n                    attempt += 1\n                    if attempt >= max_attempts:\n                        raise\n                    delay = min(base_delay * (factor ** (attempt - 1)), max_delay)\n                    if jitter:\n                        delay = random.uniform(0, delay)\n                    time.sleep(delay)\n        return wrapper\n    return decorator\n\n\n@retry(max_attempts=4, base_delay=0.2, retryable=(ConnectionError, TimeoutError))\ndef fetch_partition(path):\n    return _read_from_source(path)  # may raise ConnectionError/TimeoutError",
+      "language": "python"
+    },
+    "lineByLine": "The retry factory takes tuning parameters and the tuple of retryable exception types, returning a decorator. Inside wrapper, the while True loop calls the wrapped function; on success it returns immediately. The except clause catches only exceptions in retryable, so non-retryable errors propagate instantly. attempt is incremented, and if it reaches max_attempts the original exception is re-raised so the caller sees the real failure. Otherwise delay is computed as base_delay times factor to the power of (attempt-1), capped at max_delay, giving exponential growth. When jitter is enabled, delay becomes a random value in [0, delay] to decorrelate retries across callers. time.sleep pauses before the next attempt. functools.wraps preserves the wrapped function's metadata.",
+    "timeComplexity": "O(k) in the number of attempts k up to max_attempts for control flow; wall-clock time is dominated by the sum of backoff sleeps, which is bounded by roughly max_attempts times max_delay in the worst case.",
+    "spaceComplexity": "O(1) additional space; the decorator holds only a few scalars regardless of input size.",
+    "alternativeApproaches": [
+      {
+        "title": "Use a battle-tested library (tenacity)",
+        "explanation": "In production, prefer a mature library like tenacity rather than hand-rolling, since it provides backoff strategies, jitter, retry conditions, before/after hooks for logging, and stop conditions, all well tested. Hand-rolling is fine for interviews and small scripts but reinventing edge cases (async support, deadlines) is error-prone.",
+        "code": "from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type\n\n@retry(stop=stop_after_attempt(5),\n       wait=wait_exponential_jitter(initial=0.5, max=30),\n       retry=retry_if_exception_type((ConnectionError, TimeoutError)))\ndef fetch_partition(path):\n    return _read_from_source(path)"
+      },
+      {
+        "title": "Add a total deadline instead of only attempt count",
+        "explanation": "Bounding retries by a wall-clock deadline (for example, give up after 60 seconds total) can be better than a fixed attempt count when the operation has a freshness SLO, because it caps total latency directly rather than indirectly. You track a start time and stop retrying once elapsed time plus the next backoff would exceed the deadline."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why is jitter important in a retry backoff strategy?",
+        "answer": "Jitter randomizes the retry delays so that many clients that failed at the same moment, for example when a shared dependency briefly went down, do not all retry at the exact same later instant and cause a synchronized surge that knocks the dependency over again, the thundering-herd problem. Pure exponential backoff without jitter keeps retries correlated, so recovery attempts collide repeatedly. Adding randomness spreads the retries out over time, smoothing the load on the recovering service and greatly improving the odds that it stabilizes. In distributed systems with many callers, jitter is often more important than the exact backoff curve for avoiding retry-induced cascading failures."
+      },
+      {
+        "question": "Why should you only retry certain exceptions rather than all of them?",
+        "answer": "Because retrying is only useful for transient failures like a brief network blip or a momentarily overloaded dependency, where a later attempt can succeed. Non-retryable errors, such as a validation error, an authentication failure, or a malformed input, will fail identically every time, so retrying them wastes time, delays the inevitable error, and can mask the real problem or even cause harm if the operation has side effects. Restricting retries to a defined set of retryable exception types ensures the mechanism recovers from transient issues while surfacing permanent failures immediately, which is both faster and safer. This selectivity is exactly what separates a robust retry policy from one that blindly loops on every error."
+      }
+    ],
+    "tags": ["retries", "exponential-backoff", "jitter", "python", "decorator", "coding"]
+  },
+  {
+    "id": "sre-coding-3",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "intermediate",
+    "question": "Write a freshness SLO check that, given a dataset's last successful update timestamp and a max-allowed staleness, decides whether to page. It should return a severity based on how far past the threshold the data is, and be safe to run repeatedly. Language: Python.",
+    "thoughtProcess": "This is a monitoring primitive that turns freshness into an alerting decision. The interviewer wants to see that I measure staleness as now minus last_update, compare it to the SLO threshold, and produce a graduated response rather than a binary one, because how far past the threshold you are should map to severity (a few minutes over is a warning, hours over is a page). I would compute staleness in a timezone-safe way using UTC, guard against a missing or future timestamp (clock skew or a never-updated dataset), and return a structured result so the caller can route to the right channel. I would keep the function pure and deterministic given inputs so it is trivially safe to run repeatedly, and I would express severity as multiples of the threshold, which generalizes across datasets with different SLOs. I would mention that in production this feeds an alerting system, and that basing severity on multiples of the budget echoes burn-rate thinking.",
+    "solution": {
+      "code": "from dataclasses import dataclass\nfrom datetime import datetime, timezone\n\n@dataclass\nclass FreshnessResult:\n    severity: str            # \"ok\" | \"warning\" | \"page\"\n    stale_seconds: float\n    should_page: bool\n    message: str\n\ndef check_freshness(last_update, max_staleness_seconds, now=None):\n    now = now or datetime.now(timezone.utc)\n    if last_update is None:\n        return FreshnessResult(\"page\", float(\"inf\"), True,\n                               \"No successful update recorded\")\n    if last_update.tzinfo is None:\n        last_update = last_update.replace(tzinfo=timezone.utc)\n\n    stale = (now - last_update).total_seconds()\n    if stale < 0:  # future timestamp -> clock skew\n        return FreshnessResult(\"warning\", stale, False,\n                               \"Last update is in the future (clock skew?)\")\n\n    ratio = stale / max_staleness_seconds\n    if ratio <= 1.0:\n        return FreshnessResult(\"ok\", stale, False,\n                               f\"Fresh: {stale:.0f}s within {max_staleness_seconds:.0f}s SLO\")\n    if ratio <= 2.0:\n        return FreshnessResult(\"warning\", stale, False,\n                               f\"Stale {stale:.0f}s ({ratio:.1f}x SLO)\")\n    return FreshnessResult(\"page\", stale, True,\n                           f\"Critically stale {stale:.0f}s ({ratio:.1f}x SLO)\")",
+      "language": "python"
+    },
+    "lineByLine": "FreshnessResult is a structured return so callers can route on severity and should_page. check_freshness defaults now to the current UTC time, and the injectable now makes the function deterministic and testable. A None last_update means the dataset never updated, which is the worst case and pages immediately with infinite staleness. Naive timestamps are coerced to UTC to avoid timezone bugs. stale is the age in seconds; a negative value implies a future timestamp from clock skew and is flagged as a warning rather than treated as fresh. ratio expresses staleness as a multiple of the SLO so severity generalizes across datasets: within 1x is ok, up to 2x is a warning, beyond 2x pages. The function has no side effects, so running it repeatedly is inherently safe.",
+    "timeComplexity": "O(1); a fixed number of arithmetic and comparison operations regardless of input.",
+    "spaceComplexity": "O(1); only a small result object is allocated.",
+    "alternativeApproaches": [
+      {
+        "title": "Burn-rate style with multiple windows",
+        "explanation": "Rather than static staleness multiples, compute the freshness error-budget burn rate over short and long windows and page only when a fast burn is confirmed by both windows. This reduces flapping on brief spikes and ties the page directly to error-budget consumption, at the cost of needing historical freshness data rather than a single timestamp.",
+        "code": "def should_page(short_burn, long_burn, fast=14.0):\n    return short_burn >= fast and long_burn >= fast"
+      },
+      {
+        "title": "Emit a metric and let the alerting system decide",
+        "explanation": "Instead of embedding the paging decision in code, publish stale_seconds as a gauge metric and configure the thresholds and severities in the monitoring/alerting platform (for example Prometheus alert rules). This centralizes alert policy, makes it auditable and tunable without code changes, and reuses the platform's dedup, silencing, and routing."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why express severity as a multiple of the SLO threshold rather than absolute seconds?",
+        "answer": "Because absolute thresholds do not generalize across datasets with different freshness SLOs: five minutes of staleness is catastrophic for a two-minute-SLO real-time feed but perfectly fine for a daily batch table. Expressing staleness as a ratio to each dataset's own SLO makes the same severity logic correct for every dataset, so one function serves the whole platform. It also mirrors error-budget thinking, where what matters is how far past your commitment you are, not the raw number. This relative framing is what lets you apply consistent warning and page tiers across heterogeneous datasets without hand-tuning absolute numbers for each one."
+      },
+      {
+        "question": "Why guard against a null or future last_update timestamp?",
+        "answer": "A null last_update means the dataset has never successfully updated, which is arguably the most severe freshness failure and must page rather than being ignored or crashing the check, so handling it explicitly prevents both a silent miss and a runtime error. A future timestamp indicates clock skew between systems or a bad write, and if you naively computed staleness you would get a negative age and wrongly conclude the data is fresh, masking a real problem. Flagging it as a warning surfaces the anomaly without falsely paging. Defensive handling of these edge cases is exactly the difference between a monitoring check that is trustworthy and one that fails silently or misleads precisely when something is wrong."
+      }
+    ],
+    "tags": ["freshness", "slo", "monitoring", "alerting", "python", "coding"]
+  },
+  {
+    "id": "sre-coding-4",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Implement a dead-letter-queue handler for a stream consumer: process each message, retry transient failures a bounded number of times, and route permanently failing (poison) messages to a DLQ with full context, without stalling the stream. Language: Python.",
+    "thoughtProcess": "The interviewer wants failure isolation done right. The key ideas: distinguish transient failures (retryable, bounded retries with backoff) from permanent ones (poison messages that go straight to the DLQ), never let a single bad message block the stream indefinitely, and preserve enough context in the DLQ (original payload, error, retry count, offset, timestamp) to triage and replay later. I would process each message, retry on retryable exceptions up to a cap, and on exhausting retries or hitting a non-retryable error, publish to the DLQ and then advance the offset so the stream keeps flowing. I would emphasize that the offset must only advance after the message is either successfully processed or safely dead-lettered, otherwise a crash could lose it, and that the DLQ must be monitored so it is not a silent data-loss sink. I would keep the handler decoupled from the specific broker via injected callbacks.",
+    "solution": {
+      "code": "import time\nimport json\nfrom datetime import datetime, timezone\n\nclass NonRetryable(Exception):\n    pass\n\ndef handle_message(msg, process, send_to_dlq, commit_offset,\n                   max_retries=3, base_delay=0.5):\n    \"\"\"Process one message with bounded retries; dead-letter poison messages.\"\"\"\n    last_error = None\n    for attempt in range(1, max_retries + 1):\n        try:\n            process(msg.value)\n            commit_offset(msg.offset)   # advance only after success\n            return \"processed\"\n        except NonRetryable as exc:\n            last_error = exc\n            break                        # permanent failure: do not retry\n        except Exception as exc:         # transient: retry with backoff\n            last_error = exc\n            if attempt < max_retries:\n                time.sleep(base_delay * (2 ** (attempt - 1)))\n\n    # exhausted retries or non-retryable -> dead-letter with context\n    dlq_record = {\n        \"payload\": msg.value,\n        \"error\": repr(last_error),\n        \"retries\": attempt,\n        \"source_offset\": msg.offset,\n        \"source_partition\": getattr(msg, \"partition\", None),\n        \"dead_lettered_at\": datetime.now(timezone.utc).isoformat(),\n    }\n    send_to_dlq(json.dumps(dlq_record))\n    commit_offset(msg.offset)            # advance so stream keeps flowing\n    return \"dead_lettered\"",
+      "language": "python"
+    },
+    "lineByLine": "NonRetryable marks permanent failures so they skip retries entirely. handle_message takes injected process, send_to_dlq, and commit_offset callbacks so it is broker-agnostic. The loop attempts processing up to max_retries times; on success it commits the offset and returns, and crucially the offset only advances after success so a crash mid-processing does not lose the message. A NonRetryable exception breaks out immediately since retrying is pointless. Any other exception is treated as transient, sleeping with exponential backoff before the next attempt. When retries are exhausted or a permanent error occurred, a DLQ record is built capturing the payload, error, retry count, source offset and partition, and a timestamp, giving triage and replay full context. The record is sent to the DLQ and only then is the offset committed, so the message is never lost and the stream advances past the poison message rather than stalling.",
+    "timeComplexity": "O(r) per message where r is the number of attempts up to max_retries; wall-clock time is dominated by the backoff sleeps in the transient-failure case.",
+    "spaceComplexity": "O(1) additional space per message beyond the DLQ record, which is proportional to the payload size.",
+    "alternativeApproaches": [
+      {
+        "title": "Retry topic tiers (delayed retry queues)",
+        "explanation": "Instead of blocking the consumer thread with in-line sleeps, publish failed messages to separate retry topics with increasing delays (for example retry-5s, retry-1m, retry-10m) and only route to the DLQ after the final tier. This keeps the main consumer throughput high and decouples retry timing from processing, at the cost of more topics and ordering complexity.",
+        "code": "def on_failure(msg, attempt):\n    if attempt < len(RETRY_TOPICS):\n        publish(RETRY_TOPICS[attempt], msg)\n    else:\n        publish(DLQ_TOPIC, msg)"
+      },
+      {
+        "title": "Idempotent processing to allow safe redelivery",
+        "explanation": "Make process idempotent (keyed writes / dedup) so that if a crash occurs after processing but before committing the offset, redelivery on restart does not double-apply the effect. This complements the DLQ pattern and is what makes at-least-once delivery correct end to end."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why must the offset only be committed after a message is processed or dead-lettered?",
+        "answer": "Because the committed offset is the consumer's record of what it has durably handled, and if you advance it before the message is either successfully processed or safely written to the DLQ, a crash in that gap would skip the message on restart, silently losing data. Committing only after success guarantees at-least-once delivery: the worst case is that a crash before commit causes redelivery and reprocessing, which is safe if processing is idempotent, rather than loss. Similarly, committing only after the DLQ write ensures a poison message is preserved before the stream moves past it. This ordering, act first then commit, is the crux of not losing data while still letting the stream advance."
+      },
+      {
+        "question": "Why does the DLQ record capture the offset, error, and retry count instead of just the payload?",
+        "answer": "Because a bare payload is very hard to triage or safely replay. The error and retry count tell you why the message failed and whether it was transient exhaustion or a permanent problem, guiding whether a fix and replay will help. The source offset and partition let you locate the message in the original stream, correlate it with other events around the same position, and reconstruct ordering if you replay. The timestamp bounds when the failure occurred. Together this context turns the DLQ from an opaque dump into an actionable, replayable record, which is essential because an under-instrumented DLQ becomes a place where data quietly dies rather than a recoverable quarantine."
+      }
+    ],
+    "tags": ["dead-letter-queue", "poison-message", "retries", "streaming", "python", "coding"]
+  },
+  {
+    "id": "sre-coding-5",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "advanced",
+    "question": "Write a Prometheus alerting rule (YAML with PromQL) that pages on multi-window multi-burn-rate consumption of a data pipeline's freshness/success SLO, and pages when a critical dataset's freshness lag exceeds its budget. Language: YAML.",
+    "thoughtProcess": "The interviewer wants to see idiomatic SLO alerting as code. I would define the SLI as the success ratio of pipeline runs (good over total) and alert on the error-budget burn rate rather than a raw threshold. The gold-standard pattern is multi-window multi-burn-rate: a fast-burn alert (high burn rate over a short window, confirmed by a very short window) that pages for acute outages, and a slow-burn alert (lower burn rate over a long window) that pages or tickets for chronic degradation. I compute burn rate as (1 - success_ratio) divided by (1 - SLO target). I would also add a direct freshness-lag alert for a critical dataset where lag exceeding the SLO for a sustained period pages, since freshness is often measured as a gauge. I will include for durations to require the condition persists (the confirmation window), labels for severity and routing, and annotations linking a runbook, which is essential operational hygiene.",
+    "solution": {
+      "code": "groups:\n  - name: pipeline-slo-burn\n    rules:\n      # Fast burn: 14x burn over 1h, confirmed over 5m -> page\n      - alert: PipelineErrorBudgetFastBurn\n        expr: |\n          (\n            (1 - (sum(rate(pipeline_runs_success_total[1h]))\n                  / sum(rate(pipeline_runs_total[1h]))))\n            / (1 - 0.999)\n          ) > 14\n          and\n          (\n            (1 - (sum(rate(pipeline_runs_success_total[5m]))\n                  / sum(rate(pipeline_runs_total[5m]))))\n            / (1 - 0.999)\n          ) > 14\n        for: 2m\n        labels:\n          severity: page\n          slo: pipeline_success\n        annotations:\n          summary: \"Fast error-budget burn on pipeline success SLO\"\n          runbook: \"https://runbooks/pipeline-success-fast-burn\"\n\n      # Slow burn: 3x burn over 6h, confirmed over 30m -> ticket\n      - alert: PipelineErrorBudgetSlowBurn\n        expr: |\n          (\n            (1 - (sum(rate(pipeline_runs_success_total[6h]))\n                  / sum(rate(pipeline_runs_total[6h]))))\n            / (1 - 0.999)\n          ) > 3\n          and\n          (\n            (1 - (sum(rate(pipeline_runs_success_total[30m]))\n                  / sum(rate(pipeline_runs_total[30m]))))\n            / (1 - 0.999)\n          ) > 3\n        for: 15m\n        labels:\n          severity: ticket\n          slo: pipeline_success\n        annotations:\n          summary: \"Slow error-budget burn on pipeline success SLO\"\n          runbook: \"https://runbooks/pipeline-success-slow-burn\"\n\n      # Critical dataset freshness lag beyond budget -> page\n      - alert: DatasetFreshnessLagExceeded\n        expr: |\n          max by (dataset) (\n            time() - dataset_last_success_timestamp_seconds{tier=\"critical\"}\n          ) > 900\n        for: 5m\n        labels:\n          severity: page\n          slo: freshness\n        annotations:\n          summary: \"Critical dataset {{ $labels.dataset }} exceeds 15m freshness SLO\"\n          runbook: \"https://runbooks/dataset-freshness\"",
+      "language": "yaml"
+    },
+    "lineByLine": "The group holds three rules. PipelineErrorBudgetFastBurn computes the failure ratio over 1h as one minus the success rate ratio, divides by (1 - 0.999) to express it as a burn rate against a 99.9% SLO, and fires when that exceeds 14; the anded 5m sub-expression is the short confirmation window so a spike that already recovered does not fire. for: 2m requires persistence. Labels set severity page and the SLO name for routing, and annotations attach a runbook. PipelineErrorBudgetSlowBurn is the same shape with a lower burn rate of 3 over 6h confirmed by 30m, labeled ticket rather than page because a slow burn is less urgent. DatasetFreshnessLagExceeded is a gauge-based alert: time() minus the last-success timestamp gives current staleness per critical dataset, and exceeding 900 seconds (15 minutes) for 5m pages, with the dataset name templated into the summary.",
+    "timeComplexity": "Not applicable in the algorithmic sense; evaluation cost is set by Prometheus per rule per scrape interval, roughly proportional to the number of series matched by each PromQL selector over the query window.",
+    "spaceComplexity": "Not applicable in the algorithmic sense; storage is the time-series data Prometheus already retains, and rule state is O(number of firing alert instances).",
+    "alternativeApproaches": [
+      {
+        "title": "Recording rules to precompute burn rate",
+        "explanation": "Define recording rules that precompute the success ratio and burn rate per window as new series, then have the alert rules simply threshold those. This keeps alert expressions short and readable, speeds evaluation by avoiding repeated heavy queries, and makes the burn rate itself graphable on dashboards.",
+        "code": "record: slo:pipeline_success:burn_rate1h\nexpr: (1 - (sum(rate(pipeline_runs_success_total[1h])) / sum(rate(pipeline_runs_total[1h])))) / (1 - 0.999)"
+      },
+      {
+        "title": "Freshness via consumer lag for streaming",
+        "explanation": "For a streaming pipeline, replace the last-success-timestamp gauge with consumer lag exported per partition, and alert on sustained per-partition lag so a single stuck partition is caught even when aggregate lag looks fine. The burn-rate structure stays the same but the underlying SLI is lag rather than run success."
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why divide the failure ratio by (1 - SLO target) to get a burn rate?",
+        "answer": "Because the burn rate is defined as how fast you are consuming the error budget relative to the budget's total size, and the budget is exactly (1 - SLO target), for a 99.9% SLO that is 0.001. Dividing the observed failure ratio by 0.001 expresses failures in units of the budget: a burn rate of 1 means you are consuming budget at exactly the pace that would exhaust it over the SLO window, while 14 means fourteen times that pace, which would burn a month's budget in about two days. This normalization makes the same threshold meaningful across SLOs with different targets and ties the alert directly to error-budget consumption rather than to a raw, target-specific failure percentage, which is the whole point of burn-rate alerting."
+      },
+      {
+        "question": "Why require both a long window and a short confirmation window in the burn-rate alerts?",
+        "answer": "The long window (for example 1h) establishes that the burn is real and sustained rather than a momentary blip, giving sensitivity to genuine problems, while the short confirmation window (for example 5m) ensures the problem is still happening right now rather than something that already recovered. Requiring both to exceed the threshold with an and dramatically cuts false positives from transient spikes and also makes the alert resolve quickly once the issue clears, since the short window falls below threshold fast. Without the confirmation window the alert would keep firing on the long window's memory of a past spike, and without the long window it would flap on noise. Combining them is what gives fast, accurate, non-flapping SLO alerts, which is the core benefit of the multi-window design."
+      }
+    ],
+    "tags": ["prometheus", "promql", "burn-rate", "alerting", "slo", "yaml", "coding"]
+  },
+  {
+    "id": "sre-coding-6",
+    "tech": "sre",
+    "category": "coding",
+    "difficulty": "beginner",
+    "question": "Write a function that detects duplicate primary keys in a batch of records and returns the offending keys with their counts, so a pipeline can fail closed before publishing a table with duplicate keys. Language: Python.",
+    "thoughtProcess": "This is a data-quality guardrail: a uniqueness check that a pipeline runs before publishing so it can fail closed rather than ship duplicates. The interviewer wants clean, correct, single-pass logic and awareness of why this guard matters for reliability. I would iterate once over the records, extract the key via a key function so it works for dicts or objects, count occurrences with a Counter, and return only keys whose count exceeds one along with their counts. I would make the check explicit about what to do on failure by returning a structured result, and note that in a pipeline this feeds a fail-closed decision: if duplicates exist, raise or quarantine rather than publish. I would also handle the empty input case and mention that for very large batches you would push this into the query engine (GROUP BY HAVING count > 1) rather than pulling into Python.",
+    "solution": {
+      "code": "from collections import Counter\n\ndef find_duplicate_keys(records, key):\n    \"\"\"Return {key: count} for keys that appear more than once.\n\n    records: iterable of items\n    key: callable extracting the primary key from an item\n    \"\"\"\n    counts = Counter(key(r) for r in records)\n    return {k: c for k, c in counts.items() if c > 1}\n\n\ndef assert_unique_or_fail(records, key):\n    \"\"\"Fail closed: raise if any primary key is duplicated.\"\"\"\n    dupes = find_duplicate_keys(records, key)\n    if dupes:\n        raise ValueError(\n            f\"Uniqueness check failed: {len(dupes)} duplicated key(s), \"\n            f\"e.g. {dict(list(dupes.items())[:5])}\"\n        )\n    return True\n\n\n# usage in a pipeline pre-publish gate\n# assert_unique_or_fail(batch, key=lambda r: r[\"id\"])",
+      "language": "python"
+    },
+    "lineByLine": "find_duplicate_keys takes the records and a key callable so it works for dicts, tuples, or objects. Counter consumes a generator that extracts each record's key in a single pass, tallying occurrences. The dict comprehension keeps only keys with a count greater than one, returning the offending keys mapped to how many times each appeared, which is useful diagnostic context. assert_unique_or_fail wraps it to implement the fail-closed policy: if the duplicates dict is non-empty it raises with a message including the count and a small sample of offenders, halting the pipeline before publish; otherwise it returns True. The commented usage shows plugging it into a pre-publish gate keyed on the id field.",
+    "timeComplexity": "O(N) where N is the number of records, since it makes a single pass to count and one pass over the distinct keys to filter, and dictionary operations are amortized O(1).",
+    "spaceComplexity": "O(D) where D is the number of distinct keys, for the Counter; in the worst case of all-unique keys this is O(N).",
+    "alternativeApproaches": [
+      {
+        "title": "Push the check into SQL / the query engine",
+        "explanation": "For large batches, do not pull data into Python. Run the uniqueness check in the warehouse or Spark with GROUP BY key HAVING count(*) > 1, which is distributed and avoids memory pressure on a single machine. The pipeline gates on whether that query returns any rows.",
+        "code": "SELECT id, COUNT(*) AS cnt\nFROM staging\nGROUP BY id\nHAVING COUNT(*) > 1"
+      },
+      {
+        "title": "Early-exit boolean check when you only need pass/fail",
+        "explanation": "If you only need to know whether any duplicate exists (not which ones), track a seen set and return False on the first repeat, which can short-circuit before scanning everything. This trades the diagnostic detail of counts for a potentially faster negative decision.",
+        "code": "def has_duplicate(records, key):\n    seen = set()\n    for r in records:\n        k = key(r)\n        if k in seen:\n            return True\n        seen.add(k)\n    return False"
+      }
+    ],
+    "followUps": [
+      {
+        "question": "Why should a pipeline fail closed on a duplicate-key check for a critical table?",
+        "answer": "Because publishing a table with duplicate primary keys corrupts downstream logic in ways that are hard to detect and costly to fix: joins fan out and double-count, aggregations inflate, and consumers lose trust in the data. For a critical table where wrong data is worse than late data, halting the publish and quarantining the batch when duplicates are found prevents the corruption from ever reaching consumers, converting a silent correctness incident into a caught, actionable failure. Failing closed prioritizes correctness over freshness for exactly the datasets where that tradeoff is right, and it is far cheaper to block and investigate one batch than to remediate corrupted data that has already propagated across the platform."
+      },
+      {
+        "question": "When would you not run this check in Python, and what would you do instead?",
+        "answer": "You would avoid Python when the batch is large enough that pulling it onto a single machine risks memory pressure or is simply slow, which is common for warehouse-scale data. Instead you push the uniqueness check down into the query engine with a GROUP BY key HAVING count(*) > 1, or the equivalent in Spark, so the work is distributed across the cluster next to the data and never materialized in one process. The pipeline then gates on whether that query returns any offending rows. The Python version is ideal for small batches, unit tests, or in-memory streams, but for production-scale tables the durable, scalable pattern is to let the distributed engine perform the aggregation and return only the violations."
+      }
+    ],
+    "tags": ["data-quality", "uniqueness", "fail-closed", "python", "validation", "coding"]
+  }
+]
