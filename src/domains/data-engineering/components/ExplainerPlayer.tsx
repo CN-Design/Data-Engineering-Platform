@@ -59,7 +59,9 @@ const useStyles = () => {
 
 const delay = (n: number): React.CSSProperties => ({ animationDelay: `${0.08 + n * 0.1}s` });
 
-const SceneView: React.FC<{ s: ExplainerScene }> = ({ s }) => {
+const SceneView: React.FC<{ s: ExplainerScene }> = ({ s: raw }) => {
+  // Normalize accepted field aliases (heading→headline, steps→nodes).
+  const s: ExplainerScene = { ...raw, headline: raw.headline ?? raw.heading, nodes: raw.nodes ?? raw.steps };
   switch (s.template) {
     case 'title':
       return (<>

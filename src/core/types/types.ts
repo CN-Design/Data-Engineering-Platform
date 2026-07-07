@@ -232,6 +232,8 @@ export interface ExplainerScene {
   accent?: string;      // optional hex accent color (else auto-cycled)
   kicker?: string;      // optional small uppercase label above the headline
   tag?: string;         // callout pill label (e.g., "Remember")
+  heading?: string;     // alias accepted for headline
+  steps?: string[];     // alias accepted for flow nodes
   // template-specific fields (all optional; the renderer uses what's relevant)
   headline?: string;
   subtitle?: string;
