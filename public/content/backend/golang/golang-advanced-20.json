@@ -10,12 +10,13 @@
   "relatedConcepts": ["golang-master-2", "golang-master-4"],
   "nestedConcepts": ["*sql.DB is a pool", "MaxOpenConns / MaxIdleConns", "ConnMaxLifetime / ConnMaxIdleTime", "rows.Close & leaks", "context-scoped queries", "prepared statements", "transactions"],
   "subtopics": [
-    { "title": "*sql.DB is a pool, not a connection", "explanation": "sql.Open does not connect — it returns a handle to a lazily-initialized pool. Each Query/Exec borrows a free connection (or opens a new one up to the limit), runs the statement, and returns the connection to the pool. Because it's safe for concurrent use, you create ONE *sql.DB at startup and share it across all goroutines.", "example": "db, _ := sql.Open(\"pgx\", dsn); defer db.Close() // one pool for the whole process" },
-    { "title": "Sizing the pool: MaxOpenConns & MaxIdleConns", "explanation": "SetMaxOpenConns caps total connections in use + idle; beyond it, callers block waiting for a free one. SetMaxIdleConns caps how many stay open while idle (keep it equal to MaxOpenConns to avoid churn). The right max is bounded by the database's own connection limit divided across all app instances.", "example": "db.SetMaxOpenConns(25); db.SetMaxIdleConns(25)" },
-    { "title": "Connection lifetime & recycling", "explanation": "SetConnMaxLifetime forces connections to be recycled after a duration, which lets load balancers rebalance and avoids servers that drop long-lived connections. SetConnMaxIdleTime closes connections that have been idle too long, releasing database resources during quiet periods.", "example": "db.SetConnMaxLifetime(30 * time.Minute); db.SetConnMaxIdleTime(5 * time.Minute)" },
-    { "title": "Always close Rows (the #1 leak)", "explanation": "Query returns *sql.Rows that holds a connection until you fully drain it or call rows.Close(). Forgetting to close on an early return pins that connection forever; under load the pool drains and every query blocks. Defer rows.Close() and always check rows.Err() after the loop.", "example": "rows, err := db.QueryContext(ctx, q); defer rows.Close()" },
-    { "title": "Context-scoped queries & cancellation", "explanation": "Always use the *Context methods (QueryContext, ExecContext, BeginTx). The context's deadline becomes the query timeout, and cancellation propagates to the driver so a client that gives up doesn't leave a query running and a connection pinned.", "example": "ctx, cancel := context.WithTimeout(ctx, 2*time.Second); defer cancel()" },
-    { "title": "Transactions hold a dedicated connection", "explanation": "BeginTx checks out one connection for the entire transaction; every Exec on that *sql.Tx uses it. You MUST end with Commit or Rollback — a leaked transaction permanently removes a connection from the pool. The idiomatic pattern is defer tx.Rollback() (a no-op after a successful Commit).", "example": "tx, _ := db.BeginTx(ctx, nil); defer tx.Rollback(); /* ... */ tx.Commit()" }
+    { "title": "*sql.DB is a pool, not a connection", "explanation": "sql.Open does not connect — it returns a handle to a lazily-initialized pool. Each Query/Exec borrows a free connection (or opens a new one up to the limit), runs the statement, and returns the connection to the pool. Because it's safe for concurrent use, you create ONE *sql.DB at startup and share it across all goroutines. This pool is the core abstraction of database/sql & connection pooling: one shared handle, many reused connections.", "example": "db, err := sql.Open(\"pgx\", dsn) // lazy: builds the pool, does NOT connect\nif err != nil {\n\tlog.Fatal(err)\n}\ndefer db.Close()\n\n// Force a real connection to fail fast if the DB is unreachable.\nctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\ndefer cancel()\nif err := db.PingContext(ctx); err != nil {\n\tlog.Fatalf(\"unreachable: %v\", err)\n}\n// One *sql.DB shared by every goroutine for the life of the process." },
+    { "title": "Sizing the pool: MaxOpenConns & MaxIdleConns", "explanation": "SetMaxOpenConns caps total connections in use + idle; beyond it, callers block waiting for a free one. SetMaxIdleConns caps how many stay open while idle (keep it equal to MaxOpenConns to avoid churn). The right max is bounded by the database's own connection limit divided across all app instances. Sizing these knobs is how you keep the connection pool within database/sql from exhausting the server.", "example": "// Cap the pool against the DB's connection budget across all instances.\ndb.SetMaxOpenConns(25) // hard cap: in-use + idle connections\ndb.SetMaxIdleConns(25) // match the max to avoid open/close churn\n\n// Inspect live pool state to confirm sizing under load.\ns := db.Stats()\nlog.Printf(\"open=%d inUse=%d idle=%d waitCount=%d\",\n\ts.OpenConnections, s.InUse, s.Idle, s.WaitCount)\n// Rising WaitCount means callers are blocking on an undersized pool." },
+    { "title": "Connection lifetime & recycling", "explanation": "SetConnMaxLifetime forces connections to be recycled after a duration, which lets load balancers rebalance and avoids servers that drop long-lived connections. SetConnMaxIdleTime closes connections that have been idle too long, releasing database resources during quiet periods. These timers let the database/sql pool self-heal, retiring stale connections before they fail a query.", "example": "// Background timers prune connections so the pool stays healthy.\ndb.SetConnMaxLifetime(30 * time.Minute) // recycle so LBs can rebalance\ndb.SetConnMaxIdleTime(5 * time.Minute)  // release idle conns in quiet periods\n\n// Stats reveal how many connections the timers have retired.\ns := db.Stats()\nlog.Printf(\"closedByLifetime=%d closedByIdle=%d\",\n\ts.MaxLifetimeClosed, s.MaxIdleTimeClosed)\n// A steady closedByLifetime count is normal recycling, not a leak." },
+    { "title": "Always close Rows (the #1 leak)", "explanation": "Query returns *sql.Rows that holds a connection until you fully drain it or call rows.Close(). Forgetting to close on an early return pins that connection forever; under load the pool drains and every query blocks. Defer rows.Close() and always check rows.Err() after the loop. In database/sql, an unclosed Rows is the single most common way to starve the connection pool.", "example": "rows, err := db.QueryContext(ctx, \"SELECT name FROM users\")\nif err != nil {\n\treturn nil, err\n}\ndefer rows.Close() // ALWAYS returns the connection, even on early return\n\nvar names []string\nfor rows.Next() {\n\tvar n string\n\tif err := rows.Scan(&n); err != nil {\n\t\treturn nil, err // safe: deferred Close still runs\n\t}\n\tnames = append(names, n)\n}\nif err := rows.Err(); err != nil { // Next()==false can mean error, not just EOF\n\treturn nil, err\n}\nreturn names, nil" },
+    { "title": "Context-scoped queries & cancellation", "explanation": "Always use the *Context methods (QueryContext, ExecContext, BeginTx). The context's deadline becomes the query timeout, and cancellation propagates to the driver so a client that gives up doesn't leave a query running and a connection pinned. Context scoping is what keeps a slow query from monopolizing a connection in the database/sql pool.", "example": "// The context deadline bounds the query and frees the connection on timeout.\nctx, cancel := context.WithTimeout(ctx, 2*time.Second)\ndefer cancel()\n\nvar count int\nerr := db.QueryRowContext(ctx,\n\t\"SELECT count(*) FROM jobs WHERE done = false\").Scan(&count)\nif errors.Is(err, context.DeadlineExceeded) {\n\treturn fmt.Errorf(\"query timed out: %w\", err) // driver cancels; conn returned\n}\nif err != nil {\n\treturn err\n}\n// Cancellation propagates to the driver, so a pinned connection is released." },
+    { "title": "Prepared statements", "explanation": "db.PrepareContext (or tx.Prepare) compiles a statement once and reuses it for repeated Exec/Query with different args, avoiding re-parsing and enabling parameter binding (which also prevents SQL injection). A *sql.Stmt manages its own pooled connections and MUST be closed with defer stmt.Close(). In database/sql, a Stmt sits on top of the connection pool — it re-prepares itself transparently on whichever pooled connection serves each call, so closing it is what releases those resources back to the pool.", "example": "// Compile once, reuse for many lookups with different arguments.\nstmt, err := db.PrepareContext(ctx, \"SELECT name FROM users WHERE id = $1\")\nif err != nil {\n\treturn err\n}\ndefer stmt.Close() // release the prepared statement's pooled resources\n\nfor _, id := range ids {\n\tvar name string\n\t// Parameter binding prevents SQL injection; the plan is not re-parsed.\n\tif err := stmt.QueryRowContext(ctx, id).Scan(&name); err != nil {\n\t\tif errors.Is(err, sql.ErrNoRows) {\n\t\t\tcontinue\n\t\t}\n\t\treturn err\n\t}\n\tlog.Printf(\"user %d = %s\", id, name)\n}" },
+    { "title": "Transactions hold a dedicated connection", "explanation": "BeginTx checks out one connection for the entire transaction; every Exec on that *sql.Tx uses it. You MUST end with Commit or Rollback — a leaked transaction permanently removes a connection from the pool. The idiomatic pattern is defer tx.Rollback() (a no-op after a successful Commit). Transactions are the one place in database/sql where a connection is pinned by design, so ending them promptly is essential to keeping the pool healthy.", "example": "tx, err := db.BeginTx(ctx, nil) // checks out ONE connection for the whole tx\nif err != nil {\n\treturn err\n}\ndefer tx.Rollback() // no-op after Commit; safety net that returns the conn\n\nif _, err := tx.ExecContext(ctx,\n\t\"UPDATE accounts SET balance = balance - $1 WHERE id = $2\", amt, from); err != nil {\n\treturn err // deferred Rollback frees the pinned connection\n}\nif _, err := tx.ExecContext(ctx,\n\t\"UPDATE accounts SET balance = balance + $1 WHERE id = $2\", amt, to); err != nil {\n\treturn err\n}\nreturn tx.Commit() // both updates commit atomically; connection returns to pool" }
   ],
   "foundations": {
     "overview": "When teams first reach for database/sql they treat *sql.DB like a connection and open one per request — and then watch the database fall over under load. The mental shift that makes everything click is this: *sql.DB is a self-managing pool. You configure how big it can get and how long connections live; the runtime hands them out, reuses them, and retires them. Master the pool knobs and the resource-leak patterns, and you have the foundation of every reliable Go data layer.",
@@ -194,6 +195,44 @@
           { "question": "Why match MaxIdleConns to MaxOpenConns?", "answer": "Otherwise connections beyond the idle cap are closed right after use and reopened on the next spike, adding handshake latency under steady load." },
           { "question": "Why set ConnMaxLifetime at all?", "answer": "So load balancers can rebalance traffic, and so connections that the DB or proxy may silently drop get recycled before they fail a query." }
         ]
+      },
+      {
+        "id": "golang-advanced-20-p5-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "How does a *sql.Tx relate to the connection pool, and why must you always Commit or Rollback? What's the idiomatic pattern?",
+        "directAnswer": "db.BeginTx checks out ONE connection from the pool and dedicates it to the transaction for its entire lifetime — every Exec/Query on that *sql.Tx runs on that pinned connection. The connection is returned to the pool only when you call Commit or Rollback. If you return without ending the transaction, that connection is leaked (pinned to a transaction that never finishes) until the database eventually times out the idle-in-transaction session. The idiomatic pattern is `defer tx.Rollback()` right after BeginTx: Rollback is a harmless no-op once Commit has succeeded, so the defer is a safety net that guarantees the connection is freed on any early-return error path.",
+        "detailedExplanation": {
+          "whatItIs": "A transaction bound to a single dedicated pooled connection.",
+          "whyItExists": "SQL transactions are session-scoped, so all statements must run on the same connection to share the transaction's isolation and locks.",
+          "howItWorks": "BeginTx borrows a connection and holds it; Commit/Rollback end the transaction and return the connection to the pool."
+        },
+        "whyImportant": "A leaked transaction permanently removes a connection from the pool; enough of them saturate it and stall all queries — a common incident.",
+        "realWorldExample": "A money-transfer handler used defer tx.Rollback() so that an error between the debit and credit Execs freed the connection instead of leaking it.",
+        "followUps": [
+          { "question": "Is a *sql.Tx safe for concurrent use?", "answer": "No — a Tx (and the connection it holds) must be used by one goroutine at a time; concurrent Execs on the same Tx race on a single connection." },
+          { "question": "What is 'idle in transaction' on the database side?", "answer": "A connection that began a transaction but hasn't committed/rolled back; it holds locks and a connection slot, so DBs often kill it after a timeout — a symptom of a leaked Tx." }
+        ]
+      },
+      {
+        "id": "golang-advanced-20-p5-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Why should you use the *Context query methods (QueryContext/ExecContext/QueryRowContext) and parameterized queries rather than the non-context variants and string concatenation?",
+        "directAnswer": "The *Context methods bind each query to a context.Context, so its deadline becomes the query timeout and cancellation propagates to the driver: if the client disconnects or the deadline elapses, the driver cancels the in-flight query and the connection is returned to the pool instead of being pinned by a runaway query. The plain Query/Exec have no such bound, so a slow query can hold a connection indefinitely and saturate the pool. Separately, always pass user input as bound parameters ($1, ?) rather than concatenating it into SQL: parameterization sends values separately from the statement, which both prevents SQL injection and lets the database cache the query plan. Together, context scoping bounds resource usage and parameters bound security risk.",
+        "detailedExplanation": {
+          "whatItIs": "Context-scoped, parameterized query execution — the safe defaults for database/sql.",
+          "whyItExists": "To bound query time via cancellation and to separate untrusted data from SQL code.",
+          "howItWorks": "Context deadline/cancel signals reach the driver to abort the query; bound parameters are transmitted apart from the statement text."
+        },
+        "whyImportant": "Missing context deadlines cause pool-exhaustion incidents; string-concatenated SQL is the classic injection vulnerability — both are frequent interview and audit findings.",
+        "realWorldExample": "An endpoint switched to QueryContext with a 2s deadline so a pathological query fails fast and frees its connection, and moved all user input to $1 placeholders, closing a SQL-injection hole.",
+        "followUps": [
+          { "question": "What error do you get when the context deadline fires mid-query?", "answer": "The call returns an error wrapping context.DeadlineExceeded (check with errors.Is); the driver cancels the query and returns the connection." },
+          { "question": "Do prepared statements also prevent injection?", "answer": "Yes — a prepared statement with bound parameters sends values separately from the SQL, so user input can't alter the statement structure." }
+        ]
       }
     ],
     "scenario": [
@@ -215,6 +254,25 @@
           { "question": "Which metric confirms pool saturation?", "answer": "db.Stats().WaitCount and WaitDuration climbing while InUse sits at MaxOpenConns." },
           { "question": "How do you find the leaking query?", "answer": "Audit code paths for missing rows.Close()/tx.Rollback(), and use the database's pg_stat_activity to see long-held idle-in-transaction connections." }
         ]
+      },
+      {
+        "id": "golang-advanced-20-p5-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "You run 8 identical Go service instances against one Postgres (max_connections = 100). During a traffic spike the database starts rejecting connections with 'too many clients', even though each instance's pool looks reasonable. How do you diagnose and fix this?",
+        "directAnswer": "The pool math is wrong across the fleet: each instance's MaxOpenConns is being multiplied by the number of instances. If each of 8 instances allows, say, 20 connections, that's 160 potential connections against a 100-connection database — plus you must leave headroom for migrations, admin tools, and monitoring. Fix it by budgeting the database's connection ceiling across ALL instances: roughly (max_connections - reserve) / instances, e.g. (100 - 20) / 8 = 10 MaxOpenConns per instance, with MaxIdleConns matched. If that per-instance cap is too low for your concurrency, introduce a transaction-pooling proxy like PgBouncer so small app pools multiplex onto far fewer real Postgres connections. Also set ConnMaxLifetime so failovers recycle connections, and alert on db.Stats().WaitCount so you see the app queueing before the DB rejects.",
+        "detailedExplanation": {
+          "whatItIs": "Fleet-wide connection budgeting against a shared database ceiling.",
+          "whyItExists": "A single database has a hard max_connections that every horizontally-scaled instance draws from simultaneously.",
+          "howItWorks": "Total possible connections = per-instance MaxOpenConns × instances + reserve; keep it under max_connections, or multiplex via a pooling proxy."
+        },
+        "whyImportant": "Per-instance-only pool sizing is one of the most common ways a horizontally-scaled Go service takes down its own database during a spike.",
+        "realWorldExample": "A SaaS hit 'too many clients' during peaks; capping per-instance pools to a fleet-wide budget and fronting Postgres with PgBouncer resolved it without vertical scaling.",
+        "followUps": [
+          { "question": "Why not just raise Postgres max_connections?", "answer": "Each connection costs memory and scheduler overhead; past the DB's useful parallelism more connections add contention and slow everything, so pooling/multiplexing is preferred over a bigger ceiling." },
+          { "question": "How does PgBouncer transaction pooling help?", "answer": "It lets many small app-side pools share a much smaller set of real Postgres connections by assigning a server connection only for the duration of each transaction." }
+        ]
       }
     ],
     "coding": [
@@ -235,6 +293,25 @@
         "followUps": [
           { "question": "Why check rows.Err() after the loop?", "answer": "rows.Next() returns false on both end-of-data and error; only rows.Err() distinguishes a real iteration failure." },
           { "question": "How does context cancellation help here?", "answer": "If the client disconnects or the deadline passes, the driver cancels the in-flight query and the connection is returned instead of being pinned." }
+        ]
+      },
+      {
+        "id": "golang-advanced-20-p5-cd-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Write `func WithTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error` that runs fn inside a transaction, committing on success and rolling back on error or panic. Callers should never have to remember Commit/Rollback.",
+        "thoughtProcess": "This is the transaction-wrapper pattern that eliminates the #1 tx leak. Begin the tx with BeginTx(ctx). I want to guarantee cleanup even on panic, so I defer a recovery closure that Rolls back and re-panics if fn panicked. On the normal path, call fn(tx); if it errors, Rollback and return the error; if it succeeds, Commit and return the commit error. The defer-based panic guard plus explicit Rollback-on-error covers every exit path, so the connection is always returned.",
+        "solution": {
+          "code": "package solution\n\nimport (\n\t\"context\"\n\t\"database/sql\"\n)\n\n// WithTx runs fn inside a transaction, committing on success and rolling back\n// on any error or panic, so callers never manage Commit/Rollback themselves.\nfunc WithTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) (err error) {\n\ttx, err := db.BeginTx(ctx, nil) // checks out one connection for the tx\n\tif err != nil {\n\t\treturn err\n\t}\n\t// Guarantee the connection is freed even if fn panics.\n\tdefer func() {\n\t\tif p := recover(); p != nil {\n\t\t\t_ = tx.Rollback() // release the pinned connection\n\t\t\tpanic(p)          // re-panic so the caller still sees it\n\t\t}\n\t}()\n\n\tif err = fn(tx); err != nil {\n\t\t_ = tx.Rollback() // fn failed: undo and free the connection\n\t\treturn err\n\t}\n\treturn tx.Commit() // success: commit atomically and return the connection\n}",
+          "language": "go"
+        },
+        "lineByLine": "BeginTx pins one pooled connection to the transaction. The deferred closure uses recover(): if fn panics, it rolls back (freeing the connection) and re-panics so the panic isn't swallowed. On the normal path we call fn(tx); if it returns an error we Rollback and propagate it; otherwise we Commit and return the commit's error. Every exit — error, success, or panic — ends the transaction, so the connection is never leaked. Naming the return err lets the pattern extend to capturing a rollback error if desired.",
+        "timeComplexity": "O(1) wrapper overhead plus whatever fn does.",
+        "spaceComplexity": "O(1) — one Tx handle and a deferred closure.",
+        "followUps": [
+          { "question": "Why re-panic after rolling back?", "answer": "Swallowing the panic would hide a bug and return nil as if the tx succeeded; re-panicking preserves the original failure while still cleaning up the connection." },
+          { "question": "How would you also surface a Rollback error?", "answer": "Combine it with the original error using errors.Join, or log it, so a failed rollback isn't silently discarded." }
         ]
       }
     ],

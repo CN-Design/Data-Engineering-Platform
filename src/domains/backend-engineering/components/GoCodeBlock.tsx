@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { Terminal, Eye, RotateCcw, Play } from 'lucide-react';
+import { Terminal, Eye, RotateCcw, Play, ExternalLink } from 'lucide-react';
 import type { BackendCode } from '../../../core/types/backend';
+import { openInGoPlayground } from '../utils/goPlayground';
 
 // A Go code block. Go cannot execute in the browser, so this is a
 // display + (optional) edit surface with a "Reveal Solution" and the
@@ -11,6 +12,15 @@ export const GoCodeBlock: React.FC<{ block: BackendCode; theme?: 'dark' | 'light
   const [code, setCode] = useState(block.code);
   const [revealed, setRevealed] = useState(false);
   const [showOut, setShowOut] = useState(false);
+  const [pgMsg, setPgMsg] = useState('');
+  const isGo = block.language === 'go';
+
+  const runInPlayground = async () => {
+    setPgMsg('Opening Go Playground…');
+    const r = await openInGoPlayground(code);
+    setPgMsg(r === 'shared' ? 'Opened in Go Playground →' : 'Code copied — paste it into the Playground tab & Run');
+    setTimeout(() => setPgMsg(''), 6000);
+  };
 
   if (!editable) {
     return (
@@ -42,6 +52,9 @@ export const GoCodeBlock: React.FC<{ block: BackendCode; theme?: 'dark' | 'light
             {block.solution && (
               <button className="be-btn" onClick={() => { setCode(block.solution as string); setRevealed(true); }}><Eye size={12} /> {revealed ? 'Solution shown' : 'Reveal solution'}</button>
             )}
+            {isGo && (
+              <button className="be-btn" onClick={runInPlayground} title="Run this code in the free Go Playground (standard library only)"><ExternalLink size={12} /> Run in Playground</button>
+            )}
           </div>
         </div>
         <Editor
@@ -53,7 +66,7 @@ export const GoCodeBlock: React.FC<{ block: BackendCode; theme?: 'dark' | 'light
           options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, tabSize: 4 }}
         />
       </div>
-      <p className="be-run-note"><Terminal size={12} /> Go runs locally — edit freely, reveal the solution, and verify with <code>go test ./...</code>.</p>
+      <p className="be-run-note"><Terminal size={12} /> {pgMsg || <>Run stdlib Go one-click in the Playground, or verify locally with <code>go test ./...</code>.</>}</p>
       {block.expectedOutput && (
         <div className="be-output"><div className="be-output-label">Expected output</div><pre>{block.expectedOutput}</pre></div>
       )}

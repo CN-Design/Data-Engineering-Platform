@@ -1,0 +1,501 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-12",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Dockerizing & Deploying Go Services",
+  "difficulty": "intermediate",
+  "summary": "Go's single static binary makes it the best-behaved citizen in a container. The whole packaging story rests on one pattern — the **multi-stage Dockerfile**: a fat builder image compiles a `CGO_ENABLED=0` static binary, then a tiny final stage (scratch or distroless) ships just that binary. Layer your Dockerfile for cache hits, run as non-root, pass config via env, drain on SIGTERM, and wire up Kubernetes probes — and you get images measured in single-digit megabytes that deploy with zero downtime.",
+  "prerequisites": [
+    "golang-web-1"
+  ],
+  "relatedConcepts": [
+    "golang-web-1",
+    "golang-master-5"
+  ],
+  "nestedConcepts": [
+    "multi-stage Dockerfiles",
+    "static builds with CGO_ENABLED=0",
+    "layer caching & go mod download",
+    "distroless & scratch base images",
+    "graceful shutdown on SIGTERM",
+    "Kubernetes probes & 12-factor config"
+  ],
+  "subtopics": [
+    {
+      "title": "Multi-stage builds on scratch/distroless",
+      "explanation": "A multi-stage Dockerfile uses one FROM to build (with the full Go toolchain) and a second FROM for the runtime image, copying only the compiled binary across. Because a static Go binary has no dependencies, the final stage can be `scratch` (empty) or `gcr.io/distroless/static` (adds CA certs, tzdata, and a non-root user but no shell). This is the foundation of dockerizing a Go service: you get a self-contained image of a few megabytes instead of hundreds.",
+      "example": "# --- build stage: full toolchain, thrown away later ---\nFROM golang:1.22 AS build\nWORKDIR /src\nCOPY go.mod go.sum ./\nRUN go mod download\nCOPY . .\n# static binary: no libc, no dynamic links (see next subtopic)\nRUN CGO_ENABLED=0 GOOS=linux go build -o /app ./cmd/server\n\n# --- final stage: distroless static, no shell, non-root ---\nFROM gcr.io/distroless/static:nonroot\nCOPY --from=build /app /app\nUSER nonroot:nonroot\nENTRYPOINT [\"/app\"]\n# Result: ~10MB image containing only your binary + CA certs."
+    },
+    {
+      "title": "Static builds: CGO_ENABLED=0",
+      "explanation": "By default the standard library's net and os/user packages may use cgo, dynamically linking against the host libc — which does not exist in a scratch image, so the binary crashes with 'no such file or directory'. Setting CGO_ENABLED=0 forces the pure-Go implementations and produces a fully static binary with no runtime dependencies. Understanding static builds is what lets your multi-stage image actually run on scratch or distroless/static.",
+      "example": "# WRONG: default build dynamically links libc -> fails on scratch\n# RUN go build -o /app ./cmd/server\n\n# RIGHT: force pure-Go, fully static binary\nRUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \\\n    go build -ldflags=\"-s -w\" -o /app ./cmd/server\n\n# Verify there are no dynamic links (should print 'not a dynamic executable'):\n# ldd /app"
+    },
+    {
+      "title": "Layer caching & .dockerignore",
+      "explanation": "Docker caches each instruction as a layer and reuses it until an input changes. Copying go.mod/go.sum and running `go mod download` BEFORE copying source means dependency downloads are cached across source edits — a huge speedup. A .dockerignore file keeps .git, node_modules, and local binaries out of the build context so the COPY layer stays small and stable. Getting layer order and .dockerignore right is what turns a 5-minute rebuild into a 5-second one.",
+      "example": "# .dockerignore keeps the build context small and cache-stable\n# (contents of .dockerignore):\n.git\n.gitignore\nDockerfile\n*.md\nbin/\ntmp/\n\n# In the Dockerfile: deps layer is cached until go.mod/go.sum change\n# COPY go.mod go.sum ./\n# RUN go mod download        <- cached across code edits\n# COPY . .                   <- only this layer rebuilds on code change\n# RUN go build ...           <- rebuilds, but deps are already there"
+    },
+    {
+      "title": "Running as non-root & HEALTHCHECK",
+      "explanation": "Running a container as root means a container escape gives the attacker root on the node, so production images run as an unprivileged user (distroless/static:nonroot ships UID 65532, or you `USER` a numeric ID). A Dockerfile HEALTHCHECK lets the runtime probe liveness, though scratch/distroless have no shell or curl, so you probe via the binary itself or rely on Kubernetes probes instead. Non-root plus health checks are baseline hardening for any Go service you deploy.",
+      "example": "# Non-root: use a numeric UID so it works even without /etc/passwd\nFROM gcr.io/distroless/static:nonroot\nCOPY --from=build /app /app\nUSER 65532:65532\n\n# HEALTHCHECK on distroless: no shell/curl, so probe with the binary\n# (the app exposes a `-healthcheck` flag that hits /healthz locally)\nHEALTHCHECK --interval=30s --timeout=3s --retries=3 \\\n  CMD [\"/app\", \"-healthcheck\"]\nENTRYPOINT [\"/app\"]"
+    },
+    {
+      "title": "12-factor config & docker compose",
+      "explanation": "A 12-factor app reads all config from environment variables, never from baked-in files, so the same image runs in dev, staging, and prod. Locally, docker compose spins up your service alongside its dependencies (Postgres, Redis) on a shared network, injecting env vars and wiring `depends_on` with health conditions. Env-based config plus compose is what makes the exact image you ship also runnable on a laptop with one command.",
+      "example": "# docker-compose.yml: app + Postgres + Redis for local dev\nservices:\n  app:\n    build: .\n    ports: [\"8080:8080\"]\n    environment:\n      DATABASE_URL: postgres://app:secret@db:5432/app?sslmode=disable\n      REDIS_ADDR: redis:6379\n    depends_on:\n      db: { condition: service_healthy }\n      redis: { condition: service_started }\n  db:\n    image: postgres:16\n    environment: { POSTGRES_USER: app, POSTGRES_PASSWORD: secret, POSTGRES_DB: app }\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U app\"]\n      interval: 5s\n      retries: 5\n  redis:\n    image: redis:7"
+    },
+    {
+      "title": "Graceful shutdown on SIGTERM",
+      "explanation": "Kubernetes sends SIGTERM before killing a pod, so a Go service must catch it and drain in-flight requests instead of exiting abruptly. Using signal.NotifyContext you get a context that is cancelled on SIGTERM; call srv.Shutdown(ctx) with a deadline a bit under the pod's terminationGracePeriodSeconds to stop accepting connections and let active handlers finish. Combined with a readiness probe you flip to failing first, graceful shutdown on SIGTERM is what delivers zero-downtime rolling deploys.",
+      "example": "func main() {\n\tsrv := &http.Server{Addr: \":8080\", Handler: mux}\n\t// ctx is cancelled when SIGINT/SIGTERM arrives.\n\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)\n\tdefer stop()\n\n\tgo func() { _ = srv.ListenAndServe() }() // run server in background\n\t<-ctx.Done()                             // block until signal\n\n\t// Give in-flight requests up to 25s to finish, then force exit.\n\tshutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\n\tdefer cancel()\n\t_ = srv.Shutdown(shutCtx) // stop intake, drain active handlers\n}"
+    }
+  ],
+  "foundations": {
+    "overview": "Go is uniquely suited to containers: `go build` produces a single static binary with no runtime, interpreter, or shared libraries to ship. That lets you use a multi-stage Dockerfile to compile in a fat image and run in an almost-empty one (scratch or distroless), yielding tiny, fast-pulling, low-attack-surface images. The rest of production readiness is operational discipline: cache-friendly layer order, non-root users, env-based config, graceful shutdown on SIGTERM, and Kubernetes liveness/readiness probes.",
+    "formalDefinition": "A multi-stage build is a Dockerfile with multiple FROM instructions where later stages COPY artifacts from earlier ones, so only the final stage ships. A static Go build (CGO_ENABLED=0) links all code into the binary with no dynamic dependencies, allowing it to run on an empty base image. Graceful shutdown is draining in-flight work via http.Server.Shutdown after receiving SIGTERM before the process exits.",
+    "whyItMatters": "Container image size and startup time directly affect deploy speed, autoscaling latency, and cost; attack surface affects security. Go plus multi-stage/distroless produces images 20-50x smaller than a naive single-stage build. And correct SIGTERM handling is the difference between zero-downtime deploys and users seeing connection resets on every rollout.",
+    "mentalModel": "Think of a multi-stage build like cooking in a full kitchen and then shipping only the finished dish on a clean plate. The builder stage is the messy kitchen (compilers, caches, source); the final stage is the plate — it carries just the meal (your binary) and nothing to cook with. Nobody can use the plate to cook (no shell), which is exactly why it's safe.",
+    "runtimePerspective": "At runtime a distroless/scratch container is just your PID 1 binary. There is no shell, no package manager, and often no /etc/passwd — so you exec via the binary, cannot `docker exec sh` to debug, and must run as a numeric UID. The kernel delivers SIGTERM to PID 1 (your app), which must handle it; if the app ignores signals, the runtime waits terminationGracePeriodSeconds then sends SIGKILL.",
+    "realWorldUsage": "Every Go microservice shipped to Kubernetes, ECS, or Cloud Run; CLI tools distributed as containers; sidecars and operators; serverless container runtimes. Distroless and scratch base images are the de facto standard for Go production images.",
+    "businessImpact": "Smaller images pull faster, so pods start faster during scale-ups and incidents, reducing downtime and cloud spend. Graceful shutdown eliminates error spikes during deploys, protecting SLOs and customer trust. A minimal base image with no shell shrinks the vulnerability report your security team must triage.",
+    "engineeringImpact": "A cache-friendly Dockerfile turns multi-minute rebuilds into seconds, tightening the inner dev loop. Env-based 12-factor config plus docker compose means one image runs identically on a laptop and in prod, killing 'works on my machine' bugs. Probes and graceful shutdown make deploys boring.",
+    "performanceImpact": "Static binaries have no dynamic-linker startup cost and cold-start in milliseconds. Tiny images reduce network transfer and disk pressure on nodes. The main costs to watch are build-time (mitigated by layer caching and BuildKit cache mounts) and forgetting to strip symbols (-ldflags='-s -w') on very size-sensitive images.",
+    "commonUseCases": [
+      "Multi-stage Dockerfile producing a scratch/distroless image for a Go API",
+      "docker compose spinning up the service with Postgres and Redis for local dev",
+      "Kubernetes Deployment with liveness/readiness probes and a terminationGracePeriod",
+      "Graceful shutdown on SIGTERM for zero-downtime rolling deploys"
+    ],
+    "commonMisconceptions": [
+      {
+        "myth": "You need a full Linux distro (ubuntu/alpine) as your base image to run a Go binary.",
+        "reality": "A CGO_ENABLED=0 static Go binary has zero runtime dependencies and runs on scratch or distroless/static. Alpine still uses musl libc and only matters if you enable cgo."
+      },
+      {
+        "myth": "The default `go build` binary will run fine in a scratch container.",
+        "reality": "The default build may dynamically link libc via cgo (net, os/user), so on scratch it fails with 'no such file or directory'. You must build with CGO_ENABLED=0 (or ship the loader/certs)."
+      },
+      {
+        "myth": "Layer order in a Dockerfile doesn't matter, only the final result.",
+        "reality": "Order determines cache reuse. Copying source before `go mod download` invalidates the dependency layer on every code edit, making every build re-download modules."
+      },
+      {
+        "myth": "Kubernetes will wait for my app to finish requests before killing it automatically.",
+        "reality": "K8s sends SIGTERM and waits only terminationGracePeriodSeconds; if your app doesn't catch SIGTERM and drain, in-flight requests are cut when SIGKILL arrives."
+      }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "A complete production multi-stage Dockerfile on distroless",
+      "explanation": "This Dockerfile caches dependencies separately from source (layer order), builds a static CGO_ENABLED=0 binary with stripped symbols, and ships it on distroless/static:nonroot so the final image is a few megabytes, runs as a non-root numeric UID, and has no shell to exploit.",
+      "code": {
+        "language": "bash",
+        "code": "# syntax=docker/dockerfile:1\n\n# ---------- build stage ----------\nFROM golang:1.22 AS build\nWORKDIR /src\n\n# Cache deps: this layer is reused until go.mod/go.sum change.\nCOPY go.mod go.sum ./\nRUN go mod download\n\n# Now copy source; only later layers rebuild on code edits.\nCOPY . .\n\n# Static, stripped binary that runs on an empty base image.\nRUN CGO_ENABLED=0 GOOS=linux go build \\\n    -ldflags=\"-s -w\" -o /app ./cmd/server\n\n# ---------- final stage ----------\nFROM gcr.io/distroless/static:nonroot\nCOPY --from=build /app /app\nUSER 65532:65532\nEXPOSE 8080\nENTRYPOINT [\"/app\"]",
+        "caption": "Build with: docker build -t myservice:latest . — then inspect size with docker images.",
+        "expectedOutput": "REPOSITORY   TAG      SIZE\nmyservice    latest   11.4MB   # vs ~900MB for a single-stage golang:1.22 image"
+      }
+    },
+    {
+      "level": "intermediate",
+      "title": "docker compose for local dev with Postgres and Redis",
+      "explanation": "Config comes entirely from environment variables (12-factor), and depends_on with a health condition ensures the app only starts after Postgres reports ready. This is the same image you ship, wired to local dependencies with one `docker compose up`.",
+      "code": {
+        "language": "bash",
+        "code": "# docker-compose.yml\nservices:\n  app:\n    build: .\n    ports:\n      - \"8080:8080\"\n    environment:\n      # 12-factor: all config via env, no baked-in files\n      DATABASE_URL: postgres://app:secret@db:5432/app?sslmode=disable\n      REDIS_ADDR: redis:6379\n      LOG_LEVEL: debug\n    depends_on:\n      db:\n        condition: service_healthy   # wait for Postgres to be ready\n      redis:\n        condition: service_started\n\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_USER: app\n      POSTGRES_PASSWORD: secret\n      POSTGRES_DB: app\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U app\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n\n  redis:\n    image: redis:7",
+        "caption": "Run: docker compose up --build. The app waits for Postgres's healthcheck to pass before starting.",
+        "expectedOutput": "db-1     ... database system is ready to accept connections\napp-1    ... listening on :8080 (DATABASE_URL=postgres://app:...@db:5432/app)"
+      }
+    },
+    {
+      "level": "production",
+      "title": "Graceful shutdown on SIGTERM with signal.NotifyContext",
+      "explanation": "signal.NotifyContext returns a context cancelled on SIGTERM/SIGINT. We run the server in a goroutine, block on ctx.Done(), then call srv.Shutdown with a bounded deadline so in-flight requests drain instead of being cut. This is what makes Kubernetes rolling deploys zero-downtime.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"log\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"syscall\"\n\t\"time\"\n)\n\nfunc main() {\n\tmux := http.NewServeMux()\n\tmux.HandleFunc(\"/healthz\", func(w http.ResponseWriter, r *http.Request) {\n\t\tw.WriteHeader(http.StatusOK)\n\t})\n\n\tsrv := &http.Server{Addr: \":8080\", Handler: mux}\n\n\t// Context is cancelled when SIGINT or SIGTERM is delivered.\n\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)\n\tdefer stop()\n\n\tgo func() {\n\t\t// ListenAndServe returns ErrServerClosed after Shutdown; ignore it.\n\t\tif err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {\n\t\t\tlog.Fatalf(\"serve: %v\", err)\n\t\t}\n\t}()\n\tlog.Println(\"listening on :8080\")\n\n\t<-ctx.Done() // block until a signal arrives\n\tlog.Println(\"shutting down: draining in-flight requests...\")\n\n\t// Drain within a deadline under the pod terminationGracePeriodSeconds.\n\tshutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\n\tdefer cancel()\n\tif err := srv.Shutdown(shutCtx); err != nil {\n\t\tlog.Fatalf(\"forced shutdown: %v\", err) // handlers didn't finish in time\n\t}\n\tlog.Println(\"clean shutdown complete\")\n}",
+        "caption": "Send SIGTERM (kill -TERM <pid> or `docker stop`) and watch it drain instead of dropping connections.",
+        "expectedOutput": "listening on :8080\nshutting down: draining in-flight requests...\nclean shutdown complete"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Why must a Go binary destined for a `scratch` base image be built with CGO_ENABLED=0?",
+      "options": [
+        "To make the binary smaller than 1MB",
+        "To force pure-Go implementations so the binary is fully static and needs no libc",
+        "Because scratch only runs 32-bit binaries",
+        "To enable HTTP/2 support"
+      ],
+      "answerIndex": 1,
+      "explanation": "With cgo enabled, packages like net and os/user may dynamically link against the host libc. A scratch image has no libc, so the binary fails at startup with 'no such file or directory'. CGO_ENABLED=0 forces the pure-Go implementations, producing a fully static binary that runs on an empty base image."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This Dockerfile builds correctly but re-downloads all modules on every single code change, making rebuilds slow. What's the root cause?",
+      "code": "FROM golang:1.22 AS build\nWORKDIR /src\nCOPY . .\nRUN go mod download\nRUN CGO_ENABLED=0 go build -o /app ./cmd/server\n\nFROM scratch\nCOPY --from=build /app /app\nENTRYPOINT [\"/app\"]",
+      "options": [
+        "scratch cannot run Go binaries",
+        "COPY . . comes before go mod download, so any source edit invalidates the cached download layer",
+        "go build is missing GOOS=linux",
+        "ENTRYPOINT should be CMD"
+      ],
+      "answerIndex": 1,
+      "explanation": "Because `COPY . .` runs before `go mod download`, editing any source file changes that layer and invalidates every layer after it — including the module download. Copy go.mod/go.sum and run `go mod download` FIRST, then copy the rest of the source, so the dependency layer stays cached across code edits."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the build command that produces a fully static Linux binary suitable for a scratch image.",
+      "codeBefore": "RUN",
+      "codeAfter": "go build -ldflags=\"-s -w\" -o /app ./cmd/server",
+      "options": [
+        "CGO_ENABLED=0 GOOS=linux",
+        "GOFLAGS=-mod=vendor",
+        "CGO_ENABLED=1 GOOS=darwin",
+        "GO111MODULE=off"
+      ],
+      "answerIndex": 0,
+      "explanation": "CGO_ENABLED=0 forces pure-Go (no libc dependency) and GOOS=linux targets the container OS. Together they yield a static Linux binary; -ldflags='-s -w' additionally strips debug symbols to shrink it."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "A Go server runs ListenAndServe in a goroutine and blocks on `<-ctx.Done()` from signal.NotifyContext, then calls srv.Shutdown. The runtime sends SIGTERM while one request is mid-flight (2s of work). Assuming the shutdown deadline is 25s, what happens?",
+      "code": "ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)\ndefer stop()\ngo srv.ListenAndServe()\n<-ctx.Done()\nshutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\ndefer cancel()\n_ = srv.Shutdown(shutCtx)",
+      "options": [
+        "The in-flight request is immediately cut and the client gets a connection reset",
+        "Shutdown stops accepting new connections and waits for the in-flight request to finish (~2s), then returns cleanly",
+        "The process exits instantly on SIGTERM before Shutdown runs",
+        "Shutdown blocks forever because a request is active"
+      ],
+      "answerIndex": 1,
+      "explanation": "srv.Shutdown stops the listener (no new connections) and blocks until active handlers return or the context deadline (25s) elapses. The 2s request finishes well within the deadline, so Shutdown returns nil and the process exits cleanly — the essence of graceful shutdown."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-multistage-dockerfile",
+      "title": "Write a cache-friendly multi-stage Dockerfile on distroless",
+      "instructions": "Complete the Dockerfile so it: (1) uses golang:1.22 as a build stage, (2) caches `go mod download` by copying go.mod/go.sum before the source, (3) builds a static binary with CGO_ENABLED=0 and GOOS=linux to /app, and (4) ships it on gcr.io/distroless/static:nonroot running as a non-root user with an ENTRYPOINT of the binary.",
+      "starter": {
+        "language": "bash",
+        "code": "# TODO: build stage with the full Go toolchain\nFROM golang:1.22 AS build\nWORKDIR /src\n\n# TODO: copy go.mod/go.sum and download deps (cache this layer)\n\n# TODO: copy the rest of the source\n\n# TODO: build a static binary to /app (CGO_ENABLED=0, GOOS=linux)\n\n# TODO: final minimal stage on distroless, non-root, ENTRYPOINT the binary",
+        "editable": true
+      },
+      "solution": {
+        "language": "bash",
+        "code": "# build stage with the full Go toolchain\nFROM golang:1.22 AS build\nWORKDIR /src\n\n# copy go.mod/go.sum and download deps FIRST so this layer caches\nCOPY go.mod go.sum ./\nRUN go mod download\n\n# copy the rest of the source (only this layer rebuilds on code edits)\nCOPY . .\n\n# build a fully static binary to /app\nRUN CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o /app ./cmd/server\n\n# final minimal stage: distroless static, non-root, no shell\nFROM gcr.io/distroless/static:nonroot\nCOPY --from=build /app /app\nUSER 65532:65532\nEXPOSE 8080\nENTRYPOINT [\"/app\"]"
+      },
+      "testHarness": "# Verification steps (run in a shell):\n# 1. Build the image\ndocker build -t lab-service:test .\n# 2. Confirm it is small (should be well under 20MB)\ndocker images lab-service:test --format '{{.Size}}'\n# 3. Confirm the binary is static (runs on scratch/distroless)\ndocker run --rm --entrypoint /app lab-service:test -version\n# 4. Confirm it runs as non-root (UID 65532, not 0)\ndocker inspect lab-service:test --format '{{.Config.User}}'",
+      "expectedOutput": "11.4MB\n65532:65532",
+      "hints": [
+        "Copy go.mod and go.sum and run `go mod download` BEFORE `COPY . .` so the dependency layer is cached across code edits.",
+        "CGO_ENABLED=0 GOOS=linux is what makes the binary static enough to run on distroless/static or scratch.",
+        "Use a numeric UID (USER 65532:65532) since distroless has no /etc/passwd entry to resolve a name against."
+      ]
+    },
+    {
+      "id": "go-lab-graceful-shutdown",
+      "title": "Implement graceful shutdown on SIGTERM",
+      "instructions": "Complete `run` so it starts the http.Server in a goroutine, waits for SIGINT/SIGTERM using signal.NotifyContext, then calls srv.Shutdown with a 10s deadline to drain in-flight requests. Return nil on a clean shutdown; return Shutdown's error if the deadline is exceeded. Ignore http.ErrServerClosed from ListenAndServe.",
+      "starter": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"net/http\"\n)\n\nfunc run(srv *http.Server) error {\n\t// TODO: run srv.ListenAndServe in a goroutine\n\t// TODO: build a context cancelled on SIGINT/SIGTERM\n\t// TODO: on signal, srv.Shutdown with a 10s deadline\n\treturn nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"net/http\"\n\t\"os\"\n\t\"os/signal\"\n\t\"syscall\"\n\t\"time\"\n)\n\nfunc run(srv *http.Server) error {\n\t// Cancelled when SIGINT or SIGTERM is delivered.\n\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)\n\tdefer stop()\n\n\terrCh := make(chan error, 1)\n\tgo func() {\n\t\t// ErrServerClosed is expected after Shutdown; treat it as clean.\n\t\tif err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {\n\t\t\terrCh <- err\n\t\t\treturn\n\t\t}\n\t\terrCh <- nil\n\t}()\n\n\tselect {\n\tcase err := <-errCh: // server failed to start/serve\n\t\treturn err\n\tcase <-ctx.Done(): // signal received: drain\n\t\tshutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)\n\t\tdefer cancel()\n\t\treturn srv.Shutdown(shutCtx)\n\t}\n}"
+      },
+      "testHarness": "package main\n\nimport (\n\t\"net/http\"\n\t\"syscall\"\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestRunGracefulShutdown(t *testing.T) {\n\tsrv := &http.Server{Addr: \":0\", Handler: http.NewServeMux()}\n\tdone := make(chan error, 1)\n\tgo func() { done <- run(srv) }()\n\n\t// Let the server start, then deliver SIGTERM to ourselves.\n\ttime.Sleep(100 * time.Millisecond)\n\tif err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {\n\t\tt.Fatalf(\"kill: %v\", err)\n\t}\n\n\tselect {\n\tcase err := <-done:\n\t\tif err != nil {\n\t\t\tt.Fatalf(\"expected clean shutdown, got %v\", err)\n\t\t}\n\tcase <-time.After(2 * time.Second):\n\t\tt.Fatal(\"run did not return after SIGTERM\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  main  0.12s)",
+      "hints": [
+        "signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM) gives you a ctx cancelled on those signals.",
+        "Run ListenAndServe in a goroutine and select on both a start-error channel and ctx.Done() so a bind failure doesn't hang.",
+        "http.ErrServerClosed is returned by ListenAndServe AFTER a successful Shutdown — use errors.Is to treat it as clean, not an error."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-scratch-dynamic-link",
+      "difficulty": "intermediate",
+      "title": "Container exits with 'no such file or directory' on a valid binary",
+      "symptom": "The image builds fine, but running it fails immediately: 'exec /app: no such file or directory' — even though /app clearly exists in the image and runs on your Mac.",
+      "brokenCode": {
+        "language": "bash",
+        "code": "FROM golang:1.22 AS build\nWORKDIR /src\nCOPY . .\nRUN go build -o /app ./cmd/server   # default build: cgo may dynamically link libc\n\nFROM scratch\nCOPY --from=build /app /app\nENTRYPOINT [\"/app\"]",
+        "expectedOutput": "exec /app: no such file or directory"
+      },
+      "errorAnalysis": "The confusing error is not about the binary being missing — /app is there. With cgo enabled (the default on a cgo-capable toolchain), stdlib packages like net and os/user link dynamically against the host's libc (ld-linux / glibc). The `scratch` image contains no libc and no dynamic loader, so the kernel cannot resolve the interpreter and reports ENOENT, surfacing as 'no such file or directory'. The binary ran on your Mac only because the build image had libc.",
+      "commonMistakes": [
+        "Omitting CGO_ENABLED=0, so the binary dynamically links libc and can't run on scratch.",
+        "Assuming 'no such file or directory' means the COPY path is wrong (it's actually the missing dynamic loader).",
+        "Not setting GOOS=linux when cross-building, producing a binary for the wrong OS."
+      ],
+      "fixChallenge": "Force a fully static, pure-Go build so the binary has no libc dependency, then it runs on scratch.",
+      "solution": {
+        "language": "bash",
+        "code": "FROM golang:1.22 AS build\nWORKDIR /src\nCOPY go.mod go.sum ./\nRUN go mod download\nCOPY . .\n# CGO_ENABLED=0 -> pure-Go, fully static, no libc dependency\nRUN CGO_ENABLED=0 GOOS=linux go build -ldflags=\"-s -w\" -o /app ./cmd/server\n\nFROM scratch\n# Copy CA certs too, since scratch has none (needed for outbound TLS).\nCOPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/\nCOPY --from=build /app /app\nENTRYPOINT [\"/app\"]",
+        "expectedOutput": "listening on :8080   # binary now runs cleanly on scratch"
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-12-th-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Explain multi-stage Docker builds and why they are ideal for Go services.",
+        "directAnswer": "A multi-stage Dockerfile has multiple FROM stages; a build stage uses the full Go toolchain to compile the binary, and the final stage COPYs only that binary onto a minimal base (scratch or distroless), discarding the compiler, source, and module cache. It's ideal for Go because `go build` yields a single self-contained binary — with CGO_ENABLED=0 it's fully static — so the runtime image needs nothing else. The result is an image of a few megabytes with a tiny attack surface instead of the ~900MB of a single-stage golang image.",
+        "detailedExplanation": {
+          "whatItIs": "A Dockerfile pattern that separates the heavy build environment from the lean runtime image.",
+          "whyItExists": "To ship only the artifact, not the toolchain, giving small, secure, fast-pulling images.",
+          "howItWorks": "Named stages (FROM golang AS build) compile the binary; a later stage does COPY --from=build to bring across just the output."
+        },
+        "whyImportant": "Image size affects deploy speed, autoscaling, cost, and security; multi-stage builds are the standard way Go teams package services and a common interview topic.",
+        "realWorldExample": "A service Dockerfile builds on golang:1.22 then ships on gcr.io/distroless/static:nonroot, cutting the image from ~900MB to ~11MB.",
+        "followUps": [
+          {
+            "question": "Why choose distroless over alpine?",
+            "answer": "Distroless has no shell or package manager (smaller attack surface) and, for static Go binaries, doesn't need alpine's musl libc at all. Alpine only helps when you need a shell or cgo with musl."
+          },
+          {
+            "question": "What must you copy into a scratch image besides the binary?",
+            "answer": "Usually CA certificates (for outbound TLS) and sometimes tzdata; distroless/static already bundles both plus a nonroot user."
+          }
+        ]
+      },
+      {
+        "id": "go-web-12-th-2",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "What does CGO_ENABLED=0 do, and why does it matter for containerized Go?",
+        "directAnswer": "CGO_ENABLED=0 disables cgo, forcing the compiler to use pure-Go implementations of packages that otherwise call into C (notably net's DNS resolver and os/user). The result is a fully static binary with no dynamic links to libc. It matters because minimal base images like scratch and distroless/static contain no libc or dynamic loader; a dynamically linked binary fails there with 'no such file or directory'. A static binary runs on an empty image.",
+        "detailedExplanation": {
+          "whatItIs": "A build flag that turns off C interop and selects pure-Go code paths.",
+          "whyItExists": "To let Go produce fully self-contained static binaries with no external runtime dependencies.",
+          "howItWorks": "With cgo off, the linker resolves everything internally, so `ldd` reports 'not a dynamic executable'."
+        },
+        "whyImportant": "It's the single most common reason a 'working' Go image crashes on scratch/distroless, and it directly enables tiny images — a frequent interview and debugging scenario.",
+        "realWorldExample": "A team's image crashed on scratch until they added CGO_ENABLED=0; ldd then showed no dynamic links and the container started cleanly.",
+        "followUps": [
+          {
+            "question": "When would you keep cgo enabled?",
+            "answer": "When you depend on a C library (e.g. certain SQLite drivers, image codecs) or need the system's native DNS resolver; then you ship a base with the matching libc (debian/distroless base, not static)."
+          },
+          {
+            "question": "Does CGO_ENABLED=0 change DNS behavior?",
+            "answer": "Yes — it forces Go's pure-Go resolver instead of the cgo/libc one, which can differ on how it reads /etc/nsswitch.conf and host config, occasionally affecting name resolution edge cases."
+          }
+        ]
+      },
+      {
+        "id": "go-web-12-th-3",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "How do Kubernetes liveness and readiness probes differ, and how do they interact with graceful shutdown?",
+        "directAnswer": "A liveness probe checks whether the process is healthy enough to keep running; failing it makes Kubernetes restart the container. A readiness probe checks whether the pod should receive traffic; failing it removes the pod from Service endpoints without restarting it. They interact with shutdown because on SIGTERM you should first flip readiness to failing (so the load balancer stops sending new requests) and then call srv.Shutdown to drain in-flight requests. Liveness should stay passing during drain so K8s doesn't restart the pod mid-shutdown.",
+        "detailedExplanation": {
+          "whatItIs": "Two independent health checks: liveness (restart on failure) and readiness (route traffic on success).",
+          "whyItExists": "To let the platform restart wedged processes and route traffic only to pods able to serve it.",
+          "howItWorks": "The kubelet HTTP-GETs (or execs) each probe on its schedule; results drive restart and endpoint membership decisions."
+        },
+        "whyImportant": "Confusing the two causes restart loops or traffic sent to draining/not-ready pods; correct probe + shutdown coordination is the basis of zero-downtime deploys.",
+        "realWorldExample": "On SIGTERM a service sets a readyz flag false, sleeps briefly for endpoints to update, then Shutdown()s — new traffic stops, in-flight finishes, no client errors.",
+        "followUps": [
+          {
+            "question": "Why add a small sleep between failing readiness and Shutdown?",
+            "answer": "Endpoint removal propagates asynchronously; a brief delay lets kube-proxy/ingress stop routing before you close the listener, avoiding a race where new requests still arrive."
+          },
+          {
+            "question": "What is a startup probe for?",
+            "answer": "It gates liveness/readiness during slow starts, so a slow-initializing app isn't killed by an aggressive liveness probe before it's up."
+          }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-12-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Your Go Docker image is 950MB and pulls take minutes during autoscaling, slowing incident response. How do you shrink it?",
+        "directAnswer": "Switch to a multi-stage build: keep golang:1.22 as a build stage, but add a final stage on gcr.io/distroless/static:nonroot (or scratch) that only COPYs the compiled binary. Build the binary with CGO_ENABLED=0 GOOS=linux so it's static and runs on the empty base, and add -ldflags='-s -w' to strip symbols. Add a .dockerignore to keep .git and local artifacts out of the context. This typically cuts the image from ~900MB to ~10-15MB, so pulls drop to seconds and autoscaling/incident recovery gets much faster.",
+        "detailedExplanation": {
+          "whatItIs": "Reducing image size by shipping only a static binary on a minimal base.",
+          "whyItExists": "Large images slow every pull, hurting scale-up latency and cost.",
+          "howItWorks": "Multi-stage build discards the toolchain; static linking removes the need for a full OS base."
+        },
+        "whyImportant": "Pull latency directly affects how fast you can add capacity during a traffic spike or replace a failed node during an incident.",
+        "realWorldExample": "A team moved from single-stage golang to distroless/static, dropping the image to ~11MB and cutting cold-node pull time from ~90s to a few seconds.",
+        "followUps": [
+          {
+            "question": "How do you speed up the BUILD itself, not just the image?",
+            "answer": "Order layers so `go mod download` is cached, and use BuildKit cache mounts (--mount=type=cache) for the Go build and module caches so incremental builds reuse them."
+          },
+          {
+            "question": "What breaks if you naively switch to scratch?",
+            "answer": "Missing CA certs (outbound TLS fails) and, without CGO_ENABLED=0, a dynamic-link crash; distroless/static bundles certs and a nonroot user to avoid these."
+          }
+        ]
+      },
+      {
+        "id": "go-web-12-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Every Kubernetes rolling deploy produces a spike of 502s and connection resets. In-flight requests are being dropped. How do you fix it?",
+        "directAnswer": "The pods exit on SIGTERM without draining. Implement graceful shutdown: use signal.NotifyContext to catch SIGTERM, first flip the readiness probe to failing so the Service stops routing new traffic, wait briefly for endpoint propagation, then call srv.Shutdown(ctx) with a deadline slightly under terminationGracePeriodSeconds so in-flight requests finish. Also ensure ListenAndServe's ErrServerClosed is ignored and that handlers respect r.Context() so nothing hangs past the deadline. Together this drains cleanly and the 502 spike disappears.",
+        "detailedExplanation": {
+          "whatItIs": "Coordinated draining triggered by the SIGTERM Kubernetes sends before killing a pod.",
+          "whyItExists": "Abrupt process exit cuts active connections; the platform gives a grace period to drain first.",
+          "howItWorks": "Readiness flip removes the pod from endpoints; srv.Shutdown stops the listener and waits for handlers to return."
+        },
+        "whyImportant": "Dropped requests on every deploy erode SLOs and user trust; graceful shutdown is the standard fix for zero-downtime rollouts.",
+        "realWorldExample": "After adding readiness-flip + srv.Shutdown with a 25s deadline (grace period 30s), a service's deploy-time 502s went to zero.",
+        "followUps": [
+          {
+            "question": "Why must the shutdown deadline be under terminationGracePeriodSeconds?",
+            "answer": "If draining takes longer than the grace period, Kubernetes sends SIGKILL and cuts remaining requests anyway; keeping the deadline under it means you finish or fail on your own terms first."
+          },
+          {
+            "question": "What role do preStop hooks play?",
+            "answer": "A preStop sleep can bridge the endpoint-propagation gap so the LB stops routing before SIGTERM, complementing the in-app readiness flip."
+          }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-12-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "intermediate",
+        "question": "Design the containerization and deployment strategy for a Go REST service targeting Kubernetes: image, config, health, and zero-downtime deploys.",
+        "directAnswer": "Package with a multi-stage Dockerfile: golang:1.22 build stage that caches `go mod download` (go.mod/go.sum copied first) and compiles a CGO_ENABLED=0 GOOS=linux static binary with -ldflags='-s -w'; final stage on gcr.io/distroless/static:nonroot running a numeric non-root UID, with a .dockerignore trimming the context. Config is 12-factor — everything (DATABASE_URL, REDIS_ADDR, ports, log level) comes from env vars, so one image runs everywhere; docker compose provides Postgres/Redis for local dev. In Kubernetes: expose /healthz (liveness) and /readyz (readiness); set resource requests/limits and terminationGracePeriodSeconds ~30s. For zero-downtime: on SIGTERM (via signal.NotifyContext) flip /readyz to failing, wait for endpoint propagation, then srv.Shutdown(ctx) with a ~25s deadline; handlers propagate r.Context() so nothing hangs. Add structured logs, /metrics, and a rolling update strategy with maxUnavailable=0.",
+        "detailedExplanation": {
+          "whatItIs": "An end-to-end packaging + deploy design: minimal static image, env config, probes, and graceful shutdown.",
+          "whyItExists": "Production services need small secure images, portable config, and deploys that don't drop traffic.",
+          "howItWorks": "Multi-stage/static build yields a tiny image; env config makes it portable; probes + SIGTERM draining give zero-downtime rollouts."
+        },
+        "whyImportant": "It ties together every operational concern for shipping Go to Kubernetes and demonstrates you can deliver, not just code, a service.",
+        "realWorldExample": "This is exactly the shape used by cloud-native Go services (operators, API servers): distroless image, env config, liveness/readiness, SIGTERM drain.",
+        "followUps": [
+          {
+            "question": "How do you handle database migrations in this pipeline?",
+            "answer": "Run migrations as a separate Kubernetes Job or init container before the rollout, keeping the app image migration-free and idempotent on startup."
+          },
+          {
+            "question": "How do you keep secrets out of the image and env dumps?",
+            "answer": "Inject secrets via Kubernetes Secrets mounted as env or files at runtime, never bake them into the image, and never log full secret values."
+          },
+          {
+            "question": "How would you make builds reproducible and fast in CI?",
+            "answer": "Pin the golang base by digest, use BuildKit cache mounts for module/build caches, and tag images by git SHA for traceability and rollback."
+          }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-12-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Write a function `serve(srv *http.Server) error` that runs an HTTP server and shuts it down gracefully on SIGINT/SIGTERM, draining in-flight requests within a 15-second deadline. Return nil on clean shutdown.",
+        "thoughtProcess": "Catch signals with signal.NotifyContext so I get a context cancelled on SIGTERM. Run ListenAndServe in a goroutine and forward any real (non-ErrServerClosed) error on a channel so a bind failure doesn't hang. Select on the error channel and ctx.Done(); on signal, create a WithTimeout context and call srv.Shutdown, returning its result. ErrServerClosed after Shutdown is expected and treated as success.",
+        "solution": {
+          "code": "func serve(srv *http.Server) error {\n\tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)\n\tdefer stop()\n\n\terrCh := make(chan error, 1)\n\tgo func() {\n\t\terr := srv.ListenAndServe()\n\t\tif errors.Is(err, http.ErrServerClosed) {\n\t\t\terr = nil // expected after Shutdown\n\t\t}\n\t\terrCh <- err\n\t}()\n\n\tselect {\n\tcase err := <-errCh: // failed before any signal\n\t\treturn err\n\tcase <-ctx.Done(): // SIGINT/SIGTERM: drain\n\t\tshutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)\n\t\tdefer cancel()\n\t\treturn srv.Shutdown(shutCtx)\n\t}\n}",
+          "language": "go"
+        },
+        "lineByLine": "signal.NotifyContext returns ctx cancelled on the listed signals plus a stop func to release the handler. ListenAndServe runs in a goroutine; its normal post-Shutdown error (ErrServerClosed) is normalized to nil, and any real error is sent on the buffered channel. The select waits for whichever happens first: a serve error (return it) or a signal (cancel ctx). On signal we build a 15s deadline context and return srv.Shutdown, which stops the listener and blocks until handlers finish or the deadline elapses.",
+        "timeComplexity": "O(1) control-flow overhead; draining time depends on in-flight request duration.",
+        "spaceComplexity": "O(1) — one goroutine and a buffered channel of size 1.",
+        "followUps": [
+          {
+            "question": "Why is the error channel buffered (size 1)?",
+            "answer": "So the goroutine can send its result and exit even if main already returned via the ctx.Done() branch, avoiding a goroutine leak on the send."
+          },
+          {
+            "question": "How would you also drain non-HTTP resources (a worker pool)?",
+            "answer": "After srv.Shutdown returns, cancel a parent context or call Close on those resources, and use a sync.WaitGroup or errgroup to wait for background goroutines to finish within the same deadline."
+          }
+        ]
+      },
+      {
+        "id": "go-web-12-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Write a `readiness` helper: a struct with an atomic 'ready' flag and an http.HandlerFunc that returns 200 when ready and 503 when not, plus a method to flip it. This is used to fail the readiness probe on SIGTERM before draining.",
+        "thoughtProcess": "The flag is read by the probe goroutine and written by the shutdown path, so it must be race-free — use sync/atomic (atomic.Bool). The handler reads the flag and writes 200 or 503. A SetReady method flips it. On SIGTERM you call SetReady(false) before Shutdown so Kubernetes stops routing new traffic.",
+        "solution": {
+          "code": "type Readiness struct {\n\tready atomic.Bool\n}\n\nfunc NewReadiness() *Readiness {\n\tr := &Readiness{}\n\tr.ready.Store(true) // start ready\n\treturn r\n}\n\n// SetReady flips the flag; call SetReady(false) on SIGTERM before draining.\nfunc (r *Readiness) SetReady(ok bool) { r.ready.Store(ok) }\n\n// Handler is wired to /readyz.\nfunc (r *Readiness) Handler(w http.ResponseWriter, _ *http.Request) {\n\tif r.ready.Load() {\n\t\tw.WriteHeader(http.StatusOK) // 200: route traffic here\n\t\treturn\n\t}\n\tw.WriteHeader(http.StatusServiceUnavailable) // 503: stop routing\n}",
+          "language": "go"
+        },
+        "lineByLine": "Readiness wraps an atomic.Bool so concurrent reads (from probe requests) and the shutdown write are safe without a mutex. NewReadiness starts the service ready. SetReady stores the new value atomically. Handler loads the flag: true writes 200 (Kubernetes keeps the pod in Service endpoints), false writes 503 (the pod is removed from routing). On shutdown you SetReady(false), pause for endpoint propagation, then Shutdown.",
+        "timeComplexity": "O(1) per probe request.",
+        "spaceComplexity": "O(1) — a single atomic flag.",
+        "followUps": [
+          {
+            "question": "Why atomic.Bool instead of a plain bool?",
+            "answer": "The flag is written by the shutdown goroutine while probe requests read it concurrently; a plain bool is a data race, whereas atomic.Bool guarantees safe, visible reads/writes."
+          },
+          {
+            "question": "Should liveness use the same flag?",
+            "answer": "No — liveness should stay passing during drain so K8s doesn't restart the pod mid-shutdown; only readiness flips to false to stop new traffic."
+          }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Package with a multi-stage Dockerfile: a golang build stage that caches modules, and a minimal final stage (distroless/static:nonroot or scratch) shipping only the static binary. Keep all config in environment variables (12-factor) so one image is promoted through environments unchanged. Expose /healthz, /readyz, and /metrics on the same or an internal port, and structure the app so a single `serve` function owns startup and graceful shutdown.",
+    "performance": "Static binaries cold-start in milliseconds with no dynamic-linker overhead, and tiny images pull fast, improving autoscaling and node-replacement latency. Strip symbols with -ldflags='-s -w' for size-sensitive images. Speed builds with cache-friendly layer order and BuildKit cache mounts for the module and build caches; pin the base image by digest for reproducibility.",
+    "concurrency": "The server handles each request in its own goroutine; during shutdown, srv.Shutdown coordinates draining while new connections are refused. Flip the readiness flag with sync/atomic since it's read by probe goroutines and written by the shutdown path. Propagate r.Context() into downstream calls so a client disconnect or the shutdown deadline cancels work rather than leaking goroutines.",
+    "reliability": "Implement graceful shutdown on SIGTERM (readiness flip -> brief wait -> srv.Shutdown with a deadline under terminationGracePeriodSeconds). Set liveness/readiness probes correctly so wedged pods restart and draining pods stop receiving traffic. Ship CA certs (or use distroless/static) so outbound TLS works, and set explicit server timeouts so slow clients can't pin connections through a deploy.",
+    "observability": "Emit structured JSON logs to stdout (12-factor) so the platform collects them; expose Prometheus /metrics with RED metrics per route; propagate a request ID through context. Because distroless/scratch has no shell, rely on logs, metrics, and traces plus an ephemeral debug container (kubectl debug) instead of `docker exec sh`.",
+    "security": "Run as a non-root numeric UID and use a read-only root filesystem where possible. Prefer distroless/scratch to eliminate shells and package managers (smaller attack surface, fewer CVEs). Keep secrets out of the image — inject via Kubernetes Secrets at runtime. Scan images (trivy/grype) in CI, pin bases by digest, and drop all Linux capabilities you don't need.",
+    "caseStudies": [
+      {
+        "company": "Cloud-native platform team",
+        "problem": "A single-stage golang image was ~900MB, slowing every pull and bloating the CVE report.",
+        "solution": "Moved to a multi-stage build on distroless/static:nonroot with a CGO_ENABLED=0 static binary and a .dockerignore.",
+        "tradeoffs": "No shell for in-container debugging, so they adopted ephemeral debug containers and richer logging/metrics.",
+        "lessons": "For static Go, distroless/static gives ~11MB images with CA certs and a nonroot user out of the box — huge wins for pull speed and security posture."
+      },
+      {
+        "company": "High-traffic API team",
+        "problem": "Every rolling deploy produced a spike of 502s as pods exited on SIGTERM mid-request.",
+        "solution": "Added signal.NotifyContext-based graceful shutdown: fail readiness, wait for endpoint propagation, then srv.Shutdown with a 25s deadline under a 30s grace period.",
+        "tradeoffs": "Slightly longer pod termination time; acceptable for eliminating user-visible errors.",
+        "lessons": "Zero-downtime deploys require coordinating the readiness probe with SIGTERM draining — Shutdown alone isn't enough if the LB is still routing."
+      }
+    ]
+  },
+  "keyTakeaways": [
+    "A multi-stage Dockerfile compiles in a fat golang stage and ships only the binary on scratch or distroless/static, turning ~900MB images into ~10MB.",
+    "Build with CGO_ENABLED=0 GOOS=linux to get a fully static binary; without it the image crashes on scratch/distroless with 'no such file or directory'.",
+    "Order layers so `go mod download` (after copying only go.mod/go.sum) is cached before COPY . ., and use a .dockerignore to keep the build context small and cache-stable.",
+    "Harden images: run as a non-root numeric UID, prefer distroless/scratch (no shell = smaller attack surface), and pass all config via env vars (12-factor).",
+    "Catch SIGTERM with signal.NotifyContext, flip readiness to failing, then srv.Shutdown(ctx) with a deadline under terminationGracePeriodSeconds for zero-downtime, drain-safe deploys.",
+    "Wire Kubernetes liveness (restart on failure) and readiness (route traffic) probes correctly and keep liveness passing during drain so pods aren't restarted mid-shutdown."
+  ],
+  "visualExplorer": [
+    {
+      "visualId": "docker-multistage",
+      "title": "Multi-stage build to a tiny image"
+    }
+  ]
+}

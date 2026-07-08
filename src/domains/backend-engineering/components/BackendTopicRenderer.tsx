@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import type {
   BackendTopicData, BackendSectionId, FoundationsSection, VisualExplorerItem,
   InteractiveExample, Checkpoint, CodeLabExercise, DebuggingLabExercise,
@@ -9,10 +9,14 @@ import type { ConceptualInterviewQuestion, CodingInterviewQuestion } from '../..
 import { BACKEND_VISUALIZATIONS } from '../visualizations/registry';
 import { GoCodeBlock } from './GoCodeBlock';
 import { CheckpointWidget } from './Checkpoint';
+import { BackendSelfCheck } from './BackendSelfCheck';
+import { ExplainerPlayer } from '../../data-engineering/components/ExplainerPlayer';
+import type { ExplainerScript } from '../../../core/types/types';
+import { getMastery, setLastTopic } from '../../data-engineering/utils/learnProgress';
 import { formatText } from '../../../core/utils/textFormatting';
 import '../backend.css';
 import {
-  BookOpen, Eye, Sparkles, Brain, Code2, Bug, GraduationCap, Server,
+  BookOpen, Eye, Sparkles, Brain, Code2, Bug, GraduationCap, Server, ListChecks, PlayCircle,
   ChevronDown, ChevronUp, Lightbulb, ChevronLeft, ChevronRight, CheckCircle2, FlaskConical,
 } from 'lucide-react';
 
@@ -380,15 +384,40 @@ interface Props {
   prevTitle?: string;
   nextTitle?: string;
   theme?: 'dark' | 'light';
+  explainer?: ExplainerScript | null;
 }
 
-export const BackendTopicRenderer: React.FC<Props> = ({ data, topics = [], onNavigate, isCompleted, onToggleComplete, onPrev, onNext, prevTitle, nextTitle, theme = 'dark' }) => {
+export const BackendTopicRenderer: React.FC<Props> = ({ data, topics = [], onNavigate, isCompleted, onToggleComplete, onPrev, onNext, prevTitle, nextTitle, theme = 'dark', explainer }) => {
   const navMap = Object.fromEntries(topics.map(t => [t.id, t.title])) as Record<string, string>;
   const available = BACKEND_SECTIONS.filter(s => {
     const v = (data as any)[s.id];
     return v && (Array.isArray(v) ? v.length > 0 : true);
   });
-  const [active, setActive] = useState<BackendSectionId>(available[0]?.id || 'foundations');
+
+  // Self-Check is a synthetic (data-derived) section: available whenever the
+  // topic has interview Q&A or flashcard-worthy content.
+  const ip = data.interviewPrep;
+  const selfCheckCount =
+    (ip?.theory?.length || 0) + (ip?.scenario?.length || 0) + (ip?.systemDesign?.length || 0) + (ip?.coding?.length || 0);
+  const flashCount = (data.foundations?.commonMisconceptions?.length || 0) + (data.subtopics?.length || 0);
+  const hasSelfCheck = selfCheckCount + flashCount > 0;
+
+  type NavId = BackendSectionId | 'selfCheck' | 'explainer';
+  const navItems: Array<{ id: NavId; label: string; description: string; Icon: any }> = [
+    ...(explainer ? [{ id: 'explainer' as NavId, label: 'Explainer', description: 'Watch a short animated, narrated explainer', Icon: PlayCircle }] : []),
+    ...available.map(s => ({ id: s.id as NavId, label: s.label, description: s.description, Icon: SECTION_ICON[s.id] })),
+    ...(hasSelfCheck ? [{ id: 'selfCheck' as NavId, label: 'Self-Check', description: 'Rate your recall & schedule spaced reviews', Icon: ListChecks }] : []),
+  ];
+  const [active, setActive] = useState<NavId>('foundations');
+  const [mastery, setMasteryState] = useState<number>(() => getMastery(data.id));
+
+  // Track resume position + refresh mastery when the topic changes.
+  useEffect(() => {
+    setLastTopic(data.id);
+    setMasteryState(getMastery(data.id));
+    if (!navItems.some(n => n.id === active)) setActive(navItems[0]?.id || 'foundations');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.id]);
 
   const renderSection = () => {
     switch (active) {
@@ -400,13 +429,15 @@ export const BackendTopicRenderer: React.FC<Props> = ({ data, topics = [], onNav
       case 'debuggingLab': return data.debuggingLab ? <DebuggingLab items={data.debuggingLab} theme={theme} /> : null;
       case 'interviewPrep': return data.interviewPrep ? <InterviewEmbedded data={data.interviewPrep} /> : null;
       case 'productionDeepDive': return data.productionDeepDive ? <ProductionDeepDive data={data.productionDeepDive} /> : null;
+      case 'selfCheck': return <BackendSelfCheck topicId={data.id} data={data} onMasteryChange={setMasteryState} />;
+      case 'explainer': return explainer ? <ExplainerPlayer script={explainer} /> : null;
       default: return null;
     }
   };
 
   const diff = DIFFICULTY_PILL[data.difficulty] || DIFFICULTY_PILL.beginner;
-  const activeMeta = BACKEND_SECTIONS.find(s => s.id === active);
-  const ActiveIcon = SECTION_ICON[active];
+  const activeMeta = navItems.find(s => s.id === active);
+  const ActiveIcon = activeMeta?.Icon || BookOpen;
 
   return (
     <div className="be-root">
@@ -414,6 +445,18 @@ export const BackendTopicRenderer: React.FC<Props> = ({ data, topics = [], onNav
         <div className="be-title-row">
           <h1 className="be-title">{data.title}</h1>
           <span className="be-pill" style={{ background: diff.bg, color: diff.color }}>{data.difficulty}</span>
+          {hasSelfCheck && (
+            <span
+              title="Mastery from Self-Check — reveal answers and rate your recall to build it"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 }}
+            >
+              <ListChecks size={14} color={mastery >= 80 ? '#10b981' : ACC} />
+              <span style={{ width: 90, height: 6, borderRadius: 999, background: 'var(--bg-inner)', overflow: 'hidden', display: 'inline-block' }}>
+                <span style={{ display: 'block', width: `${mastery}%`, height: '100%', background: mastery >= 80 ? '#10b981' : 'linear-gradient(90deg,#00ADD8,#a855f7)', transition: 'width .3s ease' }} />
+              </span>
+              {mastery}% mastery
+            </span>
+          )}
         </div>
         {data.summary && <p className="be-summary">{formatText(data.summary)}</p>}
         <div className="be-chips">
@@ -423,20 +466,44 @@ export const BackendTopicRenderer: React.FC<Props> = ({ data, topics = [], onNav
         </div>
       </header>
 
-      <nav className="be-nav">
-        {available.map(s => {
-          const Icon = SECTION_ICON[s.id];
+      <nav className="be-nav" role="tablist" aria-label="Lesson sections">
+        {navItems.map((s, i) => {
+          const Icon = s.Icon;
+          const selected = s.id === active;
           return (
-            <button key={s.id} onClick={() => setActive(s.id)} title={s.description} className={`be-nav-btn${s.id === active ? ' active' : ''}`}>
-              <Icon size={15} /> {s.label}
+            <button
+              key={s.id}
+              id={`be-tab-${s.id}`}
+              role="tab"
+              aria-selected={selected}
+              aria-controls="be-tabpanel"
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActive(s.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                  e.preventDefault();
+                  const dir = e.key === 'ArrowRight' ? 1 : -1;
+                  const next = navItems[(i + dir + navItems.length) % navItems.length];
+                  setActive(next.id);
+                  requestAnimationFrame(() => document.getElementById(`be-tab-${next.id}`)?.focus());
+                } else if (e.key === 'Home') {
+                  e.preventDefault(); setActive(navItems[0].id);
+                } else if (e.key === 'End') {
+                  e.preventDefault(); setActive(navItems[navItems.length - 1].id);
+                }
+              }}
+              title={s.description}
+              className={`be-nav-btn${selected ? ' active' : ''}`}
+            >
+              <Icon size={15} aria-hidden="true" /> {s.label}
             </button>
           );
         })}
       </nav>
 
-      <section className="be-panel">
+      <section className="be-panel" id="be-tabpanel" role="tabpanel" aria-labelledby={`be-tab-${active}`} tabIndex={0}>
         <div className="be-panel-head">
-          <div className="be-panel-icon"><ActiveIcon size={20} /></div>
+          <div className="be-panel-icon"><ActiveIcon size={20} aria-hidden="true" /></div>
           <div>
             <h2 className="be-panel-title">{activeMeta?.label}</h2>
             <p className="be-panel-desc">{activeMeta?.description}</p>

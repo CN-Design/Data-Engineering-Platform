@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Database, Code, Zap, Layers, Network, Terminal, Cloud, Radio, Workflow, Warehouse, Container, ShieldCheck, Siren, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
-import type { Category, Domain } from '../../../core/types/types';
+import type { Category, Domain, Topic } from '../../../core/types/types';
 import { FRONTEND_TECHS } from '../../frontend/loader';
-import { BACKEND_TECHS } from '../../backend-engineering/loader';
+import { BACKEND_TECHS, loadBackendManifest, manifestToTopics as backendManifestToTopics } from '../../backend-engineering/loader';
 import { allTopics } from '../data';
 import { LearnJourneyPanel } from './LearnJourneyPanel';
 import { Diagnostic } from './Diagnostic';
@@ -61,6 +61,23 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
   const isBackend = domain === 'backend-engineering';
   const techOptions: TechOption[] = isFrontend ? frontendOptions : isBackend ? backendOptions : dataOptions;
   const heading = isFrontend ? 'Frontend Engineering' : isBackend ? 'Backend Engineering' : 'Data Engineering Stack';
+
+  // Backend: load all available-tech topics so the engagement bar + "For You"
+  // panel can surface resume/due/mastery (mirrors the DE journey layer).
+  const [backendJourneyTopics, setBackendJourneyTopics] = useState<Topic[]>([]);
+  useEffect(() => {
+    if (!isBackend) return;
+    let cancelled = false;
+    (async () => {
+      const all: Topic[] = [];
+      for (const t of BACKEND_TECHS.filter(t => t.available)) {
+        const m = await loadBackendManifest(t.id);
+        if (m) all.push(...backendManifestToTopics(m));
+      }
+      if (!cancelled) setBackendJourneyTopics(all);
+    })();
+    return () => { cancelled = true; };
+  }, [isBackend]);
 
   const completed = getCompleted();
   const completedFor = (id: Category) => Object.keys(completed).filter(tid => completed[tid] && tid.startsWith(id + '-')).length;
@@ -148,6 +165,19 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
           onPick={(track) => { setShowDiagnostic(false); onSelectTech(track as Category); }}
           onClose={() => setShowDiagnostic(false)}
         />
+      )}
+
+      {/* Backend engagement + personalized journey (reuses the DE engine) */}
+      {isBackend && backendJourneyTopics.length > 0 && (
+        <>
+          <EngagementBar topics={backendJourneyTopics} domainLabel="Backend Engineering" />
+          <LearnJourneyPanel
+            topics={backendJourneyTopics}
+            onSelectTech={onSelectTech}
+            onStartDiagnostic={() => { /* placement is DE-only */ }}
+            showPlacement={false}
+          />
+        </>
       )}
 
       {/* Removed the old horizontal learning path as requested */}

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Category, CodingChallenge } from '../../../core/types/types';
-import { Loader2, ArrowLeft, Eye, RotateCcw, Lightbulb, Terminal, Trophy, Search } from 'lucide-react';
+import { Loader2, ArrowLeft, Eye, RotateCcw, Lightbulb, Terminal, Trophy, Search, ExternalLink } from 'lucide-react';
+import { openInGoPlayground } from '../utils/goPlayground';
 
 interface Props { tech: Category; theme?: 'dark' | 'light'; }
 
@@ -17,6 +18,7 @@ export const BackendPracticeTab: React.FC<Props> = ({ tech, theme = 'dark' }) =>
   const [revealed, setRevealed] = useState(false);
   const [search, setSearch] = useState('');
   const [diff, setDiff] = useState('all');
+  const [pgMsg, setPgMsg] = useState('');
   const [solved, setSolved] = useState<Record<string, boolean>>(() => {
     try { return JSON.parse(localStorage.getItem('go_solved') || '{}'); } catch { return {}; }
   });
@@ -40,7 +42,13 @@ export const BackendPracticeTab: React.FC<Props> = ({ tech, theme = 'dark' }) =>
     return () => { cancelled = true; };
   }, [tech]);
 
-  const open = (c: CodingChallenge) => { setSelected(c); setCode(c.initialCode); setPane('problem'); setHints(0); setRevealed(false); };
+  const open = (c: CodingChallenge) => { setSelected(c); setCode(c.initialCode); setPane('problem'); setHints(0); setRevealed(false); setPgMsg(''); };
+  const runInPlayground = async () => {
+    setPgMsg('Opening Go Playground…');
+    const r = await openInGoPlayground(code);
+    setPgMsg(r === 'shared' ? 'Opened in Go Playground →' : 'Code copied — paste it into the Playground tab & Run');
+    setTimeout(() => setPgMsg(''), 6000);
+  };
   const markSolved = (id: string) => { const next = { ...solved, [id]: true }; setSolved(next); try { localStorage.setItem('go_solved', JSON.stringify(next)); } catch { /* ignore */ } };
 
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '60px', color: 'var(--text-secondary)' }}><Loader2 size={18} className="spin" /> Loading challenges...</div>;
@@ -128,21 +136,25 @@ export const BackendPracticeTab: React.FC<Props> = ({ tech, theme = 'dark' }) =>
             )}
             {pane === 'solution' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div><strong style={{ color: '#10b981', fontSize: '13px' }}>Optimized Approach</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.optimized}</p></div>
-                <div><strong style={{ color: '#f59e0b', fontSize: '13px' }}>Brute Force</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.bruteForce}</p></div>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <div><strong style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Time</strong><div className="be-code" style={{ margin: '4px 0 0' }}><pre>{c.complexity.time}</pre></div></div>
-                  <div><strong style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Space</strong><div className="be-code" style={{ margin: '4px 0 0' }}><pre>{c.complexity.space}</pre></div></div>
-                </div>
+                {c.optimized && <div><strong style={{ color: '#10b981', fontSize: '13px' }}>Optimized Approach</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.optimized}</p></div>}
+                {c.bruteForce && <div><strong style={{ color: '#f59e0b', fontSize: '13px' }}>Brute Force</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.bruteForce}</p></div>}
+                {c.complexity && (
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <div><strong style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Time</strong><div className="be-code" style={{ margin: '4px 0 0' }}><pre>{c.complexity.time}</pre></div></div>
+                    <div><strong style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Space</strong><div className="be-code" style={{ margin: '4px 0 0' }}><pre>{c.complexity.space}</pre></div></div>
+                  </div>
+                )}
                 <div><strong style={{ fontSize: '12px', color: 'var(--be-accent)' }}>Reference Solution (commented)</strong><div className="be-code" style={{ margin: '4px 0 0' }}><pre><code>{c.solutionCode}</code></pre></div></div>
               </div>
             )}
             {pane === 'discussion' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div><strong style={{ fontSize: '13px' }}>Why Interviewers Ask This</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.discussion.whyAsked}</p></div>
-                <div><strong style={{ fontSize: '13px', color: '#ef4444' }}>Common Mistakes</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.discussion.mistakes}</p></div>
-                <div><strong style={{ fontSize: '13px', color: '#00ADD8' }}>Follow-Ups</strong><ul style={{ paddingLeft: '18px', margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>{c.discussion.followUps.map((f, i) => <li key={i}>{f}</li>)}</ul></div>
-              </div>
+              c.discussion ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {c.discussion.whyAsked && <div><strong style={{ fontSize: '13px' }}>Why Interviewers Ask This</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.discussion.whyAsked}</p></div>}
+                  {c.discussion.mistakes && <div><strong style={{ fontSize: '13px', color: '#ef4444' }}>Common Mistakes</strong><p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>{c.discussion.mistakes}</p></div>}
+                  {c.discussion.followUps?.length > 0 && <div><strong style={{ fontSize: '13px', color: '#00ADD8' }}>Follow-Ups</strong><ul style={{ paddingLeft: '18px', margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>{c.discussion.followUps.map((f, i) => <li key={i}>{f}</li>)}</ul></div>}
+                </div>
+              ) : <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>Discussion notes coming soon for this problem.</p>
             )}
           </div>
         </div>
@@ -153,11 +165,12 @@ export const BackendPracticeTab: React.FC<Props> = ({ tech, theme = 'dark' }) =>
             <div className="be-code-actions">
               <button className="be-btn" onClick={() => { setCode(c.initialCode); setRevealed(false); }}><RotateCcw size={12} /> Reset</button>
               <button className="be-btn" onClick={() => { setCode(c.solutionCode); setRevealed(true); markSolved(c.id); }}><Eye size={12} /> {revealed ? 'Solution shown' : 'Reveal'}</button>
+              <button className="be-btn" onClick={runInPlayground} title="Run this code in the free Go Playground (standard library only)"><ExternalLink size={12} /> Run in Playground</button>
             </div>
           </div>
           <Editor height="420px" theme={theme === 'dark' ? 'vs-dark' : 'light'} language="go" value={code} onChange={v => setCode(v || '')} options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, tabSize: 4 }} />
           <div style={{ padding: '10px 12px', background: 'var(--bg-inner)', borderTop: '1px solid var(--border-glass)' }}>
-            <span className="be-run-note"><Terminal size={12} /> Go runs locally. Write your solution, reveal to compare, then verify with <code>go test ./...</code>.</span>
+            <span className="be-run-note"><Terminal size={12} /> {pgMsg || <>These challenges use only the standard library — run them one-click in the Playground, or verify locally with <code>go test ./...</code>.</>}</span>
           </div>
         </div>
       </div>

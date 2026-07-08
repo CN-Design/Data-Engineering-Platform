@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { Category } from '../../../core/types/types';
+import type { Category, ExplainerScript } from '../../../core/types/types';
 import type { BackendTopicData } from '../../../core/types/backend';
 import { BackendTopicRenderer } from './BackendTopicRenderer';
 import { Loader2 } from 'lucide-react';
@@ -23,6 +23,19 @@ const cache: Record<string, BackendTopicData | null> = {};
 export const BackendLearnTab: React.FC<BackendLearnTabProps> = ({ tech, topicId, topics, onNavigate, isCompleted, onToggleComplete, onPrev, onNext, prevTitle, nextTitle, theme }) => {
   const [data, setData] = useState<BackendTopicData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [explainer, setExplainer] = useState<ExplainerScript | null>(null);
+
+  // Optional animated explainer for this topic (shown only if a script exists).
+  useEffect(() => {
+    setExplainer(null);
+    if (!topicId) return;
+    let cancelled = false;
+    fetch(`/content/explainer/${tech}/${topicId}.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: ExplainerScript | null) => { if (!cancelled && d && Array.isArray(d.scenes)) setExplainer(d); })
+      .catch(() => { /* no explainer for this topic */ });
+    return () => { cancelled = true; };
+  }, [tech, topicId]);
 
   useEffect(() => {
     if (!topicId) { setData(null); return; }
@@ -66,6 +79,7 @@ export const BackendLearnTab: React.FC<BackendLearnTabProps> = ({ tech, topicId,
       prevTitle={prevTitle}
       nextTitle={nextTitle}
       theme={theme}
+      explainer={explainer}
     />
   );
 };

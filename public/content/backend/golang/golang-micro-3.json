@@ -1,0 +1,510 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-micro-3",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Service Discovery, API Gateway & Load Balancing",
+  "difficulty": "advanced",
+  "summary": "In a microservice system, instances come and go — they scale, crash, and move IPs — so services can't hardcode each other's addresses. **Service discovery** solves *how services find each other*: a **registry** (Consul/etcd/Kubernetes DNS) tracks which instances are alive, **health checks** prune the dead ones, and **load balancing** spreads traffic across the survivors. An **API gateway** puts one front door on the whole system (routing, auth, rate limiting, aggregation), and a **service mesh** pushes discovery, mTLS, and traffic policy into sidecars. Master these and a fleet of ephemeral instances behaves like one addressable, resilient service.",
+  "prerequisites": [
+    "golang-micro-1"
+  ],
+  "relatedConcepts": [
+    "golang-micro-2",
+    "golang-web-12",
+    "golang-master-2"
+  ],
+  "nestedConcepts": [
+    "service registry",
+    "health checks & deregistration",
+    "client-side vs server-side load balancing",
+    "gRPC client-side LB with resolvers",
+    "API gateway pattern",
+    "sidecar & service mesh"
+  ],
+  "subtopics": [
+    {
+      "title": "The service registry",
+      "explanation": "A registry is the source of truth for 'which instances of service X are alive and where'. Instances register their address (and metadata) on startup and are keyed by service name; callers query the registry to resolve a name into a set of live addresses. Consul, etcd, and Kubernetes' internal DNS are the common implementations. The registry is the foundation of service discovery: without it, callers would have to hardcode addresses that break the moment an instance moves or scales.",
+      "example": "// A minimal in-memory registry: service name -> live instances.\ntype Instance struct {\n\tID   string\n\tAddr string // host:port\n}\n\ntype Registry struct {\n\tmu       sync.RWMutex\n\tservices map[string][]Instance // keyed by service name\n}\n\nfunc NewRegistry() *Registry {\n\treturn &Registry{services: make(map[string][]Instance)}\n}\n\n// Lookup resolves a service name into its live instances.\nfunc (r *Registry) Lookup(name string) []Instance {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\treturn append([]Instance(nil), r.services[name]...) // copy to avoid races\n}"
+    },
+    {
+      "title": "Self-registration vs third-party registration",
+      "explanation": "In self-registration the instance registers and heartbeats itself directly with the registry (simple, but couples app code to the registry). In third-party registration a separate registrar (e.g. a Kubernetes controller watching pods, or Consul's agent) observes instances and registers them, keeping app code clean. Kubernetes uses the third-party model: you never call the registry — the control plane populates Endpoints as pods become ready. Knowing which model you're in tells you where registration and deregistration actually happen, which is the crux of keeping the registry accurate.",
+      "example": "// Self-registration: the instance adds itself, then heartbeats.\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n}\n\nfunc selfRegister(reg *Registry, name, addr string) {\n\tinst := Instance{ID: addr, Addr: addr}\n\treg.Register(name, inst) // instance registers ITSELF on startup\n\t// A real self-registering service also runs a heartbeat loop\n\t// so the registry knows it is still alive (see health checks).\n}"
+    },
+    {
+      "title": "Health checks & deregistration",
+      "explanation": "A registry entry is only useful if it reflects reality, so instances are health-checked: either the registry actively probes an endpoint (active/HTTP check) or the instance sends periodic heartbeats (passive/TTL check). When a check fails or a TTL expires, the entry is deregistered so callers stop routing to a dead instance. Skipping deregistration is the classic bug — stale entries keep receiving traffic that black-holes. Health checks plus deregistration are what turn a static list of addresses into an accurate, self-healing view of the fleet.",
+      "example": "// TTL-based health: each instance heartbeats; a reaper prunes stale ones.\ntype health struct {\n\tlastSeen time.Time\n}\n\n// Heartbeat refreshes an instance's TTL.\nfunc (r *Registry) Heartbeat(name, id string) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.health[name+\"/\"+id] = health{lastSeen: time.Now()}\n}\n\n// reap deregisters instances whose TTL has expired.\nfunc (r *Registry) reap(name string, ttl time.Duration) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tlive := r.services[name][:0]\n\tfor _, inst := range r.services[name] {\n\t\th := r.health[name+\"/\"+inst.ID]\n\t\tif time.Since(h.lastSeen) < ttl {\n\t\t\tlive = append(live, inst) // keep only fresh instances\n\t\t}\n\t}\n\tr.services[name] = live // stale entries dropped -> no black-holing\n}"
+    },
+    {
+      "title": "Client-side vs server-side load balancing",
+      "explanation": "In server-side LB, a proxy (nginx, an ELB, a Kubernetes Service) sits in front of the instances; the client dials one stable address and the proxy picks a backend. In client-side LB, the client itself resolves all instances from the registry and chooses one per request (round-robin, least-connections), saving a network hop and giving fine-grained policy. The choice trades an extra hop and central control (server-side) against latency and client complexity (client-side). Picking the right model per call path is what keeps traffic evenly spread instead of pinned to one hot instance.",
+      "example": "// Client-side round-robin over instances resolved from the registry.\ntype RoundRobin struct {\n\tn uint64\n}\n\n// Pick returns the next instance, cycling evenly across all of them.\nfunc (rr *RoundRobin) Pick(insts []Instance) (Instance, bool) {\n\tif len(insts) == 0 {\n\t\treturn Instance{}, false // no live backends\n\t}\n\ti := atomic.AddUint64(&rr.n, 1) // atomic so concurrent callers stay balanced\n\treturn insts[int(i)%len(insts)], true\n}"
+    },
+    {
+      "title": "gRPC client-side load balancing with resolvers",
+      "explanation": "gRPC has first-class client-side LB: a Resolver turns a target name into a live set of addresses (from DNS, or a custom registry-backed resolver), and a Balancer (e.g. round_robin) spreads RPCs across the sub-connections it opens to each address. Because gRPC keeps long-lived HTTP/2 connections, a naive proxy would pin all streams to one backend — client-side LB avoids that by balancing at the RPC level. This is why gRPC services in Kubernetes usually use a headless Service plus round_robin rather than a normal load-balanced Service.",
+      "example": "// gRPC dials with client-side round-robin over a resolver's addresses.\nfunc dialBalanced(target string) (*grpc.ClientConn, error) {\n\t// target like \"myregistry:///payments\" is handled by a custom resolver\n\t// that pushes the current instance addresses to gRPC.\n\treturn grpc.NewClient(\n\t\ttarget,\n\t\tgrpc.WithTransportCredentials(insecure.NewCredentials()),\n\t\t// round_robin balances each RPC across all resolved sub-connections\n\t\tgrpc.WithDefaultServiceConfig(`{\"loadBalancingConfig\":[{\"round_robin\":{}}]}`),\n\t)\n}"
+    },
+    {
+      "title": "API gateway & the service mesh",
+      "explanation": "An API gateway is the single entry point for clients: it routes to backend services, terminates TLS, authenticates, rate-limits, and can aggregate several backend calls into one response — application-aware policy that a plain reverse proxy (which just forwards) doesn't provide. A service mesh (Envoy sidecars managed by Istio/Linkerd) moves discovery, mTLS, retries, and traffic policy out of app code into a proxy attached to every pod, controlled centrally. The gateway guards north-south (client-to-system) traffic while the mesh governs east-west (service-to-service) traffic — together they externalize cross-cutting networking concerns from your Go code.",
+      "example": "// A tiny gateway handler: route by path prefix, aggregate two backends.\nfunc (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {\n\tswitch {\n\tcase strings.HasPrefix(r.URL.Path, \"/orders/\"):\n\t\tg.proxyTo(w, r, \"orders\") // route to a resolved backend\n\tcase r.URL.Path == \"/dashboard\":\n\t\t// aggregate: fan out to two services, merge into one response\n\t\tuser := g.fetch(r.Context(), \"users\", \"/me\")\n\t\torders := g.fetch(r.Context(), \"orders\", \"/recent\")\n\t\tjson.NewEncoder(w).Encode(map[string]any{\"user\": user, \"orders\": orders})\n\tdefault:\n\t\thttp.NotFound(w, r)\n\t}\n}"
+    }
+  ],
+  "foundations": {
+    "overview": "Microservices are a moving target: instances scale up and down, restart, and change IPs constantly, so services cannot hardcode where their dependencies live. Service discovery decouples the logical name of a service from its physical instances via a registry that health checks and prunes dead entries. Load balancing then spreads traffic across the live set — either server-side through a proxy or client-side in the caller. An API gateway fronts the whole system for clients, and a service mesh externalizes service-to-service networking. Once you see discovery as 'name -> live set' and LB as 'live set -> one instance', the whole topology clicks.",
+    "formalDefinition": "Service discovery is the mechanism by which a client resolves a logical service name into the network location(s) of currently-live instances, backed by a registry that instances are added to (registration) and removed from on failure (deregistration via health checks). Load balancing is the policy that selects one instance from that live set per request, applied either server-side (in a proxy) or client-side (in the caller). An API gateway is a single ingress point applying routing and cross-cutting policy; a service mesh is a network of sidecar proxies applying that policy to east-west traffic.",
+    "whyItMatters": "Without discovery, a microservice fleet is unusable — every scale event or crash would break callers. Discovery + health checks + load balancing are what let systems auto-scale and self-heal, and gateways/meshes are how large orgs enforce auth, rate limits, and mTLS uniformly. These are core distributed-systems topics and a staple of senior backend and system-design interviews.",
+    "mentalModel": "Think of a phone directory for a company (the registry): people (instances) join and leave, and the directory is kept current by a receptionist who checks who's actually at their desk (health checks). To reach 'Sales', you don't memorize a person's extension — you ask the directory and it gives you whoever is available, and a policy (round-robin) decides which salesperson picks up (load balancing). The API gateway is the front desk that greets every outside caller, checks their ID, and forwards them; the service mesh is the internal phone system that secures and routes calls between employees.",
+    "runtimePerspective": "At runtime a service starts, registers itself (or is registered by a controller), and begins heartbeating or exposing a health endpoint. A reaper/agent continuously prunes instances that fail checks. Callers either query the registry each time (or cache and watch for changes) and run a balancer to pick an instance; gRPC does this in-process via a resolver+balancer over long-lived HTTP/2 connections. In Kubernetes the kubelet's readiness probe gates whether a pod is added to a Service's Endpoints, and kube-proxy/DNS route traffic to the ready set.",
+    "realWorldUsage": "Consul/etcd-backed discovery for VM fleets, Kubernetes Services + DNS for containerized systems, gRPC client-side round_robin for internal RPC, API gateways (Kong, AWS API Gateway, Envoy) for public APIs, and Istio/Linkerd meshes for mTLS and traffic shaping in large deployments.",
+    "businessImpact": "Accurate discovery and balanced load directly protect availability: stale registry entries or a load balancer pinning traffic to one instance cause partial outages and latency spikes that hit revenue and SLAs. Gateways centralize auth and rate limiting, reducing the blast radius of abuse and simplifying compliance.",
+    "engineeringImpact": "Externalizing discovery, LB, retries, and mTLS into registries, gateways, and meshes keeps business services small and free of networking boilerplate, and lets platform teams change traffic policy without redeploying every service.",
+    "performanceImpact": "Client-side LB removes a proxy hop and lets each caller balance precisely, lowering tail latency, but adds caching/watch complexity. Server-side LB centralizes control at the cost of an extra hop. gRPC's per-RPC balancing avoids the connection-pinning that plagues naive L4 proxies with long-lived HTTP/2 connections.",
+    "commonUseCases": [
+      "Resolving a service name to live instances via Consul/etcd/Kubernetes DNS",
+      "Client-side round-robin load balancing for internal gRPC/HTTP calls",
+      "An API gateway doing routing, auth, rate limiting, and response aggregation",
+      "Kubernetes Services + readiness probes providing discovery and LB for pods",
+      "A service mesh sidecar enforcing mTLS and retry policy between services"
+    ],
+    "commonMisconceptions": [
+      {
+        "myth": "An API gateway is just a reverse proxy.",
+        "reality": "A reverse proxy forwards requests; a gateway is application-aware — it authenticates, rate-limits, aggregates multiple backend calls, transforms payloads, and routes by business rules. A gateway is often built on a reverse proxy but does far more."
+      },
+      {
+        "myth": "Load balancing means putting a proxy in front of your services.",
+        "reality": "That's server-side LB. Client-side LB (used heavily by gRPC) resolves all instances in the caller and picks one per request, skipping the proxy hop entirely — no front-facing proxy required."
+      },
+      {
+        "myth": "If a service registers itself, the registry stays accurate.",
+        "reality": "Registration is only half the job. Without health checks and deregistration (active probes or TTL heartbeats), crashed instances leave STALE entries that keep receiving traffic and black-hole requests."
+      },
+      {
+        "myth": "A normal Kubernetes Service load-balances gRPC well.",
+        "reality": "gRPC reuses one long-lived HTTP/2 connection, so an L4 Service pins all streams to a single backend. You need client-side LB (headless Service + round_robin) or an L7 proxy that understands HTTP/2 to spread RPCs."
+      },
+      {
+        "myth": "A service mesh replaces the need for an API gateway.",
+        "reality": "They cover different traffic: the gateway handles north-south (external client) traffic and the mesh handles east-west (service-to-service) traffic. Most large systems run both together."
+      }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "advanced",
+      "title": "An in-memory registry with round-robin discovery",
+      "explanation": "This ties discovery and load balancing together: instances register, callers Lookup the live set, and a round-robin balancer picks one per request. The atomic counter keeps concurrent callers balanced across all instances instead of hammering one.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"sync\"\n\t\"sync/atomic\"\n)\n\ntype Instance struct {\n\tID   string\n\tAddr string\n}\n\n// Registry maps a service name to its live instances.\ntype Registry struct {\n\tmu       sync.RWMutex\n\tservices map[string][]Instance\n}\n\nfunc NewRegistry() *Registry {\n\treturn &Registry{services: make(map[string][]Instance)}\n}\n\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n}\n\n// Lookup returns a copy of the live instances for a service.\nfunc (r *Registry) Lookup(name string) []Instance {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\treturn append([]Instance(nil), r.services[name]...)\n}\n\n// RoundRobin picks instances evenly using an atomic counter.\ntype RoundRobin struct{ n uint64 }\n\nfunc (rr *RoundRobin) Pick(insts []Instance) (Instance, bool) {\n\tif len(insts) == 0 {\n\t\treturn Instance{}, false\n\t}\n\ti := atomic.AddUint64(&rr.n, 1)\n\treturn insts[int(i)%len(insts)], true\n}\n\nfunc main() {\n\treg := NewRegistry()\n\treg.Register(\"payments\", Instance{ID: \"a\", Addr: \"10.0.0.1:80\"})\n\treg.Register(\"payments\", Instance{ID: \"b\", Addr: \"10.0.0.2:80\"})\n\treg.Register(\"payments\", Instance{ID: \"c\", Addr: \"10.0.0.3:80\"})\n\n\tvar lb RoundRobin\n\tfor i := 0; i < 4; i++ {\n\t\tinsts := reg.Lookup(\"payments\") // discover live set\n\t\tinst, _ := lb.Pick(insts)       // balance across it\n\t\tfmt.Println(inst.Addr)\n\t}\n}",
+        "caption": "Discovery (Lookup) and load balancing (RoundRobin.Pick) combined: each request resolves the live set and picks the next instance in rotation.",
+        "expectedOutput": "10.0.0.2:80\n10.0.0.3:80\n10.0.0.1:80\n10.0.0.2:80"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "A gateway handler that routes and aggregates",
+      "explanation": "A gateway is more than a proxy: here it routes by path prefix to a backend AND aggregates two backend responses into one payload. Both downstream fetches share r.Context() so a client disconnect cancels the fan-out.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"strings\"\n)\n\ntype Gateway struct {\n\t// fetch simulates a call to a resolved backend service.\n\tfetch func(ctx context.Context, service, path string) any\n}\n\nfunc (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {\n\tswitch {\n\tcase strings.HasPrefix(r.URL.Path, \"/orders/\"):\n\t\t// simple routing: forward to the orders backend\n\t\tres := g.fetch(r.Context(), \"orders\", r.URL.Path)\n\t\tjson.NewEncoder(w).Encode(res)\n\tcase r.URL.Path == \"/dashboard\":\n\t\t// aggregation: fan out to two backends, merge one response\n\t\tuser := g.fetch(r.Context(), \"users\", \"/me\")\n\t\torders := g.fetch(r.Context(), \"orders\", \"/recent\")\n\t\tjson.NewEncoder(w).Encode(map[string]any{\"user\": user, \"orders\": orders})\n\tdefault:\n\t\thttp.NotFound(w, r)\n\t}\n}\n\nfunc main() {\n\tg := &Gateway{fetch: func(ctx context.Context, service, path string) any {\n\t\treturn fmt.Sprintf(\"%s%s\", service, path) // stand-in for a real backend call\n\t}}\n\n\trec := httptest.NewRecorder()\n\tg.ServeHTTP(rec, httptest.NewRequest(\"GET\", \"/dashboard\", nil))\n\tfmt.Print(rec.Body.String())\n\t// Output: {\"orders\":\"orders/recent\",\"user\":\"users/me\"}\n}",
+        "caption": "The gateway both routes (/orders/) and aggregates (/dashboard), showing why it is application-aware rather than a plain reverse proxy.",
+        "expectedOutput": "{\"orders\":\"orders/recent\",\"user\":\"users/me\"}"
+      }
+    },
+    {
+      "level": "production",
+      "title": "Edit it: add TTL health checks so dead instances deregister",
+      "explanation": "This registry never removes instances, so a crashed instance keeps receiving traffic (black-holing). Edit it to add heartbeats and a reaper that deregisters instances whose TTL has expired, keeping the live set accurate.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport \"sync\"\n\ntype Instance struct {\n\tID   string\n\tAddr string\n}\n\n// BUG: instances are never health-checked or removed, so a crashed\n// instance stays in the live set forever and black-holes traffic.\ntype Registry struct {\n\tmu       sync.RWMutex\n\tservices map[string][]Instance\n}\n\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n}\n\nfunc (r *Registry) Lookup(name string) []Instance {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\treturn r.services[name]\n}",
+        "solution": "package main\n\nimport (\n\t\"sync\"\n\t\"time\"\n)\n\ntype Instance struct {\n\tID   string\n\tAddr string\n}\n\n// Registry now tracks a last-seen time per instance for TTL health checks.\ntype Registry struct {\n\tmu       sync.RWMutex\n\tservices map[string][]Instance\n\tlastSeen map[string]time.Time // key: name+\"/\"+id\n}\n\nfunc NewRegistry() *Registry {\n\treturn &Registry{\n\t\tservices: make(map[string][]Instance),\n\t\tlastSeen: make(map[string]time.Time),\n\t}\n}\n\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n\tr.lastSeen[name+\"/\"+inst.ID] = time.Now()\n}\n\n// Heartbeat refreshes an instance's TTL; a live instance calls this periodically.\nfunc (r *Registry) Heartbeat(name, id string) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.lastSeen[name+\"/\"+id] = time.Now()\n}\n\n// Reap deregisters instances whose last heartbeat is older than ttl.\nfunc (r *Registry) Reap(name string, ttl time.Duration) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tlive := r.services[name][:0]\n\tfor _, inst := range r.services[name] {\n\t\tif time.Since(r.lastSeen[name+\"/\"+inst.ID]) < ttl {\n\t\t\tlive = append(live, inst) // keep only fresh instances\n\t\t} else {\n\t\t\tdelete(r.lastSeen, name+\"/\"+inst.ID) // deregister stale one\n\t\t}\n\t}\n\tr.services[name] = live\n}\n\nfunc (r *Registry) Lookup(name string) []Instance {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\treturn append([]Instance(nil), r.services[name]...)\n}",
+        "caption": "Adding TTL heartbeats plus a reaper turns a static list into a self-healing registry that stops routing to dead instances.",
+        "expectedOutput": "// After a missed heartbeat past the TTL, Reap removes the instance\n// and Lookup no longer returns it -> no more black-holed requests."
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "What is the key difference between an API gateway and a plain reverse proxy?",
+      "options": [
+        "A gateway is faster because it caches everything",
+        "A gateway is application-aware: it authenticates, rate-limits, aggregates, and routes by business rules, not just forwards",
+        "A reverse proxy supports HTTPS but a gateway does not",
+        "There is no difference; the terms are interchangeable"
+      ],
+      "answerIndex": 1,
+      "explanation": "A reverse proxy simply forwards requests to a backend. An API gateway is application-aware: it handles authentication, rate limiting, response aggregation, payload transformation, and business-rule routing as a single entry point. It is often built on a reverse proxy but does much more."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This 'load balancer' is supposed to spread requests across instances but sends every request to the same one. What's the root issue?",
+      "code": "func (rr *RoundRobin) Pick(insts []Instance) Instance {\n\tif len(insts) == 0 {\n\t\treturn Instance{}\n\t}\n\treturn insts[0] // always returns the first instance\n}",
+      "options": [
+        "insts should be a pointer",
+        "It always indexes [0] instead of advancing a rotating counter across calls",
+        "It must lock a mutex before reading insts",
+        "len(insts) can never be zero"
+      ],
+      "answerIndex": 1,
+      "explanation": "Returning insts[0] every call pins all traffic to one instance. A round-robin balancer must keep a counter that advances per call (e.g. atomic.AddUint64) and index insts[i % len(insts)] so requests rotate evenly across the live set."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the reaper so it keeps only instances whose last heartbeat is within the TTL.",
+      "codeBefore": "for _, inst := range r.services[name] {\n\tif time.Since(r.lastSeen[key(name, inst.ID)])",
+      "codeAfter": "{\n\t\tlive = append(live, inst)\n\t}\n}",
+      "options": [
+        "< ttl",
+        "> ttl",
+        "== ttl",
+        ">= 0"
+      ],
+      "answerIndex": 0,
+      "explanation": "An instance is healthy if the time since its last heartbeat is LESS than the TTL. time.Since(lastSeen) < ttl keeps fresh instances; anything older has missed its TTL and should be deregistered (dropped from the live set)."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "Three instances are registered. A round-robin balancer using atomic.AddUint64 (pre-increment, so the first Pick returns index 1) is called four times. Which addresses come out, given order [a=.1, b=.2, c=.3]?",
+      "code": "i := atomic.AddUint64(&rr.n, 1) // 1,2,3,4,...\nreturn insts[int(i)%len(insts)]  // len == 3",
+      "options": [
+        ".1, .2, .3, .1",
+        ".2, .3, .1, .2",
+        ".1, .1, .1, .1",
+        ".3, .2, .1, .3"
+      ],
+      "answerIndex": 1,
+      "explanation": "AddUint64 increments before returning, so i is 1,2,3,4 and i%3 is 1,2,0,1 -> insts[1], insts[2], insts[0], insts[1] = .2, .3, .1, .2. The counter rotates evenly across the live set regardless of starting offset."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-registry-lb",
+      "title": "Build a discovery + round-robin balancer",
+      "instructions": "Implement a Balancer with method `Next(insts []string) (string, bool)` that returns instances in round-robin order using an atomic counter, and returns (\"\", false) when the slice is empty. Successive calls must cycle evenly across the instances; concurrent calls must not skip or duplicate unfairly.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"sync/atomic\"\n\n// Balancer picks instances in round-robin order.\ntype Balancer struct {\n\tn uint64\n}\n\n// Next returns the next instance in rotation, or (\"\", false) if none.\nfunc (b *Balancer) Next(insts []string) (string, bool) {\n\t// TODO: handle empty slice; advance an atomic counter; index modulo len.\n\treturn \"\", false\n}\n\nvar _ = atomic.AddUint64",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"sync/atomic\"\n\n// Balancer picks instances in round-robin order using an atomic counter\n// so concurrent callers stay evenly balanced.\ntype Balancer struct {\n\tn uint64\n}\n\n// Next returns the next instance in rotation, or (\"\", false) if the\n// live set is empty (all instances deregistered / unhealthy).\nfunc (b *Balancer) Next(insts []string) (string, bool) {\n\tif len(insts) == 0 {\n\t\treturn \"\", false\n\t}\n\ti := atomic.AddUint64(&b.n, 1) // atomic advance, safe under concurrency\n\treturn insts[int(i)%len(insts)], true\n}"
+      },
+      "testHarness": "package solution\n\nimport \"testing\"\n\nfunc TestNextEmpty(t *testing.T) {\n\tvar b Balancer\n\tif _, ok := b.Next(nil); ok {\n\t\tt.Fatalf(\"expected ok=false for empty slice\")\n\t}\n}\n\nfunc TestNextRotates(t *testing.T) {\n\tvar b Balancer\n\tinsts := []string{\"a\", \"b\", \"c\"}\n\tgot := make(map[string]int)\n\tfor i := 0; i < 30; i++ {\n\t\tv, ok := b.Next(insts)\n\t\tif !ok {\n\t\t\tt.Fatalf(\"unexpected ok=false\")\n\t\t}\n\t\tgot[v]++\n\t}\n\tfor _, inst := range insts {\n\t\tif got[inst] != 10 {\n\t\t\tt.Fatalf(\"instance %s picked %d times, want 10 (uneven)\", inst, got[inst])\n\t\t}\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Guard the empty case first: return (\"\", false) when len(insts) == 0.",
+        "Use atomic.AddUint64(&b.n, 1) so concurrent Next calls each get a distinct index.",
+        "Index with int(i) % len(insts) to wrap around the live set evenly."
+      ]
+    },
+    {
+      "id": "go-lab-gateway-aggregate",
+      "title": "Build a gateway aggregation handler",
+      "instructions": "Implement `Aggregate(ctx context.Context, calls map[string]func(context.Context) (string, error)) (map[string]string, error)`. It must invoke every backend call concurrently, collect results keyed by name, and return the FIRST error encountered (cancelling the rest). All calls must receive the passed ctx so a client disconnect cancels the fan-out.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"context\"\n\n// Aggregate fans out to backend calls and merges their results.\nfunc Aggregate(ctx context.Context, calls map[string]func(context.Context) (string, error)) (map[string]string, error) {\n\t// TODO: run all calls concurrently, propagate ctx, return first error.\n\treturn nil, nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"sync\"\n)\n\n// Aggregate fans out to every backend call concurrently, propagates ctx\n// so a client disconnect cancels the fan-out, and returns the first error.\nfunc Aggregate(ctx context.Context, calls map[string]func(context.Context) (string, error)) (map[string]string, error) {\n\tctx, cancel := context.WithCancel(ctx)\n\tdefer cancel()\n\n\tvar (\n\t\tmu      sync.Mutex\n\t\twg      sync.WaitGroup\n\t\tresults = make(map[string]string)\n\t\tfirstErr error\n\t)\n\n\tfor name, call := range calls {\n\t\twg.Add(1)\n\t\tgo func(name string, call func(context.Context) (string, error)) {\n\t\t\tdefer wg.Done()\n\t\t\tval, err := call(ctx)\n\t\t\tmu.Lock()\n\t\t\tdefer mu.Unlock()\n\t\t\tif err != nil {\n\t\t\t\tif firstErr == nil {\n\t\t\t\t\tfirstErr = err\n\t\t\t\t\tcancel() // cancel the remaining calls\n\t\t\t\t}\n\t\t\t\treturn\n\t\t\t}\n\t\t\tresults[name] = val\n\t\t}(name, call)\n\t}\n\n\twg.Wait()\n\tif firstErr != nil {\n\t\treturn nil, firstErr\n\t}\n\treturn results, nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"testing\"\n)\n\nfunc TestAggregateOK(t *testing.T) {\n\tcalls := map[string]func(context.Context) (string, error){\n\t\t\"users\":  func(ctx context.Context) (string, error) { return \"alice\", nil },\n\t\t\"orders\": func(ctx context.Context) (string, error) { return \"o-1\", nil },\n\t}\n\tres, err := Aggregate(context.Background(), calls)\n\tif err != nil {\n\t\tt.Fatalf(\"unexpected err: %v\", err)\n\t}\n\tif res[\"users\"] != \"alice\" || res[\"orders\"] != \"o-1\" {\n\t\tt.Fatalf(\"bad results: %v\", res)\n\t}\n}\n\nfunc TestAggregateError(t *testing.T) {\n\twant := errors.New(\"boom\")\n\tcalls := map[string]func(context.Context) (string, error){\n\t\t\"users\": func(ctx context.Context) (string, error) { return \"\", want },\n\t}\n\tif _, err := Aggregate(context.Background(), calls); err == nil {\n\t\tt.Fatalf(\"expected error, got nil\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.02s)",
+      "hints": [
+        "Derive a cancellable context with context.WithCancel(ctx) so you can stop siblings on first error.",
+        "Guard the shared results map and firstErr with a sync.Mutex; wait for all goroutines with sync.WaitGroup.",
+        "Capture loop variables (name, call) as goroutine arguments to avoid the classic closure bug."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-stale-registry-entries",
+      "difficulty": "advanced",
+      "title": "Traffic black-holes because dead instances stay in the registry",
+      "symptom": "After a rolling deploy, a fraction of requests time out or get connection-refused. The registry's Lookup still returns instances that have already been killed, and the load balancer keeps routing to them.",
+      "brokenCode": {
+        "language": "go",
+        "code": "// Instances register on startup but nothing ever removes them.\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n}\n\nfunc (r *Registry) Lookup(name string) []Instance {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\treturn r.services[name] // includes crashed instances forever\n}\n\n// No Heartbeat, no health check, no deregistration path exists.",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "Registration is only half of discovery. With no health check and no deregistration, a crashed or killed instance is never removed, so Lookup keeps returning it and the balancer routes a share of traffic into a black hole (timeouts / connection-refused). The registry must reflect liveness, either by the registry actively probing a health endpoint or by instances sending TTL heartbeats and a reaper pruning stale entries.",
+      "commonMistakes": [
+        "Registering instances but never deregistering them on shutdown or failure.",
+        "Assuming a graceful-shutdown deregister covers crashes — a hard crash never runs cleanup, so you still need TTL/active health checks.",
+        "Health-checking but forgetting to actually drop failed instances from the live set returned by Lookup."
+      ],
+      "fixChallenge": "Add TTL heartbeats and a reaper (or an active health check) so instances that stop reporting healthy are removed from the live set.",
+      "solution": {
+        "language": "go",
+        "code": "// Heartbeat refreshes an instance's TTL; live instances call it periodically.\nfunc (r *Registry) Heartbeat(name, id string) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.lastSeen[name+\"/\"+id] = time.Now()\n}\n\n// Reap removes instances whose last heartbeat is older than ttl.\nfunc (r *Registry) Reap(name string, ttl time.Duration) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tlive := r.services[name][:0]\n\tfor _, inst := range r.services[name] {\n\t\tif time.Since(r.lastSeen[name+\"/\"+inst.ID]) < ttl {\n\t\t\tlive = append(live, inst)\n\t\t} else {\n\t\t\tdelete(r.lastSeen, name+\"/\"+inst.ID) // deregister the dead one\n\t\t}\n\t}\n\tr.services[name] = live // Lookup now returns only healthy instances\n}\n\n// Run Reap on a ticker so crashed instances drop out within one TTL window.",
+        "expectedOutput": "// After a killed instance misses heartbeats past the TTL, Reap drops it\n// and Lookup returns only live instances -> no more black-holed traffic."
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-micro-3-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "What is service discovery, and why can't microservices just hardcode each other's addresses?",
+        "directAnswer": "Service discovery is the mechanism by which a client resolves a logical service name into the network locations of currently-live instances. Microservices can't hardcode addresses because instances are ephemeral — they scale up/down, crash and restart, and get new IPs on every deploy — so any hardcoded address breaks almost immediately. A registry (Consul/etcd/Kubernetes DNS) tracks live instances, health checks prune the dead ones, and callers query the registry (directly or via DNS/a resolver) to get the current live set, then load-balance across it.",
+        "detailedExplanation": {
+          "whatItIs": "The 'name -> live instance set' resolution layer of a distributed system.",
+          "whyItExists": "Instances are ephemeral, so callers need a dynamic, always-current mapping instead of static addresses.",
+          "howItWorks": "Instances register (self or via a controller); health checks keep the set accurate; callers resolve names via the registry or DNS and balance across the result."
+        },
+        "whyImportant": "Discovery is the precondition for auto-scaling and self-healing; without it a fleet can't survive routine scale and failure events. It's a guaranteed distributed-systems interview topic.",
+        "realWorldExample": "In Kubernetes you call http://payments:8080 and cluster DNS resolves 'payments' to the Service, which load-balances to the ready pods behind it — no IP is ever hardcoded.",
+        "followUps": [
+          {
+            "question": "What keeps the registry accurate as instances die?",
+            "answer": "Health checks and deregistration: either the registry actively probes a health endpoint, or instances send TTL heartbeats and a reaper prunes any that go stale."
+          },
+          {
+            "question": "How does a caller learn about new instances without polling constantly?",
+            "answer": "Registries support watches/blocking queries (Consul/etcd) or push updates to a resolver (gRPC), so callers get change notifications instead of hammering the registry each request."
+          }
+        ]
+      },
+      {
+        "id": "go-micro-3-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Compare client-side and server-side load balancing. When would you choose each?",
+        "directAnswer": "In server-side LB a proxy (nginx, an ELB, a Kubernetes Service) sits in front of the instances; clients dial one stable address and the proxy chooses a backend — simple for clients and centrally controlled, but adds a network hop and a shared bottleneck. In client-side LB the caller itself resolves all live instances from the registry and picks one per request (round-robin, least-connections), removing the extra hop and giving fine-grained, per-caller policy at the cost of pushing discovery/balancing logic into every client. Choose server-side for heterogeneous or external clients and central control; choose client-side for internal, high-throughput, latency-sensitive RPC (which is why gRPC uses it).",
+        "detailedExplanation": {
+          "whatItIs": "Two placements of the instance-selection decision: in a proxy vs in the caller.",
+          "whyItExists": "Different systems trade central control and simplicity against latency and fine-grained policy.",
+          "howItWorks": "Server-side: client -> proxy -> backend. Client-side: client resolves the set and dials a backend directly using an in-process balancer."
+        },
+        "whyImportant": "Choosing wrong causes real problems — e.g. an L4 proxy in front of gRPC pins all streams to one backend, a classic outage — so interviewers probe this tradeoff often.",
+        "realWorldExample": "gRPC internal services use client-side round_robin over a headless Kubernetes Service, while a public REST API sits behind a server-side L7 load balancer / gateway.",
+        "followUps": [
+          {
+            "question": "Why does a normal Kubernetes Service load-balance gRPC poorly?",
+            "answer": "gRPC reuses one long-lived HTTP/2 connection, so an L4 Service pins every stream to the single backend it first connected to; you need client-side LB or an L7 proxy that balances per-RPC."
+          },
+          {
+            "question": "What's a downside of client-side LB?",
+            "answer": "Every client must embed discovery and balancing logic and keep its view of instances fresh; a stale client view can send traffic to dead instances until it updates."
+          }
+        ]
+      },
+      {
+        "id": "go-micro-3-th-3",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "How does an API gateway differ from a service mesh, and when do you use each?",
+        "directAnswer": "An API gateway is a single entry point for external (north-south) traffic: it routes to backends, terminates TLS, authenticates, rate-limits, and can aggregate multiple backend calls into one response. A service mesh is a network of sidecar proxies (e.g. Envoy managed by Istio) that governs internal (east-west) service-to-service traffic, providing discovery, mTLS, retries, timeouts, and traffic shaping controlled centrally — without changing app code. They are complementary: the gateway guards the front door for clients, the mesh secures and controls calls between services. Most large systems run both.",
+        "detailedExplanation": {
+          "whatItIs": "A gateway is one ingress applying client-facing policy; a mesh is a data plane of sidecars applying service-to-service policy.",
+          "whyItExists": "North-south and east-west traffic have different concerns, so they're handled by different layers.",
+          "howItWorks": "The gateway sits at the edge and processes each external request; the mesh injects a proxy beside every service instance and routes inter-service calls through it under a central control plane."
+        },
+        "whyImportant": "Confusing the two (or thinking a mesh replaces a gateway) leads to gaps in auth or mTLS coverage; the distinction is a common senior system-design question.",
+        "realWorldExample": "A retailer runs Kong/Envoy as an API gateway for its public API (auth, rate limits, aggregation) and Istio inside the cluster so all service-to-service calls get automatic mTLS and retries.",
+        "followUps": [
+          {
+            "question": "Can a gateway and a mesh be the same technology?",
+            "answer": "Yes — Envoy powers many gateways and is also the mesh sidecar; Istio even offers an ingress gateway, but the roles (edge vs sidecar) stay distinct."
+          },
+          {
+            "question": "What do you give up by adopting a mesh?",
+            "answer": "Operational complexity and a small per-hop latency/CPU cost from the extra proxy, in exchange for uniform mTLS, observability, and traffic policy without touching app code."
+          }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-micro-3-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "After each deploy, a fraction of requests to your service time out for about a minute, then recover. Callers use client-side load balancing off a registry. What's likely wrong and how do you fix it?",
+        "directAnswer": "The registry is returning stale entries: killed instances aren't being deregistered fast enough, so client-side balancers keep routing a share of traffic to dead addresses until their view refreshes — exactly the ~1-minute black-hole window. Fixes: (1) deregister on graceful shutdown, but don't rely on it alone since crashes skip cleanup; (2) add health checks — active probing of a health endpoint or TTL heartbeats with a reaper — with a TTL short enough to prune dead instances quickly; (3) make clients watch the registry for changes rather than caching for a long interval; and (4) on the client, treat connection failures as a signal to drop that instance and retry another (with a bounded, jittered retry). Also flip readiness off before shutdown so new traffic stops arriving during drain.",
+        "detailedExplanation": {
+          "whatItIs": "A stale-registry / missing-deregistration failure in a client-side-balanced system.",
+          "whyItExists": "Registration without timely health-check-driven deregistration leaves dead instances in the live set.",
+          "howItWorks": "Clients balance over a set that still contains dead addresses until health checks prune them and the client's view updates."
+        },
+        "whyImportant": "Deploy-time black-holing is a very common real incident and directly violates zero-downtime deploy goals.",
+        "realWorldExample": "Shortening the TTL and adding readiness-gated deregistration cut the post-deploy error window from ~60s to near zero.",
+        "followUps": [
+          {
+            "question": "Why isn't graceful-shutdown deregistration enough by itself?",
+            "answer": "A hard crash, OOM kill, or node failure never runs cleanup code, so you still need TTL/active health checks to catch instances that die without deregistering."
+          },
+          {
+            "question": "How do client retries help here?",
+            "answer": "A bounded, jittered retry to a different instance masks a single stale entry for the user while the registry catches up, turning a hard failure into a transparent retry."
+          }
+        ]
+      },
+      {
+        "id": "go-micro-3-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "You scaled a gRPC service from 1 to 5 pods behind a standard Kubernetes Service, but load stayed pinned to one pod and the others sit idle. Why, and how do you fix it?",
+        "directAnswer": "A standard (ClusterIP) Kubernetes Service load-balances at L4 (per-connection), but gRPC multiplexes all its RPCs over one long-lived HTTP/2 connection — so once a client connects, every stream stays pinned to the single backend that connection landed on, leaving the new pods idle. Fix it with client-side load balancing: use a headless Service (clusterIP: None) so DNS returns all pod IPs, and configure the gRPC client with the round_robin balancing policy (and a DNS or custom resolver) so it opens a sub-connection to each pod and balances per-RPC. Alternatively, put an L7 proxy (Envoy/a gRPC-aware gateway or mesh) in front that understands HTTP/2 and balances individual streams.",
+        "detailedExplanation": {
+          "whatItIs": "Connection pinning of HTTP/2 traffic by an L4 load balancer.",
+          "whyItExists": "L4 balances connections, but gRPC keeps one connection open and multiplexes streams over it.",
+          "howItWorks": "Client-side round_robin (headless Service + resolver) opens one sub-connection per pod and spreads RPCs across them, or an L7 proxy balances per-stream."
+        },
+        "whyImportant": "This is a textbook gRPC-on-Kubernetes pitfall that silently wastes capacity and is a frequent interview/system-design question.",
+        "realWorldExample": "Switching to a headless Service plus `{\"loadBalancingConfig\":[{\"round_robin\":{}}]}` immediately spread RPCs evenly across all five pods.",
+        "followUps": [
+          {
+            "question": "Why does a headless Service matter for client-side LB?",
+            "answer": "It makes DNS return every pod's IP (not a single virtual IP), giving the gRPC resolver the full address set to open sub-connections to and balance across."
+          },
+          {
+            "question": "What if clients are outside your control?",
+            "answer": "Terminate at an L7 proxy (Envoy) or gRPC-aware gateway that speaks HTTP/2 and balances per-RPC, so even naive clients get even distribution."
+          }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-micro-3-cd-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a concurrency-safe, health-aware registry with round-robin discovery. Provide Register, Heartbeat, Reap(ttl), and Pick(name) that returns the next healthy instance in rotation. Skipping deregistration must not pin traffic to a dead instance.",
+        "thoughtProcess": "The registry must be safe for concurrent callers, so guard the maps with a mutex. Track last-seen per instance for TTL health. Register appends and stamps a heartbeat; Heartbeat refreshes it; Reap rebuilds the live slice keeping only instances within the TTL and deletes stale health entries. Pick reads the live set and advances an atomic counter to round-robin, returning ok=false when nothing is healthy.",
+        "solution": {
+          "code": "type Instance struct {\n\tID   string\n\tAddr string\n}\n\ntype Registry struct {\n\tmu       sync.RWMutex\n\tservices map[string][]Instance\n\tlastSeen map[string]time.Time\n\trr       map[string]*uint64 // per-service round-robin counter\n}\n\nfunc NewRegistry() *Registry {\n\treturn &Registry{\n\t\tservices: map[string][]Instance{},\n\t\tlastSeen: map[string]time.Time{},\n\t\trr:       map[string]*uint64{},\n\t}\n}\n\nfunc key(name, id string) string { return name + \"/\" + id }\n\nfunc (r *Registry) Register(name string, inst Instance) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.services[name] = append(r.services[name], inst)\n\tr.lastSeen[key(name, inst.ID)] = time.Now()\n\tif r.rr[name] == nil {\n\t\tr.rr[name] = new(uint64)\n\t}\n}\n\nfunc (r *Registry) Heartbeat(name, id string) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tr.lastSeen[key(name, id)] = time.Now()\n}\n\n// Reap deregisters instances whose TTL has expired.\nfunc (r *Registry) Reap(name string, ttl time.Duration) {\n\tr.mu.Lock()\n\tdefer r.mu.Unlock()\n\tlive := r.services[name][:0]\n\tfor _, inst := range r.services[name] {\n\t\tif time.Since(r.lastSeen[key(name, inst.ID)]) < ttl {\n\t\t\tlive = append(live, inst)\n\t\t} else {\n\t\t\tdelete(r.lastSeen, key(name, inst.ID))\n\t\t}\n\t}\n\tr.services[name] = live\n}\n\n// Pick returns the next healthy instance in round-robin order.\nfunc (r *Registry) Pick(name string) (Instance, bool) {\n\tr.mu.RLock()\n\tdefer r.mu.RUnlock()\n\tinsts := r.services[name]\n\tif len(insts) == 0 {\n\t\treturn Instance{}, false\n\t}\n\ti := atomic.AddUint64(r.rr[name], 1)\n\treturn insts[int(i)%len(insts)], true\n}",
+          "language": "go"
+        },
+        "lineByLine": "Register appends the instance, stamps its last-seen time, and lazily creates a per-service round-robin counter. Heartbeat just refreshes last-seen. Reap rebuilds the live slice in place (using [:0] to reuse backing array), keeping only instances within the TTL and deleting stale health entries — this is the deregistration that prevents black-holing. Pick reads the current live set under an RLock, returns ok=false if empty, and otherwise advances the atomic counter and indexes modulo len so concurrent callers rotate evenly across healthy instances.",
+        "timeComplexity": "Register/Heartbeat/Pick are O(1) (amortized); Reap is O(n) in the number of instances for that service.",
+        "spaceComplexity": "O(n) for n registered instances across the maps.",
+        "followUps": [
+          {
+            "question": "How would you run Reap automatically?",
+            "answer": "Launch a goroutine with a time.Ticker that calls Reap(name, ttl) for each service on an interval shorter than the TTL, so dead instances drop within one window."
+          },
+          {
+            "question": "Why an atomic counter instead of taking the lock to increment?",
+            "answer": "Pick holds only an RLock (concurrent reads); using atomic.AddUint64 on the counter keeps the increment race-free without upgrading to a write lock, preserving read concurrency."
+          }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-micro-3-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design service discovery and load balancing for a Go microservice platform running dozens of services in Kubernetes, with both internal gRPC and a public REST API. Walk through the topology.",
+        "directAnswer": "Lean on Kubernetes for the core: each Deployment gets a Service, and cluster DNS provides discovery — services call each other by name (http://payments:8080) and readiness probes gate which pods receive traffic, so discovery + deregistration are handled by the control plane (third-party registration). For internal gRPC, use headless Services plus the gRPC round_robin balancing policy (client-side LB) so RPCs spread evenly across pods instead of pinning to one HTTP/2 connection. Put a single API gateway (Envoy/Kong or a managed gateway) at the edge for the public REST API: TLS termination, authentication, rate limiting, request routing, and response aggregation for composite endpoints. Optionally add a service mesh (Istio/Linkerd) so all east-west traffic gets automatic mTLS, retries, timeouts, and traffic-shaping (canary/weighted routing) without app changes. Instrument everything: per-route RED metrics, structured logs with a request/trace ID propagated across hops, and distributed tracing so you can follow a request through gateway -> services. For resilience, add per-call timeouts (propagating r.Context()), bounded jittered retries to alternate instances, and circuit breakers around flaky dependencies.",
+        "detailedExplanation": {
+          "whatItIs": "A Kubernetes-native discovery/LB topology with a gateway for north-south and an optional mesh for east-west traffic.",
+          "whyItExists": "Ephemeral pods need dynamic discovery, gRPC needs per-RPC balancing, and external vs internal traffic need different policy layers.",
+          "howItWorks": "K8s Services + DNS + readiness probes do discovery/deregistration; headless Services + gRPC round_robin do client-side LB; a gateway fronts external traffic; a mesh secures and shapes internal traffic."
+        },
+        "whyImportant": "It combines every concept — registry, health checks, client vs server LB, gateway vs mesh — into a coherent, production-real topology that senior interviews target.",
+        "realWorldExample": "This mirrors how many companies run Go on Kubernetes: DNS-based discovery, gRPC round_robin over headless Services, an Envoy-based edge gateway, and Istio for mesh mTLS/traffic policy.",
+        "followUps": [
+          {
+            "question": "Where do canary and weighted rollouts fit?",
+            "answer": "At the mesh (Istio VirtualService weights) or gateway, splitting a percentage of traffic to the new version's subset without touching client code."
+          },
+          {
+            "question": "How do you avoid the gateway becoming a single point of failure?",
+            "answer": "Run the gateway itself as multiple replicas behind an external L4/L7 load balancer with health checks, so any instance failure sheds to the others."
+          },
+          {
+            "question": "How do internal callers get fresh instance lists cheaply?",
+            "answer": "gRPC's DNS/custom resolver watches for endpoint changes and pushes updates to the balancer, so clients rebalance on scale events without per-request registry lookups."
+          }
+        ]
+      },
+      {
+        "id": "go-micro-3-sd-2",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design an API gateway for a system of ~15 backend services. What responsibilities does it own, how does it stay resilient, and where do you draw the line versus a plain reverse proxy?",
+        "directAnswer": "The gateway is the single ingress for clients and owns cross-cutting, application-aware concerns: TLS termination, authentication/authorization, rate limiting and quotas, request routing (by path/host/header/version), request/response transformation, response aggregation for composite endpoints (fan out to several services, merge into one payload), and observability (per-route metrics, logs, tracing headers injected downstream). It differs from a plain reverse proxy — which just forwards bytes — by making decisions based on identity and business rules. For resilience it must set per-upstream timeouts, propagate the request context so client disconnects cancel fan-outs, apply bounded jittered retries and circuit breakers per backend, and shed load / return 429 with Retry-After when overloaded. Run the gateway as multiple stateless replicas behind an external load balancer with health checks, keep it thin (no business logic beyond routing/aggregation), and resolve backends via the platform's discovery (K8s DNS / registry) so it always targets live instances.",
+        "detailedExplanation": {
+          "whatItIs": "A stateless, replicated edge service that applies routing and cross-cutting policy to all external traffic.",
+          "whyItExists": "To centralize auth, rate limiting, routing, and aggregation so every backend doesn't reimplement them and clients get one stable entry point.",
+          "howItWorks": "Each request is authenticated, rate-limited, routed (or fanned out and aggregated), and forwarded to a discovered backend with timeouts/retries/circuit breaking, then the response is returned with observability data attached."
+        },
+        "whyImportant": "The gateway is where availability, security, and client experience converge; designing it well (and knowing its limits vs a proxy) is a core senior system-design skill.",
+        "realWorldExample": "A composite '/dashboard' endpoint fans out to users, orders, and recommendations services and merges them, so mobile clients make one call instead of three — a job a plain reverse proxy can't do.",
+        "followUps": [
+          {
+            "question": "Should the gateway hold any state?",
+            "answer": "Keep it stateless so replicas are interchangeable; push rate-limit counters and sessions to a shared store (e.g. Redis) rather than local memory."
+          },
+          {
+            "question": "When should logic live in a backend-for-frontend instead of the gateway?",
+            "answer": "When aggregation/transformation becomes client-specific and complex, split it into a BFF service per client type so the shared gateway stays thin and generic."
+          }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Prefer platform-native discovery: in Kubernetes use Services + DNS + readiness probes (third-party registration) so app code never talks to a registry. For internal gRPC use headless Services + client-side round_robin; for public traffic put a single, thin, replicated API gateway at the edge. Keep business logic out of the gateway and mesh — they own routing, auth, rate limiting, mTLS, and traffic policy, not domain rules. Externalize retries/timeouts/mTLS to a mesh where the operational cost is justified.",
+    "performance": "Client-side LB removes a proxy hop and lowers tail latency but requires clients to keep a fresh instance view (watch, don't poll). gRPC's per-RPC balancing over multiple sub-connections avoids HTTP/2 connection pinning. Cache discovery results and update on watch events; avoid a registry lookup per request. For gateways, reuse tuned http.Client/Transport with connection pooling to backends and stream large responses instead of buffering.",
+    "concurrency": "The registry and balancer are hit by many goroutines, so guard shared maps with sync primitives and use atomic counters for round-robin so reads stay concurrent. Gateway aggregation fans out with bounded concurrency (errgroup/semaphore) and must propagate r.Context() so a client disconnect cancels all in-flight backend calls; never write a shared ResponseWriter from multiple goroutines.",
+    "reliability": "Registration without health-check-driven deregistration is the classic bug — always pair TTL heartbeats or active health checks with a reaper so dead instances drop out (deregister on graceful shutdown too, but never rely on it alone since crashes skip cleanup). Flip readiness off before draining. Add per-call timeouts, bounded jittered retries to alternate instances, and circuit breakers so one bad backend can't cascade.",
+    "observability": "Propagate a request/trace ID across every hop (gateway -> service -> service) via context and headers; record per-route RED metrics (Rate, Errors, Duration) with latency histograms; export registry health (instance counts, deregistration events) so you can see black-holing early. Distributed tracing (OpenTelemetry) is what lets you follow one request through discovery, gateway, and multiple backends.",
+    "security": "The gateway authenticates and authorizes external traffic, terminates TLS, rate-limits, and validates/size-limits bodies. A service mesh adds mutual TLS (mTLS) so all east-west traffic is encrypted and services authenticate each other by identity, not IP. Lock down the registry (authn/authz, TLS) since it's a high-value target — a compromised registry can redirect traffic. Never log full tokens; strip sensitive headers before forwarding.",
+    "caseStudies": [
+      {
+        "company": "Kubernetes platform team",
+        "problem": "Dozens of ephemeral services needed discovery and load balancing without hardcoding addresses.",
+        "solution": "Services + cluster DNS + readiness probes for discovery/deregistration, with headless Services + gRPC round_robin for internal RPC.",
+        "tradeoffs": "Ties discovery to Kubernetes and requires understanding L4-vs-L7 behavior for gRPC, but eliminates custom registry code.",
+        "lessons": "Let the platform own discovery and health-gating; the big gotcha is gRPC connection pinning, solved with client-side LB."
+      },
+      {
+        "company": "Consumer API provider",
+        "problem": "gRPC service scaled out but traffic pinned to one pod, wasting new capacity.",
+        "solution": "Switched to a headless Service and configured the gRPC client with round_robin so RPCs spread across all pods.",
+        "tradeoffs": "Clients must embed balancing config and keep their endpoint view fresh, but capacity is now used evenly.",
+        "lessons": "An L4 load balancer pins long-lived HTTP/2 connections — gRPC needs client-side (or L7) balancing to distribute per-RPC."
+      }
+    ]
+  },
+  "keyTakeaways": [
+    "Service discovery resolves a logical name into the current live instance set via a registry, because ephemeral instances make hardcoded addresses unusable.",
+    "A registry is only accurate with health checks and deregistration (active probes or TTL heartbeats + a reaper); registration without deregistration black-holes traffic to dead instances.",
+    "Server-side LB puts a proxy in front (central control, extra hop); client-side LB resolves instances in the caller and balances per request (lower latency) — gRPC uses client-side round_robin via resolvers.",
+    "An API gateway is application-aware (routing, auth, rate limiting, aggregation), unlike a plain reverse proxy that only forwards.",
+    "A service mesh (Envoy/Istio sidecars) externalizes discovery, mTLS, retries, and traffic policy for east-west traffic; the gateway guards north-south — most systems run both.",
+    "In Kubernetes, Services + DNS + readiness probes provide discovery and LB, but gRPC needs a headless Service + round_robin to avoid pinning all streams to one pod."
+  ],
+  "visualExplorer": [
+    {
+      "visualId": "micro-topology",
+      "title": "Discovery, gateway & load balancing",
+      "caption": "Where the registry, gateway and load balancer sit in the topology."
+    }
+  ]
+}

@@ -4,9 +4,11 @@ import { PlayCircle, RefreshCw, Compass, ArrowRight, Sparkles, CalendarCheck } f
 import { getLastTopic, getDueReviews, getDiagnostic, getMastery } from '../utils/learnProgress';
 
 interface LearnJourneyPanelProps {
-  topics: Topic[]; // all DE topics
+  topics: Topic[]; // all topics for the current domain
   onSelectTech: (tech: Category, topicId?: string) => void;
   onStartDiagnostic: () => void;
+  // Diagnostic/placement is Data-Engineering-only; other domains hide that card.
+  showPlacement?: boolean;
 }
 
 const TRACK_LABEL: Record<string, string> = {
@@ -14,6 +16,8 @@ const TRACK_LABEL: Record<string, string> = {
   python: 'Python for DE',
   sql: 'Advanced SQL',
   'data-engineering': 'Data Engineering Core',
+  golang: 'Go',
+  java: 'Java',
 };
 
 const Card: React.FC<{ children: React.ReactNode; accent: string }> = ({ children, accent }) => (
@@ -32,7 +36,7 @@ const Head: React.FC<{ icon: React.ReactNode; label: string; color: string }> = 
   </div>
 );
 
-export const LearnJourneyPanel: React.FC<LearnJourneyPanelProps> = ({ topics, onSelectTech, onStartDiagnostic }) => {
+export const LearnJourneyPanel: React.FC<LearnJourneyPanelProps> = ({ topics, onSelectTech, onStartDiagnostic, showPlacement = true }) => {
   const byId = React.useMemo(() => {
     const m = new Map<string, Topic>();
     topics.forEach(t => m.set(t.id, t));
@@ -123,6 +127,7 @@ export const LearnJourneyPanel: React.FC<LearnJourneyPanelProps> = ({ topics, on
         )}
 
         {/* Placement / recommendation */}
+        {showPlacement && (
         <Card accent="#a855f7">
           <Head icon={<Compass size={16} />} label="Placement" color="#a855f7" />
           {diag ? (
@@ -154,6 +159,7 @@ export const LearnJourneyPanel: React.FC<LearnJourneyPanelProps> = ({ topics, on
             </>
           )}
         </Card>
+        )}
       </div>
     </div>
   );

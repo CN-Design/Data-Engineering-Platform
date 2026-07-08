@@ -10,12 +10,12 @@
   "relatedConcepts": ["golang-master-6", "golang-master-7"],
   "nestedConcepts": ["signal.NotifyContext", "Shutdown vs Close", "request draining", "shutdown deadline", "dependency ordering", "lame-duck mode"],
   "subtopics": [
-    { "title": "Catching SIGTERM/SIGINT", "explanation": "Orchestrators (Kubernetes, systemd) ask a process to stop by sending SIGTERM; Ctrl+C sends SIGINT. The idiomatic Go pattern is signal.NotifyContext, which returns a context that is cancelled when one of those signals arrives — turning an OS signal into a normal cancellation you can select on.", "example": "ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)\ndefer stop()" },
-    { "title": "Shutdown(ctx) vs Close()", "explanation": "http.Server.Close() immediately rips down all listeners and connections, killing in-flight requests. Shutdown(ctx) instead stops accepting new connections and waits for active requests to finish (until ctx's deadline). Always prefer Shutdown for zero-downtime; Close is a last-resort hard kill.", "example": "if err := srv.Shutdown(ctx); err != nil { srv.Close() }" },
-    { "title": "Draining in-flight requests", "explanation": "Draining means letting requests that are already mid-flight run to completion before the process exits, while refusing new ones. Shutdown closes idle keep-alive connections immediately and waits for active handlers to return, then unblocks ListenAndServe with http.ErrServerClosed.", "example": "// ListenAndServe returns ErrServerClosed once Shutdown completes" },
-    { "title": "Bounding shutdown with a deadline", "explanation": "Draining can't wait forever — a stuck handler would hang the deploy. Wrap Shutdown in a context.WithTimeout (e.g. 25s, inside Kubernetes' grace period). If the deadline passes, Shutdown returns context.DeadlineExceeded and you force-close so the process still exits.", "example": "ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\ndefer cancel()" },
-    { "title": "Ordering dependency shutdown", "explanation": "Order matters: stop accepting new requests first, then drain handlers, and only THEN close the things handlers depend on (DB pools, message consumers, caches). Closing the DB before draining would make in-flight requests fail. Shut down in reverse order of startup.", "example": "srv.Shutdown(ctx); db.Close(); broker.Close()" },
-    { "title": "Lame-duck mode & readiness", "explanation": "In Kubernetes the load balancer keeps routing until the readiness probe fails. On SIGTERM, flip readiness to 'not ready' first so new traffic stops arriving, sleep briefly for endpoint propagation (the preStop hook), THEN drain. This 'lame-duck' window prevents the race where the LB sends a request to a pod that's already shutting down.", "example": "atomic.StoreInt32(&ready, 0) // readiness probe now returns 503" }
+    { "title": "Catching SIGTERM/SIGINT", "explanation": "Orchestrators (Kubernetes, systemd) ask a process to stop by sending SIGTERM; Ctrl+C sends SIGINT. The idiomatic Go pattern is signal.NotifyContext, which returns a context that is cancelled when one of those signals arrives — turning an OS signal into a normal cancellation you can select on. This is the entry point of every graceful shutdown: it converts the stop signal into the cancellation the rest of the drain sequence waits on.", "example": "func main() {\n\t// Cancel ctx when SIGINT (Ctrl+C) or SIGTERM (k8s) arrives.\n\tctx, stop := signal.NotifyContext(context.Background(),\n\t\tsyscall.SIGINT, syscall.SIGTERM)\n\tdefer stop() // restore default signal handling on return\n\n\tlog.Println(\"running; press Ctrl+C to stop\")\n\t<-ctx.Done() // blocks until a signal cancels ctx\n\tlog.Println(\"signal received, beginning shutdown\")\n}\n// Output:\n// running; press Ctrl+C to stop\n// signal received, beginning shutdown" },
+    { "title": "Shutdown(ctx) vs Close()", "explanation": "http.Server.Close() immediately rips down all listeners and connections, killing in-flight requests. Shutdown(ctx) instead stops accepting new connections and waits for active requests to finish (until ctx's deadline). Always prefer Shutdown for zero-downtime; Close is a last-resort hard kill. Choosing Shutdown over Close is the single decision that makes graceful shutdown actually graceful.", "example": "shutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\ndefer cancel()\n\n// Try to drain gracefully; fall back to a hard close only if draining\n// blows past the deadline.\nif err := srv.Shutdown(shutCtx); err != nil {\n\tlog.Printf(\"graceful drain failed: %v; forcing close\", err)\n\t_ = srv.Close() // abrupt: kills any remaining connections\n}\n// Output: (clean drain) no error; server stopped after in-flight requests finish" },
+    { "title": "Draining in-flight requests", "explanation": "Draining means letting requests that are already mid-flight run to completion before the process exits, while refusing new ones. Shutdown closes idle keep-alive connections immediately and waits for active handlers to return, then unblocks ListenAndServe with http.ErrServerClosed. Draining is the core of graceful shutdown — it is what turns a deploy from a burst of dropped requests into an invisible rollover.", "example": "func serve(srv *http.Server) {\n\t// ListenAndServe blocks until Shutdown/Close; a clean drain\n\t// surfaces as the sentinel http.ErrServerClosed, not a failure.\n\terr := srv.ListenAndServe()\n\tif errors.Is(err, http.ErrServerClosed) {\n\t\tlog.Println(\"drained cleanly\")\n\t\treturn\n\t}\n\tif err != nil {\n\t\tlog.Fatalf(\"listen: %v\", err) // a real bind error\n\t}\n}\n// Output: drained cleanly" },
+    { "title": "Bounding shutdown with a deadline", "explanation": "Draining can't wait forever — a stuck handler would hang the deploy. Wrap Shutdown in a context.WithTimeout (e.g. 25s, inside Kubernetes' grace period). If the deadline passes, Shutdown returns context.DeadlineExceeded and you force-close so the process still exits. The deadline is what guarantees graceful shutdown always terminates — it bounds the drain so a slow request can never hang termination indefinitely.", "example": "<-ctx.Done() // signal arrived\n\n// Give the drain a hard ceiling well under terminationGracePeriodSeconds.\nshutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\ndefer cancel()\n\nif err := srv.Shutdown(shutCtx); errors.Is(err, context.DeadlineExceeded) {\n\tlog.Println(\"drain exceeded 25s deadline; forcing close\")\n\t_ = srv.Close()\n}\n// Output: (stuck handler) drain exceeded 25s deadline; forcing close" },
+    { "title": "Ordering dependency shutdown", "explanation": "Order matters: stop accepting new requests first, then drain handlers, and only THEN close the things handlers depend on (DB pools, message consumers, caches). Closing the DB before draining would make in-flight requests fail. Shut down in reverse order of startup. This ordering is what keeps graceful shutdown correct — draining without it just moves the dropped requests into 'database is closed' errors.", "example": "<-ctx.Done()\nshutCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)\ndefer cancel()\n\n// 1) Stop accepting and drain in-flight handlers FIRST.\nif err := srv.Shutdown(shutCtx); err != nil {\n\tlog.Printf(\"http shutdown: %v\", err)\n}\n// 2) Only now close what handlers depended on, reverse of startup order.\nconsumer.Stop()\ndb.Close()\ncache.Close()\n// Output: handlers finish before db.Close(), so no 'database is closed' errors" },
+    { "title": "Lame-duck mode & readiness", "explanation": "In Kubernetes the load balancer keeps routing until the readiness probe fails. On SIGTERM, flip readiness to 'not ready' first so new traffic stops arriving, sleep briefly for endpoint propagation (the preStop hook), THEN drain. This 'lame-duck' window prevents the race where the LB sends a request to a pod that's already shutting down. Lame-duck mode is what makes graceful shutdown actually zero-downtime on Kubernetes — draining alone can't win the race against a load balancer that hasn't noticed the pod is leaving.", "example": "var ready int32 = 1\n\nfunc readyz(w http.ResponseWriter, _ *http.Request) {\n\tif atomic.LoadInt32(&ready) == 1 {\n\t\tw.WriteHeader(http.StatusOK) // 200: keep receiving traffic\n\t\treturn\n\t}\n\tw.WriteHeader(http.StatusServiceUnavailable) // 503: drain me\n}\n\nfunc beginShutdown() {\n\tatomic.StoreInt32(&ready, 0) // fail readiness -> LB removes this pod\n\ttime.Sleep(5 * time.Second)  // let endpoint removal propagate, THEN drain\n}\n// Output: readyz returns 503 during the lame-duck window, so no new traffic arrives" }
   ],
   "foundations": {
     "overview": "A process can be told to stop at any moment. The naive response — exit immediately — drops every request that was mid-flight and can leave databases, queues, and files in an inconsistent state. Graceful shutdown is the alternative: when the signal arrives, the service stops taking new work, lets the work it already accepted finish, releases its resources in a safe order, and only then exits. In Go this is a small, well-supported pattern built from three pieces: catch the signal as a cancellable context, call http.Server.Shutdown(ctx) to drain, and bound the whole thing with a deadline.",
@@ -223,6 +223,44 @@
           { "question": "What happens if your shutdown deadline exceeds terminationGracePeriodSeconds?", "answer": "Kubernetes sends SIGKILL when the grace period elapses, hard-killing the process mid-drain — so the deadline must be shorter than the grace period." },
           { "question": "Why use a preStop sleep instead of just relying on readiness?", "answer": "preStop runs before SIGTERM and buys deterministic time for endpoint removal to propagate, closing the race even if readiness polling is slower than traffic arrival." }
         ]
+      },
+      {
+        "id": "golang-master-5-p5-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Why must the context you pass to srv.Shutdown be a FRESH context.WithTimeout rather than the signal context you waited on?",
+        "directAnswer": "signal.NotifyContext returns a context that is cancelled the moment the signal arrives — which is exactly when <-ctx.Done() unblocks. If you then pass that same, already-cancelled context to srv.Shutdown, Shutdown sees an expired deadline and returns immediately (context.Canceled) WITHOUT draining any in-flight requests, dropping them. You must create a fresh context.WithTimeout(context.Background(), d) with a real drain deadline (comfortably under the orchestrator's grace period) so Shutdown actually has time to let active handlers finish, falling back to Close only if that deadline is exceeded.",
+        "detailedExplanation": {
+          "whatItIs": "The distinction between the signal-detection context and the drain-deadline context.",
+          "whyItExists": "The signal context's only job is to unblock on the signal; it's dead afterward and can't bound a drain.",
+          "howItWorks": "Shutdown drains until its ctx is done; a pre-cancelled ctx means 'done now', so it skips draining."
+        },
+        "whyImportant": "Reusing the cancelled context is a subtle bug that silently defeats graceful shutdown, and a favorite spot-the-bug interview item.",
+        "realWorldExample": "A service 'implemented' graceful shutdown but still dropped requests until the drain used a fresh 25s WithTimeout instead of the signal context.",
+        "followUps": [
+          { "question": "What does srv.Shutdown return if its context expires mid-drain?", "answer": "context.DeadlineExceeded — at which point you force-close with srv.Close() so the process still exits." },
+          { "question": "How long should the drain deadline be?", "answer": "Comfortably under terminationGracePeriodSeconds so Kubernetes doesn't SIGKILL mid-drain, e.g. 25s under a 30s grace period." }
+        ]
+      },
+      {
+        "id": "golang-master-5-p5-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "What is http.ErrServerClosed and why do you treat it as a non-error, and how does this shape where ListenAndServe runs?",
+        "directAnswer": "ListenAndServe blocks until the server stops; when Shutdown or Close is called it returns the sentinel error http.ErrServerClosed to signal 'the server was intentionally stopped', not a failure. Idiomatic code checks `errors.Is(err, http.ErrServerClosed)` and treats it as a clean exit, only log.Fatal-ing on other errors (like a bind failure). Because ListenAndServe blocks, you run it in its own goroutine and have the main goroutine wait on the signal context, so main can proceed to call Shutdown while the serve goroutine unblocks with ErrServerClosed.",
+        "detailedExplanation": {
+          "whatItIs": "The sentinel error returned by a cleanly stopped HTTP server and the goroutine structure it implies.",
+          "whyItExists": "To distinguish an intentional shutdown from a real listen/serve failure.",
+          "howItWorks": "Shutdown/Close closes the listeners; the blocked ListenAndServe returns http.ErrServerClosed once the accept loop stops."
+        },
+        "whyImportant": "Mishandling ErrServerClosed causes false-positive fatal crashes on every clean shutdown — a common bug and interview check.",
+        "realWorldExample": "The serve goroutine logs and continues on ErrServerClosed but log.Fatals on a real 'address already in use' bind error, so only genuine failures crash the process.",
+        "followUps": [
+          { "question": "Why launch ListenAndServe in a goroutine at all?", "answer": "It blocks until shutdown, so the main goroutine needs to remain free to wait on the signal and orchestrate the drain." },
+          { "question": "Does Close also return ErrServerClosed?", "answer": "Yes — both Shutdown and Close cause ListenAndServe to return http.ErrServerClosed; the difference is whether in-flight requests were drained or killed." }
+        ]
       }
     ],
     "scenario": [
@@ -244,6 +282,25 @@
           { "question": "How would you coordinate several dependencies cleanly?", "answer": "Run shutdown steps sequentially in reverse startup order (HTTP → consumers → DB → cache), or use a run-group/errgroup that signals all components to stop and waits for each in the right sequence." },
           { "question": "What if a defer db.Close() is the culprit?", "answer": "Defers run in LIFO at function return, which can fire before an explicit Shutdown if ordering isn't controlled — make shutdown ordering explicit rather than relying on defer order." }
         ]
+      },
+      {
+        "id": "golang-master-5-p5-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "Your service runs a background Kafka consumer alongside the HTTP server. On deploy, you occasionally see duplicate message processing and lost offsets. The HTTP side shuts down cleanly. What's missing and how do you fix the consumer's shutdown?",
+        "directAnswer": "The consumer isn't participating in graceful shutdown: on SIGTERM the process exits while a batch is mid-flight and before offsets are committed, so on restart those messages are re-fetched (duplicates) or, if a partial commit happened, skipped (lost). Fix it by wiring the consumer into the same shutdown sequence: on signal, stop FETCHING new records, let the in-flight batch finish processing, COMMIT offsets, then close the client — draining before releasing, exactly like HTTP. Bound this with the shared deadline, and order it relative to other components (stop intake first, close the client last).",
+        "detailedExplanation": {
+          "whatItIs": "Drain-then-close applied to a message consumer, not just an HTTP server.",
+          "whyItExists": "Abrupt exit leaves the current batch uncommitted, causing at-least-once reprocessing or offset loss.",
+          "howItWorks": "Stop polling, finish and commit the current batch, then close the client so the broker sees a clean leave."
+        },
+        "whyImportant": "Graceful shutdown extends beyond HTTP; consumers are a common place teams forget it, causing data-correctness incidents.",
+        "realWorldExample": "A Kafka service added 'stop fetch, finish batch, commit, close' on SIGTERM and eliminated duplicate-processing incidents during rollouts.",
+        "followUps": [
+          { "question": "Why stop fetching before draining?", "answer": "So no new records enter the pipeline during shutdown; you only need to finish and commit what's already in flight." },
+          { "question": "How do you coordinate the HTTP server and consumer shutdown?", "answer": "Use one lifecycle owner (run-group/errgroup) that cancels a shared context and shuts each component down in reverse startup order under a single deadline." }
+        ]
       }
     ],
     "coding": [
@@ -264,6 +321,47 @@
         "followUps": [
           { "question": "Why drain with a fresh context instead of gctx?", "answer": "gctx is already cancelled by the time <-gctx.Done() returns, so Shutdown would see an expired deadline and skip draining. A fresh WithTimeout gives it real time to drain." },
           { "question": "How would you add a second component, like a DB, to this group?", "answer": "Add another g.Go that waits on gctx.Done() and closes the DB — but sequence it after the server drains, e.g. by closing the DB only after the Shutdown goroutine signals completion, preserving reverse-startup order." }
+        ]
+      },
+      {
+        "id": "golang-master-5-p5-cd-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a lame-duck readiness gate for Kubernetes: a readyz handler that returns 200 while ready and 503 once shutdown begins, plus a BeginDrain that flips the flag and waits for endpoint propagation before returning. Make it safe for concurrent use.",
+        "thoughtProcess": "Use an atomic int32 flag so the readiness handler (called concurrently by kubelet probes) and BeginDrain don't race. readyz reads the flag atomically and returns 200 or 503. BeginDrain stores 0 (not ready) so the load balancer removes the pod, then sleeps a short propagation window before returning so the caller only starts draining once traffic has stopped arriving.",
+        "solution": {
+          "code": "type Health struct {\n\tready int32 // 1 = ready, 0 = draining; accessed atomically\n}\n\nfunc NewHealth() *Health {\n\th := &Health{}\n\tatomic.StoreInt32(&h.ready, 1) // start ready\n\treturn h\n}\n\n// Readyz is the readiness probe handler; safe under concurrent probes.\nfunc (h *Health) Readyz(w http.ResponseWriter, _ *http.Request) {\n\tif atomic.LoadInt32(&h.ready) == 1 {\n\t\tw.WriteHeader(http.StatusOK) // keep receiving traffic\n\t\treturn\n\t}\n\tw.WriteHeader(http.StatusServiceUnavailable) // 503: drain me\n}\n\n// BeginDrain flips readiness off, then waits for endpoint removal\n// to propagate before the caller starts draining requests.\nfunc (h *Health) BeginDrain(propagation time.Duration) {\n\tatomic.StoreInt32(&h.ready, 0) // LB removes this pod from endpoints\n\ttime.Sleep(propagation)        // let the removal propagate, THEN drain\n}",
+          "language": "go"
+        },
+        "lineByLine": "Health holds an int32 flag accessed only through sync/atomic so the concurrently-invoked readiness probe never races BeginDrain. NewHealth starts the flag at 1 (ready). Readyz loads the flag atomically and writes 200 while ready or 503 once draining, which tells the load balancer to stop routing. BeginDrain stores 0 to enter lame-duck mode, then sleeps the propagation window so that by the time it returns, new traffic has stopped arriving and the caller can safely call srv.Shutdown.",
+        "timeComplexity": "O(1) per probe; BeginDrain blocks for the propagation duration.",
+        "spaceComplexity": "O(1) — a single flag.",
+        "followUps": [
+          { "question": "Why sleep after flipping readiness?", "answer": "Endpoint removal in Kubernetes is eventually consistent; the sleep gives kube-proxy/ingress time to stop routing before draining, closing the load-balancer race." },
+          { "question": "Why atomic instead of a plain bool?", "answer": "The readiness handler runs on many probe goroutines concurrently with BeginDrain; an unsynchronized bool would be a data race. A mutex or atomic makes it correct." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "golang-master-5-p5-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design the full zero-downtime shutdown path for a Go service on Kubernetes that serves HTTP, runs a message consumer, and holds a DB pool. Cover signals, the lame-duck race, ordering, deadlines, and failure fallback.",
+        "directAnswer": "Own the lifecycle in a single Run function. Startup order: open DB pool, start the consumer, start the HTTP server (ListenAndServe in a goroutine, treating http.ErrServerClosed as clean). Use signal.NotifyContext(SIGINT, SIGTERM) as the root; the main goroutine waits on it. On signal: (1) enter lame-duck mode — flip the readiness probe to 503 and rely on a preStop `sleep` hook so the load balancer removes the pod before draining, closing the endpoint-propagation race. (2) Create a FRESH context.WithTimeout drain deadline (e.g. 25s, comfortably under terminationGracePeriodSeconds=30). (3) Shut down in REVERSE startup order: srv.Shutdown(shutCtx) to drain in-flight HTTP first; then stop the consumer (stop fetch, finish and commit the current batch); then close the DB pool; then flush logs/metrics. (4) If Shutdown exceeds the deadline, fall back to srv.Close() so the process always exits. Use an errgroup/run-group so any component failing also triggers coordinated shutdown, and log/metricize each phase's timing.",
+        "detailedExplanation": {
+          "whatItIs": "A centralized, ordered, deadline-bounded termination protocol spanning HTTP, a consumer, and a DB.",
+          "whyItExists": "So rolling deploys and autoscaling never drop requests, duplicate messages, or leave state inconsistent.",
+          "howItWorks": "NotifyContext converts the signal to cancellation; lame-duck + preStop stop new traffic; Shutdown drains; reverse-order closes release dependencies; a fresh deadline bounds the whole thing with a forced-close fallback."
+        },
+        "whyImportant": "It ties together every graceful-shutdown concept — signals, the LB race, ordering, deadlines, and fallback — the canonical SRE/backend design question.",
+        "realWorldExample": "A payments service on Kubernetes uses readiness=503 + preStop sleep 5, a 25s Shutdown under a 30s grace period, then consumer commit and DB close, making deploys invisible to users.",
+        "followUps": [
+          { "question": "Why must the drain deadline be under terminationGracePeriodSeconds?", "answer": "If it exceeds the grace period, Kubernetes sends SIGKILL and truncates the drain, defeating the point; keep it comfortably shorter." },
+          { "question": "Why close the DB last, after HTTP and consumer drain?", "answer": "Handlers and the consumer use the DB; closing it first makes in-flight work fail with 'database is closed'. Reverse-startup order avoids that." },
+          { "question": "How do you make this testable without real signals or sleeps?", "answer": "Extract an ordered shutdown coordinator that runs steps under an injected context/deadline, and test step ordering, first-error stop, and deadline behavior directly." }
         ]
       }
     ]

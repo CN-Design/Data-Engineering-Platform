@@ -1,0 +1,366 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-5",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "JWT Authentication & Auth Middleware",
+  "difficulty": "intermediate",
+  "summary": "A JSON Web Token (JWT) is a signed, self-contained credential — `header.payload.signature`, each part base64url-encoded — that lets a server authenticate a request without a session store. In Go you mint and verify them with `github.com/golang-jwt/jwt/v5` (`jwt.NewWithClaims` + `token.SignedString`, then `jwt.Parse` with a **keyfunc**), hash passwords with `golang.org/x/crypto/bcrypt`, and enforce identity in a small `func(http.Handler) http.Handler` **auth middleware** that pulls the Bearer token, validates it, and injects the user into the request context. Get signing, claims, and validation right — and avoid the `alg=none` class of pitfalls — and you have stateless auth with no framework.",
+  "prerequisites": ["golang-web-1"],
+  "relatedConcepts": ["golang-web-1", "golang-web-6"],
+  "nestedConcepts": ["JWT anatomy & base64url", "HS256 vs RS256 signing", "creating & parsing tokens", "auth middleware & context", "access vs refresh tokens", "bcrypt password hashing"],
+  "subtopics": [
+    { "title": "JWT anatomy: header.payload.signature", "explanation": "A JWT is three base64url segments joined by dots: a header ({\"alg\":\"HS256\",\"typ\":\"JWT\"}), a payload of claims, and a signature over `base64url(header) + \".\" + base64url(payload)`. base64url is standard base64 with +/ replaced by -_ and padding stripped, so the token is URL- and header-safe. Critically, the payload is only ENCODED, not encrypted — anyone can read it — so the signature is the only thing that proves integrity. Understanding this three-part shape is the foundation of JWT authentication: every signing, parsing, and validation step operates on exactly these segments.", "example": "// A JWT is just three base64url strings joined by dots; the payload is\n// readable by anyone, so never put secrets in it.\nfunc main() {\n\ttok := \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc\"\n\tparts := strings.Split(tok, \".\")\n\theader, _ := base64.RawURLEncoding.DecodeString(parts[0])\n\tpayload, _ := base64.RawURLEncoding.DecodeString(parts[1])\n\tfmt.Println(string(header))  // {\"alg\":\"HS256\"}\n\tfmt.Println(string(payload)) // {\"sub\":\"123\"}\n\t// parts[2] is the signature: proves the first two weren't tampered with.\n}" },
+    { "title": "HS256 vs RS256: choosing an algorithm", "explanation": "HS256 is symmetric HMAC-SHA256: one shared secret both signs and verifies, so it is simple and fast but every verifier must hold the secret that can also FORGE tokens. RS256 is asymmetric RSA-SHA256: a private key signs and a widely-distributed public key only verifies, so untrusted services can validate without the power to mint tokens. Rule of thumb: HS256 when one service issues and verifies its own tokens; RS256 when a central auth server issues tokens that many independent services must verify. Picking the right algorithm — and pinning it during verification — is a core decision in JWT authentication.", "example": "// HS256: same secret signs and verifies (symmetric).\nsecret := []byte(\"super-secret-key\")\nhs := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{\"sub\": \"42\"})\nhsStr, _ := hs.SignedString(secret) // sign with the shared secret\n\n// RS256: private key signs, public key verifies (asymmetric).\nrs := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{\"sub\": \"42\"})\nrsStr, _ := rs.SignedString(privateKey) // *rsa.PrivateKey\n// Verifiers only need publicKey (*rsa.PublicKey); they cannot forge tokens.\nfmt.Println(len(hsStr) > 0, len(rsStr) > 0)" },
+    { "title": "Creating & parsing tokens with golang-jwt/v5", "explanation": "To mint a token you build claims, call jwt.NewWithClaims(method, claims), then token.SignedString(key) to get the signed string. To verify you call jwt.Parse (or jwt.ParseWithClaims) passing a keyfunc — a callback that inspects the token's alg and returns the key to verify with. The keyfunc is the security-critical hook: it must assert the signing method is what you expect before returning a key, or an attacker can dictate the algorithm. This create/parse-with-keyfunc pair is the mechanical heart of JWT authentication in Go.", "example": "// Create then verify a token with golang-jwt/v5.\nsecret := []byte(\"k\")\nclaims := jwt.MapClaims{\"sub\": \"42\", \"exp\": time.Now().Add(time.Hour).Unix()}\ntok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)\n\nparsed, err := jwt.Parse(tok, func(t *jwt.Token) (any, error) {\n\t// Assert the algorithm before trusting the token!\n\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\treturn nil, fmt.Errorf(\"unexpected alg: %v\", t.Header[\"alg\"])\n\t}\n\treturn secret, nil // key used to verify the signature\n})\nfmt.Println(err == nil && parsed.Valid) // true" },
+    { "title": "Registered & custom claims", "explanation": "The JWT spec defines registered claims — iss (issuer), sub (subject), aud (audience), exp (expiry), nbf (not-before), iat (issued-at) — that libraries validate for you. In golang-jwt/v5 you embed jwt.RegisteredClaims in your own struct and add custom fields (like a role), giving typed, validated claims via ParseWithClaims. v5 automatically checks exp/nbf/iat, and you can add WithAudience/WithIssuer validators. Well-structured claims are what let JWT authentication carry rich, tamper-proof identity while still being automatically expired and scoped.", "example": "// Custom claims embed RegisteredClaims so exp/iss are validated for free.\ntype AppClaims struct {\n\tUserID string `json:\"uid\"`\n\tRole   string `json:\"role\"`\n\tjwt.RegisteredClaims\n}\n\nclaims := AppClaims{\n\tUserID: \"42\", Role: \"admin\",\n\tRegisteredClaims: jwt.RegisteredClaims{\n\t\tIssuer:    \"auth-svc\",\n\t\tExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),\n\t\tIssuedAt:  jwt.NewNumericDate(time.Now()),\n\t},\n}\ntok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(\"k\"))\nfmt.Println(len(tok) > 0)" },
+    { "title": "Auth middleware: Bearer token to context", "explanation": "Auth middleware is a func(http.Handler) http.Handler that reads the Authorization header, strips the \"Bearer \" prefix, parses+validates the JWT with a keyfunc, and on success stores the authenticated user in r.Context() before calling next; on any failure it writes 401 and returns WITHOUT calling next (short-circuiting). Downstream handlers then read the user from the context instead of re-parsing the token. This middleware is where JWT authentication actually meets your HTTP service — it turns a validated token into a request-scoped identity.", "example": "type ctxKey string\n\nconst userKey ctxKey = \"user\"\n\nfunc Auth(secret []byte) func(http.Handler) http.Handler {\n\treturn func(next http.Handler) http.Handler {\n\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t\traw := strings.TrimPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\t\ttok, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\t\t\t\treturn nil, fmt.Errorf(\"bad alg\")\n\t\t\t\t}\n\t\t\t\treturn secret, nil\n\t\t\t})\n\t\t\tif err != nil || !tok.Valid { // MUST check tok.Valid\n\t\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\t\treturn // short-circuit: handler never runs\n\t\t\t}\n\t\t\tsub, _ := tok.Claims.GetSubject()\n\t\t\tctx := context.WithValue(r.Context(), userKey, sub)\n\t\t\tnext.ServeHTTP(w, r.WithContext(ctx))\n\t\t})\n\t}\n}" },
+    { "title": "bcrypt password hashing", "explanation": "Never store or JWT-sign a raw password. Use golang.org/x/crypto/bcrypt: bcrypt.GenerateFromPassword derives a slow, salted hash (the salt and cost are embedded in the output), and bcrypt.CompareHashAndPassword verifies a login attempt in constant time relative to the hash. The cost factor makes brute-forcing expensive and is tunable as hardware improves. bcrypt sits at the front door of JWT authentication: you verify the password once with bcrypt at login, then issue a JWT so subsequent requests skip the expensive hash.", "example": "// Hash at signup, compare at login; bcrypt embeds the salt + cost.\nhash, err := bcrypt.GenerateFromPassword([]byte(\"s3cret\"), bcrypt.DefaultCost)\nif err != nil {\n\tlog.Fatal(err)\n}\n// Store `hash` (a []byte like \"$2a$10$...\") in the users table.\n\n// At login, compare the attempt against the stored hash.\nerr = bcrypt.CompareHashAndPassword(hash, []byte(\"s3cret\"))\nfmt.Println(err == nil) // true -> correct password, now issue a JWT\nerr = bcrypt.CompareHashAndPassword(hash, []byte(\"wrong\"))\nfmt.Println(err == nil) // false -> ErrMismatchedHashAndPassword" }
+  ],
+  "foundations": {
+    "overview": "JWT authentication lets a Go service prove who a caller is on every request without looking anything up in a database, because the identity travels inside a signed token. The flow is: verify a password once with bcrypt at login, mint a short-lived signed JWT, and thereafter validate that token in auth middleware that injects the user into the request context. The whole scheme rests on one asymmetry — anyone can READ a JWT, but only a holder of the signing key can FORGE one — so almost every JWT bug is a failure to verify the signature, algorithm, or expiry correctly.",
+    "formalDefinition": "A JWT (RFC 7519) is a JSON Web Signature (RFC 7515) whose payload is a set of claims. It is `base64url(header) + \".\" + base64url(payload) + \".\" + base64url(signature)`, where the signature covers the first two segments using the algorithm named in the header (e.g. HS256 = HMAC-SHA256, RS256 = RSASSA-PKCS1-v1_5 with SHA-256). Verification recomputes/decrypts the signature with the appropriate key and checks the registered claims (exp, nbf, aud, iss).",
+    "whyItMatters": "Stateless JWT auth scales horizontally with no shared session store, which is why it dominates microservices, mobile, and SPA backends. But it is also a top source of security incidents (the alg=none and unverified-signature families), so demonstrating correct signing, keyfunc validation, and token lifetime handling is a staple of backend interviews and audits.",
+    "mentalModel": "Think of a JWT as a tamper-evident wristband at a festival. The gate (bcrypt login) checks your ID once and issues a wristband stamped with a seal only the venue can produce (the signature). Every stage after that just glances at the seal and expiry date — no re-checking your ID — and refuses entry if the seal is wrong or the band expired. You can read what's printed on the band, but you can't fake the seal.",
+    "runtimePerspective": "Signing HS256 is a single HMAC-SHA256 over a few hundred bytes — microseconds. Verification is equally cheap, which is the point: after a one-time bcrypt check (deliberately tens of milliseconds), each subsequent request does only fast crypto and no I/O. RS256 signing is slower (RSA private-key op) but verification with the public key is still fast, so central issuers sign occasionally while many services verify constantly.",
+    "realWorldUsage": "Bearer-token auth on REST/JSON APIs, single sign-on and OAuth2/OpenID Connect ID tokens, service-to-service auth in microservice meshes, and short-lived access tokens paired with long-lived refresh tokens for mobile and web clients.",
+    "businessImpact": "Correct JWT auth is a direct line to security and trust: a signature-verification or alg=none bug is an authentication bypass that can expose every user's data, while missing expiry turns a single leaked token into permanent access. Getting lifetimes and rotation right limits blast radius when a token leaks.",
+    "engineeringImpact": "Statelessness removes a shared session database from the hot path, simplifying horizontal scaling and cross-service auth. The cost is that tokens can't be trivially revoked before expiry, which pushes teams toward short access tokens plus a refresh/rotation mechanism and sometimes a denylist for immediate revocation.",
+    "performanceImpact": "Per-request verification is O(token length) fast crypto with zero I/O, so JWT auth adds negligible latency versus a session lookup. The expensive operation is bcrypt, deliberately slow to resist brute force — so it runs only at login, never per request. Tune bcrypt cost to keep login around 50-100ms.",
+    "commonUseCases": [
+      "Bearer-token auth for stateless REST/JSON APIs",
+      "Short-lived access tokens plus refresh-token rotation for web/mobile",
+      "Service-to-service authentication with RS256 and shared public keys",
+      "OAuth2 / OpenID Connect ID tokens from a central identity provider"
+    ],
+    "commonMisconceptions": [
+      { "myth": "JWTs are encrypted, so it's safe to put secrets in the payload.", "reality": "The payload is only base64url-ENCODED, not encrypted. Anyone can decode and read it. Never store passwords, PII you can't expose, or secrets in a JWT — signing proves integrity, not confidentiality." },
+      { "myth": "If jwt.Parse returns no error, the token is authenticated.", "reality": "You must also check token.Valid, and your keyfunc must assert the expected signing method. A token can parse structurally while being invalid, and accepting the header's alg blindly enables the alg=none / algorithm-confusion attacks." },
+      { "myth": "JWTs can be revoked instantly like server sessions.", "reality": "A signed JWT is valid until it expires; there is no built-in revocation. To revoke early you need short expiries plus refresh rotation, or a server-side denylist — which reintroduces the state JWTs were meant to avoid." },
+      { "myth": "You can hash passwords quickly with SHA-256 like signing a JWT.", "reality": "Password hashing must be SLOW and salted (bcrypt/argon2). Fast hashes like SHA-256 are trivially brute-forced. bcrypt.GenerateFromPassword is intentionally expensive and embeds a per-password salt." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "Sign an access token and verify it with a keyfunc",
+      "explanation": "The full round trip: build custom claims embedding jwt.RegisteredClaims (so exp is auto-validated), sign with HS256, then ParseWithClaims using a keyfunc that FIRST asserts the signing method. Note we check both err and token.Valid — parsing success alone is not enough.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"time\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\ntype AppClaims struct {\n\tUserID string `json:\"uid\"`\n\tRole   string `json:\"role\"`\n\tjwt.RegisteredClaims\n}\n\nvar secret = []byte(\"super-secret-key\")\n\nfunc issue(uid, role string) (string, error) {\n\tclaims := AppClaims{\n\t\tUserID: uid, Role: role,\n\t\tRegisteredClaims: jwt.RegisteredClaims{\n\t\t\tIssuer:    \"auth-svc\",\n\t\t\tExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),\n\t\t\tIssuedAt:  jwt.NewNumericDate(time.Now()),\n\t\t},\n\t}\n\treturn jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)\n}\n\nfunc verify(raw string) (*AppClaims, error) {\n\tclaims := &AppClaims{}\n\ttok, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {\n\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok { // pin the algorithm\n\t\t\treturn nil, fmt.Errorf(\"unexpected signing method: %v\", t.Header[\"alg\"])\n\t\t}\n\t\treturn secret, nil\n\t})\n\tif err != nil || !tok.Valid { // BOTH conditions matter\n\t\treturn nil, fmt.Errorf(\"invalid token: %w\", err)\n\t}\n\treturn claims, nil\n}\n\nfunc main() {\n\ttok, _ := issue(\"42\", \"admin\")\n\tclaims, err := verify(tok)\n\tif err != nil {\n\t\tfmt.Println(\"error:\", err)\n\t\treturn\n\t}\n\tfmt.Printf(\"uid=%s role=%s iss=%s\\n\", claims.UserID, claims.Role, claims.Issuer)\n}",
+        "caption": "issue() mints an HS256 token with typed claims; verify() pins the method in the keyfunc and checks token.Valid.",
+        "expectedOutput": "uid=42 role=admin iss=auth-svc"
+      }
+    },
+    {
+      "level": "intermediate",
+      "title": "bcrypt login then JWT: the front door",
+      "explanation": "Password verification and token issuance are two separate steps. bcrypt.CompareHashAndPassword runs once at login (deliberately slow); only on success do you mint a fast-to-verify JWT. Note bcrypt returns a non-nil error on mismatch rather than a bool.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"time\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n\t\"golang.org/x/crypto/bcrypt\"\n)\n\nvar secret = []byte(\"super-secret-key\")\n\n// storedHash simulates the bcrypt hash saved at signup time.\nfunc storedHash() []byte {\n\th, _ := bcrypt.GenerateFromPassword([]byte(\"correct-horse\"), bcrypt.DefaultCost)\n\treturn h\n}\n\nfunc login(hash []byte, attempt string) (string, error) {\n\t// bcrypt returns nil only when the password matches.\n\tif err := bcrypt.CompareHashAndPassword(hash, []byte(attempt)); err != nil {\n\t\treturn \"\", fmt.Errorf(\"invalid credentials\")\n\t}\n\tclaims := jwt.MapClaims{\n\t\t\"sub\": \"42\",\n\t\t\"exp\": time.Now().Add(15 * time.Minute).Unix(),\n\t}\n\treturn jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)\n}\n\nfunc main() {\n\thash := storedHash()\n\n\tif _, err := login(hash, \"wrong-pass\"); err != nil {\n\t\tfmt.Println(\"bad login:\", err)\n\t}\n\n\ttok, err := login(hash, \"correct-horse\")\n\tif err != nil {\n\t\tfmt.Println(\"unexpected:\", err)\n\t\treturn\n\t}\n\tfmt.Println(\"issued token, len:\", len(tok) > 0)\n}",
+        "caption": "bcrypt gates login; a matching password yields a JWT. Wrong passwords never reach token issuance.",
+        "expectedOutput": "bad login: invalid credentials\nissued token, len: true"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "Edit it: harden a leaky auth middleware",
+      "explanation": "This middleware parses the token but never asserts the signing method and never checks token.Valid, so a forged alg=none token or an expired token sails through. Edit it to pin HS256 in the keyfunc, require token.Valid, and put the subject into the context.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport (\n\t\"net/http\"\n\t\"strings\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\nvar secret = []byte(\"super-secret-key\")\n\n// BUG: keyfunc doesn't check the method, and token.Valid is ignored.\nfunc Auth(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\traw := strings.TrimPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\t_, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\treturn secret, nil // accepts any alg the attacker chooses\n\t\t})\n\t\tif err != nil {\n\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\treturn\n\t\t}\n\t\tnext.ServeHTTP(w, r) // runs even for invalid/expired tokens\n\t})\n}",
+        "solution": "package main\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"strings\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\ntype ctxKey string\n\nconst userKey ctxKey = \"user\"\n\nvar secret = []byte(\"super-secret-key\")\n\n// Auth pins HS256, requires token.Valid, and injects the subject into ctx.\nfunc Auth(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\traw := strings.TrimPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\ttok, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\t// Pin the algorithm: reject anything that isn't HMAC (blocks alg=none).\n\t\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\t\t\treturn nil, fmt.Errorf(\"unexpected alg: %v\", t.Header[\"alg\"])\n\t\t\t}\n\t\t\treturn secret, nil\n\t\t})\n\t\tif err != nil || !tok.Valid { // reject invalid OR expired tokens\n\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\treturn // short-circuit\n\t\t}\n\t\tsub, _ := tok.Claims.GetSubject()\n\t\tctx := context.WithValue(r.Context(), userKey, sub)\n\t\tnext.ServeHTTP(w, r.WithContext(ctx)) // carry identity inward\n\t})\n}",
+        "caption": "The fix pins the signing method in the keyfunc, checks token.Valid, and stores the subject in the request context.",
+        "expectedOutput": "// forged alg=none token -> 401; expired token -> 401; valid token -> handler runs with user in ctx"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Why must a jwt.Parse keyfunc assert the token's signing method before returning the key?",
+      "options": ["To speed up verification", "To prevent algorithm-confusion / alg=none attacks where the attacker dictates the algorithm", "Because golang-jwt requires it to compile", "To choose between JSON and XML encoding"],
+      "answerIndex": 1,
+      "explanation": "If you return the key without checking t.Method, an attacker can send a token whose header says alg=none (unsigned) or swap HS256/RS256 to confuse verification. Asserting `t.Method.(*jwt.SigningMethodHMAC)` (or the RSA equivalent) pins the algorithm to what you actually expect, blocking that whole class of forgeries."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This code verifies a login. It compiles, but it authenticates the WRONG passwords. What's the bug?",
+      "code": "func login(hash []byte, attempt string) bool {\n\terr := bcrypt.CompareHashAndPassword(hash, []byte(attempt))\n\treturn err != nil // \"error means... valid?\"\n}",
+      "options": ["bcrypt.CompareHashAndPassword doesn't exist", "The boolean is inverted: err == nil means match, so it returns true only on WRONG passwords", "hash should be a string not []byte", "You must call GenerateFromPassword first"],
+      "answerIndex": 1,
+      "explanation": "bcrypt.CompareHashAndPassword returns nil ONLY when the password matches, and a non-nil error (ErrMismatchedHashAndPassword) when it doesn't. `return err != nil` therefore returns true for wrong passwords and false for the correct one. The correct check is `return err == nil`."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the verification so BOTH a parse error and an invalid/expired token are rejected.",
+      "codeBefore": "tok, err := jwt.Parse(raw, keyfunc)\nif",
+      "codeAfter": "{\n\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\treturn\n}",
+      "options": ["err != nil || !tok.Valid", "err != nil", "tok != nil", "err == nil && tok.Valid"],
+      "answerIndex": 0,
+      "explanation": "A token can parse without a Go error yet still be invalid (e.g. expired, wrong issuer). You must reject when err != nil OR when !tok.Valid. Checking only the error lets expired or otherwise-invalid tokens through, which is a common authentication-bypass bug."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "What does this print, given bcrypt.CompareHashAndPassword returns nil only on a match?",
+      "code": "hash, _ := bcrypt.GenerateFromPassword([]byte(\"pw\"), bcrypt.DefaultCost)\ne1 := bcrypt.CompareHashAndPassword(hash, []byte(\"pw\"))\ne2 := bcrypt.CompareHashAndPassword(hash, []byte(\"PW\"))\nfmt.Println(e1 == nil, e2 == nil)",
+      "options": ["true true", "true false", "false true", "false false"],
+      "answerIndex": 1,
+      "explanation": "The correct password \"pw\" matches the hash, so e1 is nil (e1 == nil is true). \"PW\" is different (bcrypt is case-sensitive), so e2 is ErrMismatchedHashAndPassword (e2 == nil is false). Output: `true false`."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-web-5-lab-issue-verify",
+      "title": "Implement issue + verify for HS256 tokens",
+      "instructions": "Implement `Issue(secret []byte, sub string, ttl time.Duration) (string, error)` that mints an HS256 token whose subject is `sub` and that expires after `ttl`, and `Verify(secret []byte, raw string) (string, error)` that validates the token (pinning HMAC) and returns the subject. Verify must reject tokens signed with a non-HMAC method and must return an error for invalid/expired tokens.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"time\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\n// Issue mints an HS256 token for sub, expiring after ttl.\nfunc Issue(secret []byte, sub string, ttl time.Duration) (string, error) {\n\t// TODO: build RegisteredClaims with Subject + ExpiresAt, sign with HS256.\n\treturn \"\", nil\n}\n\n// Verify validates the token (pinning HMAC) and returns its subject.\nfunc Verify(secret []byte, raw string) (string, error) {\n\t// TODO: ParseWithClaims, assert method, check token.Valid, return Subject.\n\treturn \"\", nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"fmt\"\n\t\"time\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\n// Issue mints an HS256 token for sub, expiring after ttl.\nfunc Issue(secret []byte, sub string, ttl time.Duration) (string, error) {\n\tclaims := jwt.RegisteredClaims{\n\t\tSubject:   sub,\n\t\tIssuedAt:  jwt.NewNumericDate(time.Now()),\n\t\tExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),\n\t}\n\treturn jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)\n}\n\n// Verify validates the token (pinning HMAC) and returns its subject.\nfunc Verify(secret []byte, raw string) (string, error) {\n\tclaims := &jwt.RegisteredClaims{}\n\ttok, err := jwt.ParseWithClaims(raw, claims, func(t *jwt.Token) (any, error) {\n\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok { // pin HMAC\n\t\t\treturn nil, fmt.Errorf(\"unexpected signing method: %v\", t.Header[\"alg\"])\n\t\t}\n\t\treturn secret, nil\n\t})\n\tif err != nil || !tok.Valid {\n\t\treturn \"\", fmt.Errorf(\"invalid token: %w\", err)\n\t}\n\treturn claims.Subject, nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestIssueVerifyRoundTrip(t *testing.T) {\n\tsecret := []byte(\"k\")\n\ttok, err := Issue(secret, \"user-42\", time.Hour)\n\tif err != nil {\n\t\tt.Fatalf(\"issue: %v\", err)\n\t}\n\tsub, err := Verify(secret, tok)\n\tif err != nil {\n\t\tt.Fatalf(\"verify: %v\", err)\n\t}\n\tif sub != \"user-42\" {\n\t\tt.Fatalf(\"sub = %q, want user-42\", sub)\n\t}\n}\n\nfunc TestVerifyRejectsExpired(t *testing.T) {\n\tsecret := []byte(\"k\")\n\ttok, _ := Issue(secret, \"user-42\", -time.Minute) // already expired\n\tif _, err := Verify(secret, tok); err == nil {\n\t\tt.Fatal(\"expected expired token to be rejected\")\n\t}\n}\n\nfunc TestVerifyRejectsWrongSecret(t *testing.T) {\n\ttok, _ := Issue([]byte(\"k\"), \"user-42\", time.Hour)\n\tif _, err := Verify([]byte(\"other\"), tok); err == nil {\n\t\tt.Fatal(\"expected wrong-secret token to be rejected\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.02s)",
+      "hints": [
+        "Use jwt.RegisteredClaims with Subject and ExpiresAt (jwt.NewNumericDate); v5 validates exp automatically.",
+        "In the keyfunc, type-assert t.Method to *jwt.SigningMethodHMAC and return an error if it fails.",
+        "After ParseWithClaims, reject when err != nil OR !tok.Valid, then return claims.Subject."
+      ]
+    },
+    {
+      "id": "go-web-5-lab-auth-middleware",
+      "title": "Write auth middleware that injects the user into context",
+      "instructions": "Implement `type ctxKey string`, an exported `UserFromContext(ctx context.Context) (string, bool)`, and `Auth(secret []byte) func(http.Handler) http.Handler`. The middleware must read the Bearer token from the Authorization header, verify it (pinning HMAC and checking token.Valid), store the subject in the request context, and call next. On any failure it must write 401 and NOT call next.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"net/http\"\n)\n\ntype ctxKey string\n\nconst userKey ctxKey = \"user\"\n\n// UserFromContext returns the authenticated subject, if present.\nfunc UserFromContext(ctx context.Context) (string, bool) {\n\t// TODO\n\treturn \"\", false\n}\n\n// Auth returns middleware that validates a Bearer JWT and injects the user.\nfunc Auth(secret []byte) func(http.Handler) http.Handler {\n\t// TODO\n\treturn nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"strings\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\ntype ctxKey string\n\nconst userKey ctxKey = \"user\"\n\n// UserFromContext returns the authenticated subject, if present.\nfunc UserFromContext(ctx context.Context) (string, bool) {\n\tsub, ok := ctx.Value(userKey).(string)\n\treturn sub, ok\n}\n\n// Auth returns middleware that validates a Bearer JWT and injects the user.\nfunc Auth(secret []byte) func(http.Handler) http.Handler {\n\treturn func(next http.Handler) http.Handler {\n\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t\thdr := r.Header.Get(\"Authorization\")\n\t\t\tif !strings.HasPrefix(hdr, \"Bearer \") {\n\t\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\t\treturn\n\t\t\t}\n\t\t\traw := strings.TrimPrefix(hdr, \"Bearer \")\n\t\t\ttok, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\t\t\t\treturn nil, fmt.Errorf(\"unexpected alg: %v\", t.Header[\"alg\"])\n\t\t\t\t}\n\t\t\t\treturn secret, nil\n\t\t\t})\n\t\t\tif err != nil || !tok.Valid {\n\t\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\t\treturn // short-circuit: handler never runs\n\t\t\t}\n\t\t\tsub, _ := tok.Claims.GetSubject()\n\t\t\tctx := context.WithValue(r.Context(), userKey, sub)\n\t\t\tnext.ServeHTTP(w, r.WithContext(ctx))\n\t\t})\n\t}\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"testing\"\n\t\"time\"\n\n\t\"github.com/golang-jwt/jwt/v5\"\n)\n\nfunc sign(secret []byte, sub string, ttl time.Duration) string {\n\tclaims := jwt.RegisteredClaims{\n\t\tSubject:   sub,\n\t\tExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),\n\t}\n\ts, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret)\n\treturn s\n}\n\nfunc TestAuthAllowsValid(t *testing.T) {\n\tsecret := []byte(\"k\")\n\tvar seen string\n\th := Auth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tseen, _ = UserFromContext(r.Context())\n\t\tw.WriteHeader(http.StatusOK)\n\t}))\n\treq := httptest.NewRequest(\"GET\", \"/\", nil)\n\treq.Header.Set(\"Authorization\", \"Bearer \"+sign(secret, \"u1\", time.Hour))\n\trr := httptest.NewRecorder()\n\th.ServeHTTP(rr, req)\n\tif rr.Code != http.StatusOK || seen != \"u1\" {\n\t\tt.Fatalf(\"code=%d user=%q, want 200 u1\", rr.Code, seen)\n\t}\n}\n\nfunc TestAuthRejectsMissing(t *testing.T) {\n\tcalled := false\n\th := Auth([]byte(\"k\"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tcalled = true\n\t}))\n\trr := httptest.NewRecorder()\n\th.ServeHTTP(rr, httptest.NewRequest(\"GET\", \"/\", nil))\n\tif rr.Code != http.StatusUnauthorized || called {\n\t\tt.Fatalf(\"code=%d called=%v, want 401 and handler not called\", rr.Code, called)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.02s)",
+      "hints": [
+        "Return a func(http.Handler) http.Handler so the secret is captured in a closure.",
+        "Require the 'Bearer ' prefix, then TrimPrefix it before parsing.",
+        "On err != nil || !tok.Valid, write 401 and return; otherwise store tok.Claims.GetSubject() via context.WithValue."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-web-5-debug-unchecked-valid",
+      "difficulty": "intermediate",
+      "title": "Expired tokens still authenticate",
+      "symptom": "Users report they stay logged in long after their tokens should have expired, and a token you know is expired still reaches protected handlers. There is no error in the logs.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func Auth(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\traw := strings.TrimPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\ttoken, _ := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\t\t\treturn nil, fmt.Errorf(\"bad alg\")\n\t\t\t}\n\t\t\treturn secret, nil\n\t\t})\n\t\t_ = token // BUG: neither err nor token.Valid is ever checked\n\t\tnext.ServeHTTP(w, r) // always runs\n\t})\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "The keyfunc correctly pins HMAC, but the returned error from jwt.Parse is discarded with `_` and token.Valid is never inspected. golang-jwt/v5 DOES set an error (and token.Valid=false) for an expired token, but this code ignores both and unconditionally calls next.ServeHTTP. So any structurally-parseable token — expired, wrong signature that still parses far enough, malformed — reaches the handler. The 'no error in logs' symptom is the tell: the error existed but was thrown away.",
+      "commonMistakes": [
+        "Discarding the jwt.Parse error with `_` instead of handling it.",
+        "Assuming a token that parses is a token that is valid (ignoring token.Valid).",
+        "Trusting that the keyfunc alone enforces expiry — it only supplies the key, it doesn't gate the request."
+      ],
+      "fixChallenge": "Capture the error and reject the request when err != nil OR !token.Valid before calling next.",
+      "solution": {
+        "language": "go",
+        "code": "func Auth(next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\traw := strings.TrimPrefix(r.Header.Get(\"Authorization\"), \"Bearer \")\n\t\ttoken, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {\n\t\t\tif _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {\n\t\t\t\treturn nil, fmt.Errorf(\"bad alg\")\n\t\t\t}\n\t\t\treturn secret, nil\n\t\t})\n\t\tif err != nil || !token.Valid { // reject expired/invalid tokens\n\t\t\thttp.Error(w, \"unauthorized\", http.StatusUnauthorized)\n\t\t\treturn\n\t\t}\n\t\tnext.ServeHTTP(w, r)\n\t})\n}",
+        "expectedOutput": "// expired or invalid token -> 401; valid token -> handler runs"
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-5-th-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "What are the three parts of a JWT, and what is actually protected by the signature?",
+        "directAnswer": "A JWT is header.payload.signature, each base64url-encoded and joined by dots. The header names the algorithm (e.g. HS256), the payload holds the claims (sub, exp, custom fields), and the signature is computed over base64url(header) + \".\" + base64url(payload) using the signing key. The signature protects INTEGRITY — it proves the header and payload weren't altered and were produced by a key holder. It does NOT provide confidentiality: the payload is only encoded, so anyone can read it. Never put secrets in a JWT.",
+        "detailedExplanation": {
+          "whatItIs": "A signed, self-contained credential carrying claims about a subject.",
+          "whyItExists": "To let servers authenticate requests statelessly, without a shared session store.",
+          "howItWorks": "The signature covers the encoded header+payload; verification recomputes it with the key and checks registered claims like exp."
+        },
+        "whyImportant": "Misunderstanding 'encoded vs encrypted' leads people to store secrets in the payload, and it's a near-guaranteed opening interview question.",
+        "realWorldExample": "An access token whose payload is {\"sub\":\"42\",\"role\":\"admin\",\"exp\":...} — readable by the client, but unforgeable without the secret.",
+        "followUps": [
+          { "question": "Can a client modify the payload?", "answer": "They can change the bytes, but the signature will no longer match, so verification fails — unless the server forgets to verify the signature or accepts alg=none." },
+          { "question": "What is base64url and why not plain base64?", "answer": "base64url replaces + and / with - and _ and drops padding, so the token is safe in URLs and HTTP headers without escaping." }
+        ]
+      },
+      {
+        "id": "go-web-5-th-2",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "When would you choose HS256 versus RS256, and what changes in the keyfunc?",
+        "directAnswer": "Use HS256 (symmetric HMAC) when the SAME service issues and verifies tokens: it's fast and simple, but the single shared secret can both sign and forge, so every verifier is fully trusted. Use RS256 (asymmetric RSA) when a central auth server issues tokens that MANY independent services verify: the private key signs, and the freely-distributable public key only verifies, so a compromised verifier can't mint tokens. In golang-jwt the keyfunc changes accordingly: for HS256 you assert *jwt.SigningMethodHMAC and return the []byte secret; for RS256 you assert *jwt.SigningMethodRSA and return the *rsa.PublicKey.",
+        "detailedExplanation": {
+          "whatItIs": "Two JWS signing algorithms — symmetric HMAC vs asymmetric RSA.",
+          "whyItExists": "Different trust topologies: shared-secret single-service vs central-issuer/many-verifiers.",
+          "howItWorks": "HS256 signs and verifies with one key; RS256 signs with a private key and verifies with the matching public key."
+        },
+        "whyImportant": "Choosing the wrong algorithm forces you to distribute a forging-capable secret to every service, and mismatched keyfunc assertions enable algorithm-confusion attacks.",
+        "realWorldExample": "An OIDC provider signs ID tokens with RS256 and publishes its public keys at a JWKS endpoint so any relying party can verify them.",
+        "followUps": [
+          { "question": "What's the algorithm-confusion attack between RS256 and HS256?", "answer": "If a verifier accepts either and uses the RSA public key as an HMAC secret, an attacker who knows the public key can sign a forged HS256 token that verifies. Pin exactly one method in the keyfunc to prevent it." },
+          { "question": "How do RS256 verifiers get the public key?", "answer": "Usually from a JWKS (JSON Web Key Set) endpoint keyed by the token's `kid` header, cached and rotated periodically." }
+        ]
+      },
+      {
+        "id": "go-web-5-th-3",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Why use access + refresh tokens instead of one long-lived JWT, and what is refresh-token rotation?",
+        "directAnswer": "A JWT can't be revoked before it expires, so a long-lived access token is dangerous if leaked. The pattern is a SHORT-lived access token (minutes) used on every request, plus a LONGER-lived refresh token (days) stored more securely (e.g. httpOnly cookie) and sent only to a /refresh endpoint to obtain a new access token. This bounds the damage of a leaked access token to its short lifetime. Rotation means each use of a refresh token issues a NEW refresh token and invalidates the old one; if an old (already-used) refresh token is presented again, that signals theft and you revoke the whole token family.",
+        "detailedExplanation": {
+          "whatItIs": "A two-token scheme separating frequent, short-lived access from occasional, long-lived renewal.",
+          "whyItExists": "To keep JWT statelessness while limiting the window a leaked token is useful.",
+          "howItWorks": "Access tokens gate requests; refresh tokens (tracked server-side) mint new access tokens and rotate themselves on use."
+        },
+        "whyImportant": "It's the standard answer to 'JWTs can't be revoked,' and reuse-detection on rotation is a common security follow-up.",
+        "realWorldExample": "A mobile app holds a 15-minute access token and a 30-day rotating refresh token; each silent refresh swaps both, and a replayed old refresh token logs the device out everywhere.",
+        "followUps": [
+          { "question": "Where should each token be stored in a browser?", "answer": "Prefer the refresh token in an httpOnly, Secure, SameSite cookie (not readable by JS); keep the short access token in memory to reduce XSS exposure." },
+          { "question": "Doesn't tracking refresh tokens reintroduce state?", "answer": "Yes, but only a small, low-frequency store for refresh tokens — the high-frequency access-token path stays stateless." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-5-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "A pentest reports that your Go API accepts JWTs with the header alg set to 'none' and treats them as authenticated. How did this happen and how do you fix it?",
+        "directAnswer": "This is the classic alg=none / algorithm-confusion bypass: the verification code trusted the algorithm named in the (attacker-controlled) token header and returned a key without asserting the method, so an unsigned token was accepted. The fix is to PIN the algorithm inside the keyfunc: type-assert t.Method to the exact expected method (e.g. *jwt.SigningMethodHMAC for HS256, *jwt.SigningMethodRSA for RS256) and return an error otherwise. Also always check token.Valid after parsing, and prefer jwt.ParseWithClaims with WithValidMethods([]string{\"HS256\"}) to constrain accepted algorithms explicitly. golang-jwt/v5 rejects alg=none by default, but a keyfunc that ignores the method reopens the door.",
+        "detailedExplanation": {
+          "whatItIs": "An authentication bypass caused by trusting the token-supplied algorithm.",
+          "whyItExists": "The JWS spec lets the header declare the algorithm, so naive verifiers let attackers pick 'none' or a confusable method.",
+          "howItWorks": "Pinning the method in the keyfunc (or WithValidMethods) forces verification to use the algorithm YOU expect, not the one the token claims."
+        },
+        "whyImportant": "It's one of the most common and severe JWT vulnerabilities — a full auth bypass — and interviewers love it as a security scenario.",
+        "realWorldExample": "An attacker crafts {\"alg\":\"none\"}.{\"sub\":\"admin\"}. with an empty signature; a keyfunc that returns the key without checking t.Method lets it through as an admin.",
+        "followUps": [
+          { "question": "How does WithValidMethods help?", "answer": "jwt.ParseWithClaims(..., jwt.WithValidMethods([]string{\"HS256\"})) rejects any token whose alg isn't in the allow-list before your keyfunc even runs, adding defense in depth." },
+          { "question": "Is checking token.Valid enough on its own?", "answer": "No — you also need method pinning. token.Valid guards claim/signature validity given the returned key, but if your keyfunc hands back a key for the wrong algorithm, a forged token can still be 'valid'." }
+        ]
+      },
+      {
+        "id": "go-web-5-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Support says a specific user must be logged out IMMEDIATELY (compromised account), but your access tokens are valid for 15 more minutes and JWTs can't be revoked. What do you do?",
+        "directAnswer": "Because a signed JWT is valid until exp, you can't 'unsign' it — you need server-side state to override validity. Immediate options: (1) maintain a short-lived denylist (in Redis) of revoked token IDs (the jti claim) or user IDs, checked in the auth middleware, with entries expiring at the token's exp so the list stays small; (2) rotate/invalidate the user's refresh tokens so they can't mint new access tokens, and rely on the short access-token TTL for the rest. For a compromised account you'd typically do BOTH: revoke refresh tokens now, and add the user/jti to the denylist for the remaining 15 minutes. The clean long-term answer is short access-token lifetimes so the revocation window is inherently small.",
+        "detailedExplanation": {
+          "whatItIs": "Early revocation of otherwise-valid stateless tokens.",
+          "whyItExists": "JWTs trade revocability for statelessness; urgent security events need an override.",
+          "howItWorks": "A denylist keyed by jti/user (checked in middleware, TTL = token exp) plus refresh-token invalidation forces re-authentication."
+        },
+        "whyImportant": "It exposes the fundamental JWT trade-off and tests whether you can reintroduce just enough state to handle revocation without abandoning statelessness.",
+        "realWorldExample": "On account compromise, the API adds userID to a Redis set with TTL of 15 minutes; the auth middleware rejects any token for that user until it drains, and all refresh tokens are wiped.",
+        "followUps": [
+          { "question": "Doesn't a denylist defeat the point of stateless JWTs?", "answer": "Partially, but the lookup is a fast, tiny, TTL-bounded cache hit — far cheaper than a full session store — and only for revoked subjects, so the common path stays stateless." },
+          { "question": "Why include a jti claim?", "answer": "A unique token ID lets you revoke or track individual tokens (denylist, reuse detection) rather than every token for a user." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-5-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "intermediate",
+        "question": "Design authentication for a Go microservice platform where a central auth service issues tokens and dozens of independent services must verify them. Walk through the token strategy, verification, and revocation.",
+        "directAnswer": "Use RS256 so only the central auth service (holding the private key) can mint tokens, while every downstream service verifies with the public key — no service can forge tokens. The auth service issues a short-lived access token (5-15 min) and a longer-lived, rotating refresh token; login is gated by bcrypt password verification. Publish public keys via a JWKS endpoint keyed by `kid`, and have each service cache and periodically refresh the key set so key rotation is seamless. Each service runs identical auth middleware: extract the Bearer token, ParseWithClaims with WithValidMethods([\"RS256\"]) and a keyfunc that selects the key by kid, check token.Valid and the audience/issuer, then inject the subject and roles into the request context; authorize in the handler. For revocation, keep access-token TTL short and track refresh tokens (with rotation + reuse detection) in the auth service; for emergencies, a small shared denylist (Redis, keyed by jti, TTL = exp) lets services reject specific tokens immediately. Standardize the middleware as a shared library so all services validate identically.",
+        "detailedExplanation": {
+          "whatItIs": "A central-issuer, many-verifier JWT architecture using asymmetric signing and JWKS.",
+          "whyItExists": "Distributed services need to authenticate requests independently without sharing a forging-capable secret or calling the auth service per request.",
+          "howItWorks": "Auth service signs with a private RSA key; services verify with rotating public keys from JWKS, pin RS256, check claims, and inject identity into context."
+        },
+        "whyImportant": "It's the canonical microservice-auth design and ties together algorithm choice, key distribution, token lifetimes, and revocation — exactly what a system-design interview probes.",
+        "realWorldExample": "OpenID Connect providers (Auth0, Okta, Keycloak) sign ID/access tokens with RS256 and expose a JWKS endpoint; relying services validate locally with cached public keys.",
+        "followUps": [
+          { "question": "How do you rotate signing keys without downtime?", "answer": "Publish both old and new public keys in JWKS during an overlap window; tokens carry a kid so verifiers pick the right key, then retire the old key after all its tokens expire." },
+          { "question": "Why not have every service call the auth service to validate each token?", "answer": "That reintroduces a synchronous dependency and latency on every request; local RS256 verification keeps the hot path fast and available even if the auth service is briefly down." },
+          { "question": "How do you avoid every team implementing verification differently?", "answer": "Ship a single, audited auth-middleware library (or a sidecar/gateway) so method pinning, claim checks, and JWKS caching are consistent across services." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-5-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement `RequireRole(role string) func(http.Handler) http.Handler`, middleware that runs AFTER auth and returns 403 unless the JWT's custom `role` claim matches. Assume the token was already validated and its *jwt.Token is stored in the request context under a key you define. Parse the role from claims.",
+        "thoughtProcess": "This is an authorization layer that sits inside the authentication layer. Rather than re-parse the token, I assume upstream auth middleware stored the validated claims (or token) in context. I read the custom claim `role` from jwt.MapClaims (or a typed claims struct), compare it, and short-circuit with 403 if it doesn't match. I must handle the missing/wrong-type case defensively so a token without a role doesn't accidentally pass.",
+        "solution": {
+          "code": "type ctxKey string\n\nconst claimsKey ctxKey = \"claims\"\n\n// WithClaims is what the auth middleware calls after validating the token.\nfunc WithClaims(r *http.Request, c jwt.MapClaims) *http.Request {\n\treturn r.WithContext(context.WithValue(r.Context(), claimsKey, c))\n}\n\n// RequireRole allows the request only if the JWT's role claim matches.\nfunc RequireRole(role string) func(http.Handler) http.Handler {\n\treturn func(next http.Handler) http.Handler {\n\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t\tclaims, ok := r.Context().Value(claimsKey).(jwt.MapClaims)\n\t\t\tif !ok {\n\t\t\t\thttp.Error(w, \"forbidden\", http.StatusForbidden)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tgot, _ := claims[\"role\"].(string) // missing/wrong type -> \"\"\n\t\t\tif got != role {\n\t\t\t\thttp.Error(w, \"forbidden\", http.StatusForbidden)\n\t\t\t\treturn // short-circuit: insufficient privileges\n\t\t\t}\n\t\t\tnext.ServeHTTP(w, r)\n\t\t})\n\t}\n}",
+          "language": "go"
+        },
+        "lineByLine": "WithClaims is a helper the auth middleware uses to stash the validated jwt.MapClaims in the request context under a private key. RequireRole returns middleware capturing the required role. Inside, it type-asserts the claims out of the context; a failed assertion (no auth ran) yields 403. It reads the `role` claim with a comma-ok assertion so a missing or non-string role becomes \"\" and fails the comparison. If the role doesn't match, it writes 403 and returns WITHOUT calling next, short-circuiting; otherwise it forwards the request.",
+        "timeComplexity": "O(1) — a context lookup and a string comparison per request.",
+        "spaceComplexity": "O(1) — no allocations beyond the response.",
+        "followUps": [
+          { "question": "How would you support multiple allowed roles?", "answer": "Accept a variadic ...string or a set, and allow the request if the claim is in the set: `for _, r := range allowed { if r == got { ok } }`." },
+          { "question": "Why 403 here instead of 401?", "answer": "401 means 'not authenticated' (no/invalid token); 403 means 'authenticated but not authorized' — the user is known but lacks the required role." }
+        ]
+      },
+      {
+        "id": "go-web-5-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement `HashPassword(pw string) (string, error)` and `CheckPassword(hash, pw string) bool` using bcrypt, returning the hash as a string. CheckPassword must be safe (constant-time via bcrypt) and return true only on a match.",
+        "thoughtProcess": "bcrypt.GenerateFromPassword takes a []byte and a cost and returns a []byte hash that already embeds the salt and cost, so I just convert it to a string to store. For checking, bcrypt.CompareHashAndPassword returns nil ONLY on a match, so CheckPassword returns `err == nil`. The classic bug is inverting that condition. I also guard the cost with bcrypt.DefaultCost and pass through the generation error.",
+        "solution": {
+          "code": "// HashPassword returns a bcrypt hash (salt + cost embedded) as a string.\nfunc HashPassword(pw string) (string, error) {\n\tb, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\treturn string(b), nil\n}\n\n// CheckPassword reports whether pw matches the stored bcrypt hash.\nfunc CheckPassword(hash, pw string) bool {\n\t// CompareHashAndPassword returns nil ONLY on a match.\n\treturn bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) == nil\n}",
+          "language": "go"
+        },
+        "lineByLine": "HashPassword calls bcrypt.GenerateFromPassword with the default cost; the returned []byte is a self-describing hash (\"$2a$10$...\") containing the algorithm, cost, and per-password salt, so we store just that string. On error we return it rather than a bogus hash. CheckPassword feeds the stored hash and the attempt to bcrypt.CompareHashAndPassword, which re-derives the hash of the attempt using the salt/cost baked into `hash` and compares in constant time; it returns nil on a match, so `== nil` yields the correct boolean — the opposite condition would authenticate wrong passwords.",
+        "timeComplexity": "O(2^cost) intentionally — bcrypt is deliberately slow to resist brute force; ~tens of ms at DefaultCost.",
+        "spaceComplexity": "O(1) — fixed-size hash regardless of password length (bcrypt truncates at 72 bytes).",
+        "followUps": [
+          { "question": "What's the significance of bcrypt truncating at 72 bytes?", "answer": "bcrypt ignores input beyond 72 bytes, so very long passwords aren't fully used; pre-hashing (e.g. SHA-256) before bcrypt, or using argon2, avoids the limit." },
+          { "question": "How do you upgrade the cost factor over time?", "answer": "On a successful login, check the hash's cost (bcrypt.Cost(hash)); if below the new target, re-hash the plaintext at the higher cost and store it — transparently rehashing users as they log in." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Separate authentication (who you are — auth middleware validating the JWT) from authorization (what you can do — RequireRole/scope checks in handlers). Centralize token issuance in one auth service/login handler that gates on bcrypt, and standardize verification as a shared middleware library (or an API-gateway/sidecar) so every service pins the algorithm, checks claims, and reads identity from context identically. Keep secrets/keys out of code — load them from a secret manager at startup.",
+    "performance": "Per-request JWT verification is fast, allocation-light crypto with no I/O, so it adds negligible latency versus a session-store lookup. The deliberately expensive operation is bcrypt, which must run only at login; tune bcrypt.DefaultCost so login stays around 50-100ms on your hardware. For RS256 verifiers, cache the JWKS/public keys in memory (refresh periodically) so you don't fetch keys on the hot path.",
+    "concurrency": "Auth middleware runs in each request's own goroutine; keep it stateless (verify against an immutable key) so there's nothing to lock. If you add a revocation denylist or JWKS cache, guard it with a sync.RWMutex or use an atomic/immutable snapshot swapped on refresh, and always pass r.Context() into any Redis/denylist lookup so cancellation propagates.",
+    "reliability": "Prefer local RS256/HS256 verification over calling the auth service per request, so authentication survives a brief auth-service outage. Cache JWKS with a stale-if-error fallback. Allow a small clock-skew leeway on exp/nbf (jwt.WithLeeway) so minor time drift between hosts doesn't spuriously reject valid tokens. Fail closed: any verification error yields 401, never a silent pass.",
+    "observability": "Log auth outcomes (allow/deny + reason: expired, bad-alg, wrong-signature) WITHOUT logging the token or its signature. Emit metrics for 401/403 rates and token-verification latency, and include a request ID and the authenticated subject (never the raw token) in structured logs so you can trace a user's requests. Alert on spikes in alg=none/invalid-signature rejections — a signal of an attack.",
+    "security": "Pin the signing method in the keyfunc (or WithValidMethods) to block alg=none/algorithm-confusion; always check token.Valid; validate iss/aud/exp. Keep access tokens short-lived and pair them with rotating refresh tokens (with reuse detection); store refresh tokens in httpOnly Secure cookies. Hash passwords with bcrypt (never a fast hash), never place secrets/PII in the payload, load signing keys from a secret manager, rotate keys via kid, and serve everything over TLS.",
+    "caseStudies": [
+      { "company": "Consumer mobile app backend (Go)", "problem": "Long-lived tokens meant a single leaked token gave attackers weeks of access, and there was no way to log a compromised device out.", "solution": "Switched to 15-minute access tokens plus 30-day rotating refresh tokens with reuse detection; the auth middleware pins HS256, checks token.Valid, and a Redis denylist keyed by jti (TTL = exp) handles emergency revocation.", "tradeoffs": "Introduced a small stateful refresh/denylist store and more client-side refresh logic, giving up pure statelessness on the low-frequency refresh path.", "lessons": "Short access-token lifetimes make revocation a non-issue most of the time; rotation with reuse detection turns a stolen refresh token into an automatic logout signal." },
+      { "company": "Multi-service internal platform", "problem": "Every team implemented JWT verification slightly differently; one service returned the key without checking the algorithm and was vulnerable to an alg=none bypass found in a pentest.", "solution": "Moved to RS256 with a central issuer and JWKS, and shipped a single audited auth-middleware library that pins RS256 via WithValidMethods, selects the key by kid, and injects identity into context.", "tradeoffs": "A shared library adds a coordination/versioning cost and requires JWKS key-rotation plumbing, but removes per-team crypto footguns.", "lessons": "Auth verification is too dangerous to reimplement per service — centralize it, pin the algorithm, and make the secure path the only path." }
+    ]
+  },
+  "keyTakeaways": [
+    "A JWT is header.payload.signature (base64url); the payload is only ENCODED, not encrypted, so never put secrets in it — the signature guarantees integrity, not confidentiality.",
+    "Choose HS256 when one service issues and verifies its own tokens; choose RS256 when a central issuer signs and many independent services verify with the public key.",
+    "In golang-jwt/v5, mint with jwt.NewWithClaims + token.SignedString and verify with jwt.Parse/ParseWithClaims; the keyfunc MUST assert the signing method, and you MUST check token.Valid.",
+    "Auth middleware is func(http.Handler) http.Handler: extract the Bearer token, validate it, inject the user into r.Context(), and short-circuit with 401 on failure; authorize (roles) separately with 403.",
+    "JWTs can't be revoked before exp — use short-lived access tokens plus rotating refresh tokens (with reuse detection), and a jti denylist for emergency revocation.",
+    "Hash passwords with bcrypt (slow, salted; CompareHashAndPassword returns nil only on a match), and pin the algorithm to defend against the alg=none / algorithm-confusion authentication bypass."
+  ]
+}

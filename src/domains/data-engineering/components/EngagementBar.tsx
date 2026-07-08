@@ -12,6 +12,7 @@ const TRACK_LABEL: Record<string, string> = {
   warehousing: 'Warehousing', orchestration: 'dbt & Orchestration', pyspark: 'PySpark',
   streaming: 'Streaming', cloud: 'Cloud', devops: 'DevOps', dataquality: 'Data Quality',
   sre: 'Reliability (SRE)', databricks: 'Databricks',
+  golang: 'Go', java: 'Java',
 };
 
 const Stat: React.FC<{ icon: React.ReactNode; value: React.ReactNode; label: string; color: string }> = ({ icon, value, label, color }) => (
@@ -24,7 +25,7 @@ const Stat: React.FC<{ icon: React.ReactNode; value: React.ReactNode; label: str
   </div>
 );
 
-const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void }> = ({ topics, onClose }) => {
+const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void; domainLabel: string }> = ({ topics, onClose, domainLabel }) => {
   const [cert, setCert] = useState<{ label: string; kind: 'track' | 'domain' } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   useEscapeToClose(onClose);
@@ -145,8 +146,8 @@ const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void }> = ({ top
           ) : (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {domainComplete && (
-                <button onClick={() => setCert({ label: 'Data Engineering', kind: 'domain' })} className="btn btn-primary" style={{ padding: '7px 12px', fontSize: 12.5 }}>
-                  🎓 Full Data Engineering
+                <button onClick={() => setCert({ label: domainLabel, kind: 'domain' })} className="btn btn-primary" style={{ padding: '7px 12px', fontSize: 12.5 }}>
+                  🎓 Full {domainLabel}
                 </button>
               )}
               {completeTracks.map(cat => (
@@ -180,7 +181,7 @@ const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void }> = ({ top
   );
 };
 
-export const EngagementBar: React.FC<{ topics: Topic[] }> = ({ topics }) => {
+export const EngagementBar: React.FC<{ topics: Topic[]; domainLabel?: string }> = ({ topics, domainLabel = 'Data Engineering' }) => {
   const [open, setOpen] = useState(false);
   const stats = getStats();
   const lvl = levelFromXp(stats.xp);
@@ -259,7 +260,7 @@ export const EngagementBar: React.FC<{ topics: Topic[] }> = ({ topics }) => {
           View progress
         </button>
       </div>
-      {open && <ProgressModal topics={topics} onClose={() => setOpen(false)} />}
+      {open && <ProgressModal topics={topics} domainLabel={domainLabel} onClose={() => setOpen(false)} />}
     </>
   );
 };

@@ -1,0 +1,365 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-8",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Real-Time Go: WebSockets & Server-Sent Events",
+  "difficulty": "advanced",
+  "summary": "Real-time delivery in Go starts with two mechanisms: **WebSockets**, a full-duplex connection born from an HTTP `Upgrade` handshake, and **Server-Sent Events (SSE)**, a one-way stream over a normal `text/event-stream` HTTP response. WebSockets in Go are almost always `github.com/gorilla/websocket` (or the newer `coder/websocket`, formerly `nhooyr/websocket`), and their single hard rule is one concurrent reader and one concurrent writer per connection — which is why the read/write-pump + hub pattern exists. Get the concurrency rule, keepalives, and a Redis pub/sub fan-out layer right and you can scale realtime horizontally.",
+  "prerequisites": ["golang-web-1"],
+  "relatedConcepts": ["golang-web-1", "golang-web-6"],
+  "nestedConcepts": ["WebSocket Upgrade handshake", "gorilla/websocket Upgrader & conn", "one-reader/one-writer concurrency rule", "hub & broadcast pattern", "ping/pong keepalive & deadlines", "Server-Sent Events & when to prefer them"],
+  "subtopics": [
+    { "title": "The WebSocket Upgrade handshake", "explanation": "A WebSocket connection is born as an ordinary HTTP GET carrying `Upgrade: websocket`, `Connection: Upgrade`, and a `Sec-WebSocket-Key` header. The server hashes that key with the magic GUID, replies `101 Switching Protocols` with `Sec-WebSocket-Accept`, and from then on the same TCP socket speaks the WebSocket frame protocol instead of HTTP. Because the handshake IS a normal HTTP request, your upgrade endpoint is just another http.Handler — the foundation everything else in real-time Go builds on.", "example": "// The handshake is a plain HTTP handler that hands off to the Upgrader.\nvar upgrader = websocket.Upgrader{}\n\nfunc wsHandler(w http.ResponseWriter, r *http.Request) {\n\t// r arrives as GET with Upgrade: websocket / Sec-WebSocket-Key headers.\n\tconn, err := upgrader.Upgrade(w, r, nil) // writes 101 Switching Protocols\n\tif err != nil {\n\t\treturn // upgrader already wrote an HTTP error response\n\t}\n\tdefer conn.Close()\n\t// From here the socket speaks WebSocket frames, not HTTP.\n\t_, msg, _ := conn.ReadMessage()\n\tconn.WriteMessage(websocket.TextMessage, msg) // echo back\n}" },
+    { "title": "gorilla/websocket: Upgrader and conn", "explanation": "`github.com/gorilla/websocket` is the de-facto library: an `Upgrader` (with `CheckOrigin`, buffer sizes) turns the request into a `*websocket.Conn`, and you exchange frames with `ReadMessage`/`WriteMessage` (or the streaming `NextReader`/`NextWriter`). The newer `coder/websocket` (formerly `nhooyr.io/websocket`) is a leaner, context-first alternative with a similar model. Whichever you pick, the *Conn is the object every later pattern — pumps, hub, keepalives — is wrapped around.", "example": "// Configure the Upgrader, then read/write typed messages on the *Conn.\nvar upgrader = websocket.Upgrader{\n\tReadBufferSize:  1024,\n\tWriteBufferSize: 1024,\n\tCheckOrigin:     func(r *http.Request) bool { return r.Header.Get(\"Origin\") == \"https://app.example.com\" },\n}\n\nfunc echo(w http.ResponseWriter, r *http.Request) {\n\tconn, err := upgrader.Upgrade(w, r, nil)\n\tif err != nil {\n\t\treturn\n\t}\n\tdefer conn.Close()\n\tfor {\n\t\tmt, data, err := conn.ReadMessage() // mt = TextMessage or BinaryMessage\n\t\tif err != nil {\n\t\t\tbreak // client closed or protocol error\n\t\t}\n\t\tif err := conn.WriteMessage(mt, data); err != nil {\n\t\t\tbreak\n\t\t}\n\t}\n}" },
+    { "title": "The one-reader/one-writer concurrency rule", "explanation": "gorilla/websocket permits AT MOST one concurrent reader and one concurrent writer per *Conn. Two goroutines calling WriteMessage on the same connection is a data race that corrupts the frame stream and panics with 'concurrent write to websocket connection'. The idiomatic fix is a dedicated writePump goroutine that owns all writes (fed by a buffered channel) and a readPump goroutine that owns all reads. This single rule is the reason real-time Go code is structured as separate read/write pumps rather than ad-hoc goroutines.", "example": "// One goroutine owns writes; everyone else sends on the send channel.\ntype client struct {\n\tconn *websocket.Conn\n\tsend chan []byte // buffered outbound queue\n}\n\n// writePump is the SOLE writer for this connection.\nfunc (c *client) writePump() {\n\tdefer c.conn.Close()\n\tfor msg := range c.send { // serialized: no concurrent writes\n\t\tif err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {\n\t\t\treturn\n\t\t}\n\t}\n}\n\n// Any goroutine can enqueue safely; it never touches conn directly.\nfunc (c *client) push(msg []byte) {\n\tselect {\n\tcase c.send <- msg:\n\tdefault: // drop or disconnect a slow client instead of blocking\n\t}\n}" },
+    { "title": "The hub & broadcast pattern", "explanation": "To serve many clients you funnel everything through a single hub goroutine that owns three channels: `register`, `unregister`, and `broadcast`. Clients send join/leave events and messages on these channels; the hub's select loop mutates the client set with NO locks because only that one goroutine touches the map. A broadcast simply ranges over clients and pushes onto each client's buffered send channel. This turns the shared connection registry into a single-owner, race-free structure — the backbone of any chat or live-feed server.", "example": "// A single hub goroutine owns the client set; channels serialize access.\ntype hub struct {\n\tclients    map[*client]bool\n\tbroadcast  chan []byte\n\tregister   chan *client\n\tunregister chan *client\n}\n\nfunc (h *hub) run() {\n\tfor {\n\t\tselect {\n\t\tcase c := <-h.register:\n\t\t\th.clients[c] = true\n\t\tcase c := <-h.unregister:\n\t\t\tif _, ok := h.clients[c]; ok {\n\t\t\t\tdelete(h.clients, c)\n\t\t\t\tclose(c.send) // signals writePump to exit\n\t\t\t}\n\t\tcase msg := <-h.broadcast:\n\t\t\tfor c := range h.clients {\n\t\t\t\tselect {\n\t\t\t\tcase c.send <- msg:\n\t\t\t\tdefault: // slow client: drop it rather than block the hub\n\t\t\t\t\tclose(c.send)\n\t\t\t\t\tdelete(h.clients, c)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}" },
+    { "title": "Ping/pong keepalive & read deadlines", "explanation": "TCP will happily keep a dead connection 'open' for minutes, so WebSocket apps use control frames: the writePump sends periodic pings, and each incoming pong resets a read deadline via a PongHandler. If no pong arrives before the deadline, ReadMessage returns an error and the connection is torn down. Setting SetReadDeadline plus a pong-driven reset detects half-open connections quickly and reclaims their goroutines and memory — essential for keeping a long-lived real-time server from leaking clients.", "example": "// Pings from the writer; pongs reset the reader's deadline.\nconst (\n\tpongWait   = 60 * time.Second\n\tpingPeriod = (pongWait * 9) / 10 // ping before the deadline expires\n)\n\nfunc (c *client) readPump() {\n\tc.conn.SetReadDeadline(time.Now().Add(pongWait))\n\tc.conn.SetPongHandler(func(string) error {\n\t\treturn c.conn.SetReadDeadline(time.Now().Add(pongWait)) // extend on pong\n\t})\n\tfor {\n\t\tif _, _, err := c.conn.ReadMessage(); err != nil {\n\t\t\treturn // no pong in time -> deadline exceeded -> cleanup\n\t\t}\n\t}\n}\n\nfunc (c *client) pinger() {\n\tt := time.NewTicker(pingPeriod)\n\tdefer t.Stop()\n\tfor range t.C {\n\t\tc.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))\n\t\tif err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {\n\t\t\treturn\n\t\t}\n\t}\n}" },
+    { "title": "Server-Sent Events (SSE) and when to prefer them", "explanation": "SSE needs no upgrade: you set `Content-Type: text/event-stream`, keep the response open, write `data: ...\\n\\n` frames, and call an http.Flusher to push each one. It's one-directional (server -> client) over plain HTTP/1.1 or HTTP/2, auto-reconnects in the browser's EventSource, and passes through proxies and load balancers unchanged. When you only push updates one way — live scores, notifications, log tails, LLM token streams — SSE is simpler and cheaper than a WebSocket, which you reserve for genuinely bidirectional, low-latency traffic like chat or multiplayer.", "example": "// SSE: a normal HTTP response you keep open and flush per event.\nfunc sseHandler(w http.ResponseWriter, r *http.Request) {\n\tflusher, ok := w.(http.Flusher)\n\tif !ok {\n\t\thttp.Error(w, \"streaming unsupported\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tw.Header().Set(\"Content-Type\", \"text/event-stream\")\n\tw.Header().Set(\"Cache-Control\", \"no-cache\")\n\tw.Header().Set(\"Connection\", \"keep-alive\")\n\n\tticker := time.NewTicker(time.Second)\n\tdefer ticker.Stop()\n\tfor {\n\t\tselect {\n\t\tcase <-r.Context().Done(): // client disconnected\n\t\t\treturn\n\t\tcase t := <-ticker.C:\n\t\t\t// Event framing: optional 'event:' + 'data:' + blank line.\n\t\t\tfmt.Fprintf(w, \"event: tick\\ndata: %d\\n\\n\", t.Unix())\n\t\t\tflusher.Flush() // push this event immediately\n\t\t}\n\t}\n}" }
+  ],
+  "foundations": {
+    "overview": "Real-time features in Go come down to choosing between two transports and then wiring them safely for concurrency. WebSockets give you a persistent, full-duplex channel opened by an HTTP Upgrade; SSE gives you a simpler one-way stream over ordinary HTTP. In Go, WebSockets almost always mean github.com/gorilla/websocket (or coder/websocket), and their defining constraint — one reader and one writer per connection — dictates the whole architecture: read/write pumps per client and a single hub goroutine that owns the client registry. Once that shape clicks, scaling out is a matter of putting a Redis pub/sub layer between instances.",
+    "formalDefinition": "A WebSocket is a full-duplex message-oriented protocol (RFC 6455) established by upgrading an HTTP/1.1 connection via the Upgrade/101 handshake; thereafter both peers send framed messages over the same TCP connection. Server-Sent Events (WHATWG) is a unidirectional server-to-client stream sent as a long-lived text/event-stream HTTP response consisting of 'field: value' lines terminated by a blank line. In gorilla/websocket a *websocket.Conn supports at most one concurrent reader and one concurrent writer.",
+    "whyItMatters": "Chat, live dashboards, collaborative editors, trading feeds, notifications, and LLM token streaming all need server-initiated, low-latency delivery that request/response polling can't provide efficiently. Knowing when a one-way SSE stream suffices versus a bidirectional WebSocket — and how to structure the goroutines so writes never race — is the difference between a real-time service that scales and one that panics under load.",
+    "mentalModel": "Think of a WebSocket connection as a phone line held open: the readPump is the ear (only one listens), the writePump is the mouth (only one speaks), and the hub is a switchboard operator who is the single person allowed to touch the directory of who's connected. SSE, by contrast, is a radio broadcast: the server keeps talking, listeners tune in with EventSource, and if the signal drops they automatically re-tune.",
+    "runtimePerspective": "After the 101 handshake, http.Server hands you a hijacked TCP connection wrapped as a *websocket.Conn; the original request goroutine typically becomes the readPump and you spawn a second goroutine as the writePump. Blocking ReadMessage parks its goroutine on the netpoller until a frame or deadline arrives — cheap because goroutines are cheap. For SSE, the request goroutine simply never returns until r.Context() is cancelled (client disconnect) or you stop writing; each Flush pushes buffered bytes down the socket.",
+    "realWorldUsage": "gorilla/websocket powers chat backends, multiplayer game servers, and live collaboration; SSE powers notification streams, live sports/finance tickers, CI/build log tailing, and streaming LLM responses (OpenAI's API streams via SSE). Redis pub/sub or a message bus fans events across many server instances behind a load balancer.",
+    "businessImpact": "Real-time updates drive engagement (chat, live presence), reduce perceived latency (instant notifications), and enable products that are impossible with polling (collaborative editing, live trading). Choosing SSE where bidirectional isn't needed cuts infrastructure cost and complexity; getting keepalives right prevents silent connection leaks that degrade a service over days.",
+    "engineeringImpact": "The read/write-pump + hub structure isolates the concurrency-unsafe *Conn behind channels, so the rest of the codebase stays race-free and testable. A clean transport abstraction lets you swap WebSockets for SSE per feature and add a Redis fan-out layer without rewriting handlers.",
+    "performanceImpact": "One goroutine-per-direction scales to tens of thousands of connections on modest hardware, but each idle connection still costs memory (buffers + two goroutines), so buffer sizes, read limits (SetReadLimit), and slow-client eviction matter. Ping/pong keepalives add tiny overhead but reclaim leaked connections; SSE avoids the frame-masking cost of WebSockets for one-way data.",
+    "commonUseCases": [
+      "Chat and presence systems with a hub broadcasting to many clients",
+      "Live dashboards, sports/finance tickers, and notification feeds",
+      "Streaming LLM tokens or CI build logs to a browser via SSE",
+      "Horizontally scaled realtime using Redis pub/sub to fan out across instances"
+    ],
+    "commonMisconceptions": [
+      { "myth": "You can WriteMessage to the same *websocket.Conn from any goroutine as long as you're careful.", "reality": "gorilla/websocket allows at most ONE concurrent writer. Two goroutines writing concurrently is a data race that panics with 'concurrent write to websocket connection'. Serialize all writes through a single writePump fed by a channel." },
+      { "myth": "SSE and WebSockets are interchangeable, so just always use WebSockets.", "reality": "SSE is one-way, runs over plain HTTP, auto-reconnects, and traverses proxies easily. For server-to-client-only feeds it's simpler and cheaper; reserve WebSockets for genuinely bidirectional, low-latency traffic." },
+      { "myth": "TCP keepalive is enough to detect dead WebSocket clients.", "reality": "OS TCP keepalive is slow (minutes) and often disabled. WebSocket apps send application-level ping frames and reset a read deadline on pong; without them half-open connections leak goroutines and memory for a long time." },
+      { "myth": "One WebSocket server can hold all your clients, so you don't need a message bus.", "reality": "Behind a load balancer, clients land on different instances. To broadcast to everyone you need a shared fan-out layer (Redis pub/sub or similar) so a message published on one instance reaches clients connected to the others." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "advanced",
+      "title": "A minimal chat hub with read/write pumps",
+      "explanation": "This wires the whole pattern together: an Upgrader creates the *Conn, each client gets a readPump (sole reader) and a writePump (sole writer, fed by a buffered channel), and a single hub goroutine owns the client set and broadcasts. No mutexes are needed because only the hub touches the map and only writePump touches the socket for writes.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"net/http\"\n\n\t\"github.com/gorilla/websocket\"\n)\n\nvar upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}\n\ntype client struct {\n\thub  *hub\n\tconn *websocket.Conn\n\tsend chan []byte\n}\n\ntype hub struct {\n\tclients    map[*client]bool\n\tbroadcast  chan []byte\n\tregister   chan *client\n\tunregister chan *client\n}\n\nfunc (h *hub) run() {\n\tfor {\n\t\tselect {\n\t\tcase c := <-h.register:\n\t\t\th.clients[c] = true\n\t\tcase c := <-h.unregister:\n\t\t\tif _, ok := h.clients[c]; ok {\n\t\t\t\tdelete(h.clients, c)\n\t\t\t\tclose(c.send)\n\t\t\t}\n\t\tcase msg := <-h.broadcast:\n\t\t\tfor c := range h.clients {\n\t\t\t\tselect {\n\t\t\t\tcase c.send <- msg:\n\t\t\t\tdefault:\n\t\t\t\t\tclose(c.send)\n\t\t\t\t\tdelete(h.clients, c)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n\n// readPump is the SOLE reader; it forwards messages to the hub.\nfunc (c *client) readPump() {\n\tdefer func() { c.hub.unregister <- c; c.conn.Close() }()\n\tfor {\n\t\t_, msg, err := c.conn.ReadMessage()\n\t\tif err != nil {\n\t\t\treturn\n\t\t}\n\t\tc.hub.broadcast <- msg\n\t}\n}\n\n// writePump is the SOLE writer; it drains the send channel.\nfunc (c *client) writePump() {\n\tdefer c.conn.Close()\n\tfor msg := range c.send {\n\t\tif err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {\n\t\t\treturn\n\t\t}\n\t}\n}\n\nfunc (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {\n\tconn, err := upgrader.Upgrade(w, r, nil)\n\tif err != nil {\n\t\treturn\n\t}\n\tc := &client{hub: h, conn: conn, send: make(chan []byte, 16)}\n\th.register <- c\n\tgo c.writePump() // one writer\n\tgo c.readPump()  // one reader\n}\n\nfunc main() {\n\th := &hub{clients: map[*client]bool{}, broadcast: make(chan []byte), register: make(chan *client), unregister: make(chan *client)}\n\tgo h.run()\n\thttp.HandleFunc(\"/ws\", h.serveWS)\n\thttp.ListenAndServe(\":8080\", nil)\n}",
+        "caption": "The hub owns the client map (no locks); each client has exactly one reader and one writer goroutine.",
+        "expectedOutput": "// Two browsers connect to ws://localhost:8080/ws.\n// A message sent by one is broadcast to both (echoed to all clients)."
+      }
+    },
+    {
+      "level": "production",
+      "title": "Server-Sent Events with heartbeats and disconnect detection",
+      "explanation": "A production SSE endpoint sets the streaming headers, flushes each event, sends periodic comment 'heartbeats' to keep intermediaries from closing idle connections, and watches r.Context().Done() so a client disconnect frees the goroutine. Note the one-way model: no upgrade, no frame masking, just a long-lived HTTP response.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n\t\"time\"\n)\n\n// events is where the app publishes updates for this stream.\nfunc sseHandler(events <-chan string) http.HandlerFunc {\n\treturn func(w http.ResponseWriter, r *http.Request) {\n\t\tflusher, ok := w.(http.Flusher)\n\t\tif !ok {\n\t\t\thttp.Error(w, \"streaming unsupported\", http.StatusInternalServerError)\n\t\t\treturn\n\t\t}\n\t\tw.Header().Set(\"Content-Type\", \"text/event-stream\")\n\t\tw.Header().Set(\"Cache-Control\", \"no-cache\")\n\t\tw.Header().Set(\"Connection\", \"keep-alive\")\n\n\t\theartbeat := time.NewTicker(15 * time.Second)\n\t\tdefer heartbeat.Stop()\n\t\tid := 0\n\t\tfor {\n\t\t\tselect {\n\t\t\tcase <-r.Context().Done():\n\t\t\t\treturn // client went away; free this goroutine\n\t\t\tcase <-heartbeat.C:\n\t\t\t\tfmt.Fprint(w, \": keep-alive\\n\\n\") // comment line = heartbeat\n\t\t\t\tflusher.Flush()\n\t\t\tcase ev, open := <-events:\n\t\t\t\tif !open {\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tid++\n\t\t\t\t// id: lets EventSource resume with Last-Event-ID on reconnect.\n\t\t\t\tfmt.Fprintf(w, \"id: %d\\nevent: update\\ndata: %s\\n\\n\", id, ev)\n\t\t\t\tflusher.Flush()\n\t\t\t}\n\t\t}\n\t}\n}\n\nfunc main() {\n\tevents := make(chan string)\n\tgo func() {\n\t\tfor i := 0; ; i++ {\n\t\t\ttime.Sleep(2 * time.Second)\n\t\t\tevents <- fmt.Sprintf(\"tick-%d\", i)\n\t\t}\n\t}()\n\thttp.Handle(\"/events\", sseHandler(events))\n\thttp.ListenAndServe(\":8080\", nil)\n}",
+        "caption": "SSE is a long-lived HTTP response: set text/event-stream, write framed events, Flush each, and exit on r.Context().Done().",
+        "expectedOutput": "// curl -N http://localhost:8080/events\n// id: 1\\nevent: update\\ndata: tick-0\\n\\n   (every 2s, with ': keep-alive' heartbeats)"
+      }
+    },
+    {
+      "level": "expert",
+      "title": "Scaling out with Redis pub/sub fan-out",
+      "explanation": "Behind a load balancer, clients connect to different instances, so a local hub can't reach everyone. Each instance subscribes to a Redis channel and republishes received messages onto its local hub; when a client sends a message the instance PUBLISHes it to Redis. Redis fans it out to every instance, which broadcasts locally — giving global delivery without instances talking directly to each other.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\nconst channel = \"chat:broadcast\"\n\ntype fanout struct {\n\trdb *redis.Client\n\thub *hub // the local, per-instance hub from the previous example\n}\n\n// publish sends a message to ALL instances via Redis.\nfunc (f *fanout) publish(ctx context.Context, msg []byte) error {\n\treturn f.rdb.Publish(ctx, channel, msg).Err()\n}\n\n// subscribe receives messages from any instance and broadcasts them locally.\nfunc (f *fanout) subscribe(ctx context.Context) {\n\tsub := f.rdb.Subscribe(ctx, channel)\n\tdefer sub.Close()\n\tch := sub.Channel()\n\tfor {\n\t\tselect {\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase m := <-ch:\n\t\t\t// Deliver to clients connected to THIS instance only.\n\t\t\tf.hub.broadcast <- []byte(m.Payload)\n\t\t}\n\t}\n}\n\n// When a client sends a message, publish it instead of broadcasting locally,\n// so the subscribe loop (on every instance) performs the actual local fan-out.\nfunc (f *fanout) onClientMessage(ctx context.Context, msg []byte) {\n\t_ = f.publish(ctx, msg) // Redis -> every instance -> local hubs -> clients\n}",
+        "caption": "Redis pub/sub decouples instances: publish once, every instance's subscribe loop broadcasts to its own local clients.",
+        "expectedOutput": "// A message from a client on instance A reaches clients on instances B and C\n// because all instances subscribe to the same Redis channel."
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "In gorilla/websocket, why is a dedicated writePump goroutine the standard pattern for a connection that multiple goroutines want to send on?",
+      "options": ["Because WriteMessage is slow and must run in the background", "Because a *websocket.Conn allows at most one concurrent writer, so all writes must be serialized through one goroutine", "Because the Upgrader requires a separate goroutine to complete the handshake", "Because reads and writes must happen on the same goroutine"],
+      "answerIndex": 1,
+      "explanation": "gorilla/websocket permits at most one concurrent reader and one concurrent writer per connection. Concurrent WriteMessage calls race and panic with 'concurrent write to websocket connection'. Routing all outbound messages through a single writePump (fed by a buffered send channel) serializes the writes, so any number of goroutines can enqueue safely."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This broadcast helper is called from the hub loop but sometimes deadlocks the whole server when one client's browser is on a slow network. What's the root issue?",
+      "code": "func (h *hub) broadcastTo(msg []byte) {\n\tfor c := range h.clients {\n\t\tc.send <- msg // blocking send\n\t}\n}",
+      "options": ["h.clients must be a slice, not a map", "The blocking send stalls the hub on a slow/full client, backing up every other client (head-of-line blocking)", "WriteMessage should be called directly instead of using a channel", "The loop should use an index variable"],
+      "answerIndex": 1,
+      "explanation": "A blocking `c.send <- msg` on a client whose buffered channel is full (slow reader) freezes the single hub goroutine, so no registers, unregisters, or other broadcasts make progress. Use a non-blocking `select { case c.send <- msg: default: /* drop or evict the slow client */ }` so one slow client can't stall everyone."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the SSE handler so each event is pushed to the client immediately rather than buffered by Go's HTTP layer.",
+      "codeBefore": "w.Header().Set(\"Content-Type\", \"text/event-stream\")\nflusher := w.(http.Flusher)\nfmt.Fprintf(w, \"data: %s\\n\\n\", payload)",
+      "codeAfter": "// next event...",
+      "options": ["flusher.Flush()", "w.WriteHeader(200)", "conn.WriteMessage(...)", "w.Close()"],
+      "answerIndex": 0,
+      "explanation": "SSE relies on http.Flusher: after writing a `data: ...\\n\\n` frame you must call flusher.Flush() to push the buffered bytes down the socket immediately. Without Flush, Go may hold the bytes in its write buffer and the client sees events only when the buffer fills or the handler returns."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "A readPump sets SetReadDeadline(now+60s) and a PongHandler that extends the deadline on each pong. The peer's network dies so no pongs arrive. What happens to ReadMessage and the goroutine?",
+      "code": "c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))\nc.conn.SetPongHandler(func(string) error {\n\treturn c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))\n})\nfor {\n\tif _, _, err := c.conn.ReadMessage(); err != nil {\n\t\treturn // cleanup\n\t}\n}",
+      "options": ["ReadMessage blocks forever, leaking the goroutine", "The connection is closed immediately when the network dies", "After ~60s with no pong the deadline expires, ReadMessage returns an i/o timeout error, and the goroutine returns to run cleanup", "The PongHandler fires anyway and keeps the connection alive"],
+      "answerIndex": 2,
+      "explanation": "With no pong to reset it, the read deadline expires ~60s after it was last set. ReadMessage then returns an i/o timeout error, the loop returns, and the deferred cleanup (unregister + Close) runs — reclaiming the goroutine and memory. This is exactly why ping/pong plus a read deadline is used to detect half-open connections that TCP alone would keep 'open' for minutes."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-web-8-lab-writepump-serializer",
+      "title": "Serialize all writes through a single writePump",
+      "instructions": "A *websocket.Conn allows only ONE concurrent writer. Implement `(*Client).writePump()` so it is the sole writer: it must drain the buffered `send` channel with WriteMessage(TextMessage), and when the channel is closed it must exit cleanly. Then implement `(*Client).Send(msg []byte) bool` that enqueues onto `send` WITHOUT blocking, returning false if the buffer is full (so callers can evict slow clients). Do not call any write method on conn outside writePump.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"github.com/gorilla/websocket\"\n\ntype Client struct {\n\tConn *websocket.Conn\n\tsend chan []byte\n}\n\nfunc NewClient(conn *websocket.Conn) *Client {\n\treturn &Client{Conn: conn, send: make(chan []byte, 8)}\n}\n\n// writePump must be the SOLE writer of Client.Conn.\nfunc (c *Client) writePump() {\n\t// TODO: drain c.send with WriteMessage; exit when send is closed.\n}\n\n// Send enqueues a message without blocking; false if the buffer is full.\nfunc (c *Client) Send(msg []byte) bool {\n\t// TODO: non-blocking send onto c.send.\n\treturn false\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"github.com/gorilla/websocket\"\n\ntype Client struct {\n\tConn *websocket.Conn\n\tsend chan []byte\n}\n\nfunc NewClient(conn *websocket.Conn) *Client {\n\treturn &Client{Conn: conn, send: make(chan []byte, 8)}\n}\n\n// writePump is the SOLE writer of Client.Conn: ranging over a channel\n// serializes every write, so no two goroutines ever call WriteMessage at once.\nfunc (c *Client) writePump() {\n\tdefer c.Conn.Close()\n\tfor msg := range c.send { // exits when send is closed\n\t\tif err := c.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {\n\t\t\treturn\n\t\t}\n\t}\n}\n\n// Send enqueues without blocking; returns false if the buffer is full so the\n// caller can drop or evict a slow client instead of stalling.\nfunc (c *Client) Send(msg []byte) bool {\n\tselect {\n\tcase c.send <- msg:\n\t\treturn true\n\tdefault:\n\t\treturn false\n\t}\n}"
+      },
+      "testHarness": "package solution\n\nimport \"testing\"\n\n// TestSendNonBlocking verifies Send never blocks and reports a full buffer.\nfunc TestSendNonBlocking(t *testing.T) {\n\tc := &Client{send: make(chan []byte, 2)}\n\tif !c.Send([]byte(\"a\")) {\n\t\tt.Fatal(\"first Send should succeed\")\n\t}\n\tif !c.Send([]byte(\"b\")) {\n\t\tt.Fatal(\"second Send should succeed\")\n\t}\n\tif c.Send([]byte(\"c\")) {\n\t\tt.Fatal(\"third Send should fail: buffer full\")\n\t}\n}\n\n// TestWritePumpExitsOnClose verifies writePump returns when send is closed.\nfunc TestWritePumpExitsOnClose(t *testing.T) {\n\tc := &Client{send: make(chan []byte)} // nil Conn: we only test the exit path\n\tdone := make(chan struct{})\n\tgo func() {\n\t\tdefer func() { _ = recover(); close(done) }() // Conn.Close on nil may panic; fine for this check\n\t\tc.writePump()\n\t}()\n\tclose(c.send)\n\t<-done\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "`for msg := range c.send` reads until the channel is closed, and because it's one goroutine every WriteMessage is serialized.",
+        "For a non-blocking enqueue use `select { case c.send <- msg: return true; default: return false }`.",
+        "Never call WriteMessage from anywhere but writePump; other goroutines only call Send, which touches the channel, not the conn."
+      ]
+    },
+    {
+      "id": "go-web-8-lab-sse-frame",
+      "title": "Format a Server-Sent Events frame correctly",
+      "instructions": "Implement `FormatSSE(id, event, data string) string` that produces a valid SSE frame. Rules: if id is non-empty emit an `id: <id>` line; if event is non-empty emit an `event: <event>` line; then a `data: <data>` line; and terminate the whole event with a blank line (i.e. the frame ends in \\n\\n). Every field line ends with a single \\n. Omit empty id/event lines entirely.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\n// FormatSSE builds one Server-Sent Events frame.\nfunc FormatSSE(id, event, data string) string {\n\t// TODO: emit optional id/event lines, a data line, and a trailing blank line.\n\treturn \"\"\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"strings\"\n\n// FormatSSE builds one Server-Sent Events frame. The trailing blank line\n// (\\n\\n) is what tells the browser's EventSource the event is complete.\nfunc FormatSSE(id, event, data string) string {\n\tvar b strings.Builder\n\tif id != \"\" {\n\t\tb.WriteString(\"id: \")\n\t\tb.WriteString(id)\n\t\tb.WriteByte('\\n')\n\t}\n\tif event != \"\" {\n\t\tb.WriteString(\"event: \")\n\t\tb.WriteString(event)\n\t\tb.WriteByte('\\n')\n\t}\n\tb.WriteString(\"data: \")\n\tb.WriteString(data)\n\tb.WriteString(\"\\n\\n\") // field terminator + event terminator\n\treturn b.String()\n}"
+      },
+      "testHarness": "package solution\n\nimport \"testing\"\n\nfunc TestFormatSSEFull(t *testing.T) {\n\tgot := FormatSSE(\"7\", \"update\", \"hello\")\n\twant := \"id: 7\\nevent: update\\ndata: hello\\n\\n\"\n\tif got != want {\n\t\tt.Fatalf(\"got %q want %q\", got, want)\n\t}\n}\n\nfunc TestFormatSSEDataOnly(t *testing.T) {\n\tgot := FormatSSE(\"\", \"\", \"ping\")\n\twant := \"data: ping\\n\\n\"\n\tif got != want {\n\t\tt.Fatalf(\"got %q want %q\", got, want)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Only emit the id: and event: lines when their arguments are non-empty.",
+        "Each field line is `field: value\\n`; the event as a whole ends with an extra \\n (so data lines finish with \\n\\n).",
+        "strings.Builder is an efficient way to assemble the frame without repeated concatenation."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-web-8-debug-concurrent-write",
+      "difficulty": "advanced",
+      "title": "'concurrent write to websocket connection' panic under load",
+      "symptom": "The chat server runs fine with one user but crashes intermittently under load with 'panic: concurrent write to websocket connection'. The stack trace points at WriteMessage, and it only happens when several messages arrive close together.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {\n\tconn, _ := upgrader.Upgrade(w, r, nil)\n\th.add(conn)\n\tgo func() { // read loop\n\t\tfor {\n\t\t\t_, msg, err := conn.ReadMessage()\n\t\t\tif err != nil {\n\t\t\t\treturn\n\t\t\t}\n\t\t\th.broadcast(msg)\n\t\t}\n\t}()\n}\n\n// broadcast writes directly to every connection from whatever goroutine\n// happens to call it -> multiple goroutines write the same conn at once.\nfunc (h *hub) broadcast(msg []byte) {\n\tfor _, conn := range h.conns {\n\t\tgo conn.WriteMessage(websocket.TextMessage, msg) // BUG: concurrent writes\n\t}\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "Each incoming message spawns a goroutine that calls conn.WriteMessage on every connection, and multiple messages arriving together mean multiple goroutines write the SAME *websocket.Conn simultaneously. gorilla/websocket allows only one concurrent writer per connection; it detects the overlap and panics with 'concurrent write to websocket connection'. The `go conn.WriteMessage(...)` makes it worse by guaranteeing concurrency. The fix is to give each connection a single writer goroutine (writePump) fed by a buffered channel, and have broadcast merely enqueue onto that channel.",
+      "commonMistakes": [
+        "Calling WriteMessage on the same *Conn from more than one goroutine.",
+        "Spawning a goroutine per write (`go conn.WriteMessage`), which forces concurrency.",
+        "Assuming a mutex around WriteMessage is enough — it works but a per-connection send channel + single writePump is the idiomatic, non-blocking design."
+      ],
+      "fixChallenge": "Refactor so each connection has one writePump goroutine that owns all writes, and make broadcast enqueue onto each client's buffered send channel (non-blocking) instead of writing to conns directly.",
+      "solution": {
+        "language": "go",
+        "code": "type client struct {\n\tconn *websocket.Conn\n\tsend chan []byte // buffered outbound queue\n}\n\n// writePump is the ONLY goroutine that writes this connection.\nfunc (c *client) writePump() {\n\tdefer c.conn.Close()\n\tfor msg := range c.send { // serialized: no concurrent WriteMessage\n\t\tif err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {\n\t\t\treturn\n\t\t}\n\t}\n}\n\nfunc (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {\n\tconn, err := upgrader.Upgrade(w, r, nil)\n\tif err != nil {\n\t\treturn\n\t}\n\tc := &client{conn: conn, send: make(chan []byte, 16)}\n\th.add(c)\n\tgo c.writePump() // the single writer\n\tgo func() {      // the single reader\n\t\tdefer h.remove(c)\n\t\tfor {\n\t\t\t_, msg, err := conn.ReadMessage()\n\t\t\tif err != nil {\n\t\t\t\treturn\n\t\t\t}\n\t\t\th.broadcast(msg)\n\t\t}\n\t}()\n}\n\n// broadcast only ENQUEUES; the per-client writePump does the actual write.\nfunc (h *hub) broadcast(msg []byte) {\n\tfor _, c := range h.clients {\n\t\tselect {\n\t\tcase c.send <- msg:\n\t\tdefault: // slow client: drop rather than block or race\n\t\t}\n\t}\n}",
+        "expectedOutput": "// No panic under load: every write to a given conn goes through its single\n// writePump, and broadcast enqueues without blocking."
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-8-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Explain the WebSocket Upgrade handshake and how gorilla/websocket turns an HTTP request into a *websocket.Conn.",
+        "directAnswer": "A WebSocket starts as a normal HTTP/1.1 GET whose headers include `Upgrade: websocket`, `Connection: Upgrade`, `Sec-WebSocket-Version: 13`, and a random `Sec-WebSocket-Key`. The server validates these, computes `Sec-WebSocket-Accept` by SHA-1-hashing the key concatenated with a fixed GUID, and responds `101 Switching Protocols`. After that the same TCP connection carries WebSocket frames instead of HTTP. In Go you write an ordinary http.Handler and call `upgrader.Upgrade(w, r, nil)`; the Upgrader validates the handshake, writes the 101 response, hijacks the connection, and returns a *websocket.Conn you read/write with ReadMessage/WriteMessage.",
+        "detailedExplanation": {
+          "whatItIs": "An HTTP-initiated protocol switch that upgrades a request/response connection into a persistent full-duplex frame channel.",
+          "whyItExists": "Reusing the HTTP handshake lets WebSockets share port 443, traverse existing proxies/firewalls, and reuse auth cookies/headers, while escaping HTTP's request/response limitation.",
+          "howItWorks": "The Sec-WebSocket-Accept response proves the server understood the protocol; on 101 the client and server stop speaking HTTP and exchange masked/unmasked frames over the same socket."
+        },
+        "whyImportant": "It's the entry point of every WebSocket feature and a common interview question that reveals whether a candidate understands that the upgrade is 'just HTTP' — which is why auth and origin checks belong in the handler.",
+        "realWorldExample": "A chat endpoint mounted at `/ws` is a regular handler; the Upgrader's CheckOrigin rejects cross-site connections before returning the *Conn.",
+        "followUps": [
+          { "question": "Why does the Upgrader have a CheckOrigin function and what's the default risk?", "answer": "Browsers don't enforce same-origin on WebSockets, so without an Origin check any site can open a socket to your server (cross-site WebSocket hijacking). CheckOrigin lets you allow-list origins; the library default rejects mismatched origins, but many tutorials override it to always-true, which is unsafe in production." },
+          { "question": "How is coder/websocket (formerly nhooyr) different from gorilla?", "answer": "coder/websocket is context-first, has a smaller API, uses net/http's response writer without manual hijacking, and supports the same one-reader/one-writer model; gorilla is older, more widely used, and offers finer control over buffers and streaming readers/writers." }
+        ]
+      },
+      {
+        "id": "go-web-8-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "gorilla/websocket says at most one concurrent reader and one concurrent writer per connection. Why do concurrent writes panic, and what's the idiomatic structure that respects this rule?",
+        "directAnswer": "A WebSocket message is written as one or more frames; if two goroutines call WriteMessage at once their frames interleave on the wire, corrupting the stream, so gorilla/websocket detects the overlap and panics with 'concurrent write to websocket connection' rather than silently producing garbage. The same applies to reads. The idiomatic structure gives each connection exactly two goroutines: a readPump that is the sole caller of ReadMessage, and a writePump that is the sole caller of WriteMessage, draining a buffered `send` channel. Any other goroutine that wants to send just enqueues onto that channel, so writes are serialized.",
+        "detailedExplanation": {
+          "whatItIs": "A concurrency contract on the connection object plus the read/write-pump pattern that satisfies it.",
+          "whyItExists": "Frames must not interleave; enforcing single reader/writer avoids locking the whole protocol layer and keeps the fast path lock-free per direction.",
+          "howItWorks": "The send channel serializes outbound messages into a single writer goroutine; the reader goroutine owns ReadMessage; the hub owns the client registry so no shared map needs locks."
+        },
+        "whyImportant": "It's the single most common WebSocket bug in Go and the reason the canonical gorilla chat example is structured the way it is; interviewers use it to test real concurrency understanding.",
+        "realWorldExample": "A notification service where many producers push to a user's connection all funnel through the user's send channel, and one writePump per connection performs the writes.",
+        "followUps": [
+          { "question": "Could you just wrap WriteMessage in a mutex instead?", "answer": "Yes, a sync.Mutex around writes is correct and sometimes used, but it blocks producers and doesn't give you backpressure. A buffered send channel + single writePump is non-blocking, lets you drop or evict slow clients, and composes with the hub's select loop." },
+          { "question": "What happens if the send channel fills because a client is slow?", "answer": "You use a non-blocking select send; on the default branch you drop the message or close the connection to evict the slow client, preventing head-of-line blocking that would stall the hub or other clients." }
+        ]
+      },
+      {
+        "id": "go-web-8-th-3",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "When would you choose Server-Sent Events over WebSockets, and how do SSE and its framing work in Go?",
+        "directAnswer": "Choose SSE when data flows only from server to client — live scores, notifications, log tails, dashboards, LLM token streams. SSE is a long-lived HTTP response with `Content-Type: text/event-stream`; you write UTF-8 text events made of `field: value` lines (commonly `id:`, `event:`, `data:`) terminated by a blank line, and call http.Flusher.Flush() to push each one. It runs over ordinary HTTP/1.1 or HTTP/2, works through proxies and load balancers, and the browser's EventSource auto-reconnects (resuming with Last-Event-ID). WebSockets are for genuinely bidirectional, low-latency traffic like chat or multiplayer, where the extra complexity (upgrade, framing, keepalives, no built-in reconnect) is justified.",
+        "detailedExplanation": {
+          "whatItIs": "A unidirectional server-push streaming format layered on a normal HTTP response, versus a full-duplex upgraded protocol.",
+          "whyItExists": "Most 'real-time' features only need server-to-client push; SSE delivers that with far less machinery and native browser reconnection.",
+          "howItWorks": "In Go you set the streaming headers, loop writing `data: ...\\n\\n` frames, Flush after each, and return when r.Context().Done() fires on client disconnect."
+        },
+        "whyImportant": "Picking the right transport is a core design decision; defaulting to WebSockets when SSE suffices adds needless connection-management, scaling, and proxy headaches.",
+        "realWorldExample": "OpenAI's streaming completions API and many 'typing' LLM UIs use SSE because tokens flow one way; a collaborative editor uses WebSockets because edits flow both ways.",
+        "followUps": [
+          { "question": "What are SSE's limitations versus WebSockets?", "answer": "SSE is one-way (client-to-server still needs a normal request), text-only (no binary without encoding), and under HTTP/1.1 competes for the browser's limited connections-per-host (HTTP/2 multiplexing fixes this). WebSockets are bidirectional and binary-capable." },
+          { "question": "How does SSE reconnection work and how do you support it server-side?", "answer": "EventSource reconnects automatically and sends the last received event's id in a Last-Event-ID header; the server reads that header on reconnect and replays events after that id, so you should assign monotonically increasing id: values and be able to resume from one." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-8-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "Your Go chat backend runs three replicas behind a load balancer. Users report that messages only reach some participants — those who happen to be connected to the same replica as the sender. How do you fix it?",
+        "directAnswer": "Each replica has its own in-memory hub, so a broadcast only reaches clients connected to that replica; clients on the other two never see the message. Introduce a shared fan-out layer, typically Redis pub/sub: every replica SUBSCRIBEs to a channel and, on receiving a message, broadcasts it to its local hub; when a client sends a message the replica PUBLISHes it to Redis instead of broadcasting locally. Redis delivers to all replicas, each of which fans out to its own connected clients, so everyone receives it exactly once. This keeps replicas stateless with respect to each other and lets you scale connections horizontally.",
+        "detailedExplanation": {
+          "whatItIs": "A cross-instance message bus that decouples per-replica local hubs from global delivery.",
+          "whyItExists": "Load balancing spreads persistent connections across replicas, so a purely local hub can never reach the whole audience.",
+          "howItWorks": "Publish-on-send, subscribe-and-local-broadcast-on-receive; Redis (or NATS/Kafka) does the fan-out between processes."
+        },
+        "whyImportant": "It's the standard scaling pattern for stateful real-time services and a frequent system-design follow-up; without it, horizontal scaling silently breaks correctness.",
+        "realWorldExample": "Slack-style and multiplayer backends put a pub/sub bus (Redis, NATS) between WebSocket gateway instances so any message reaches clients regardless of which gateway they're pinned to.",
+        "followUps": [
+          { "question": "How do you avoid a message being delivered twice or echoed back to the sender oddly?", "answer": "Publish once to Redis and let the subscribe loop do the only local broadcast (don't also broadcast locally on send). Tag messages with a sender/message ID if you need to suppress echo or de-duplicate on the client." },
+          { "question": "When would you outgrow Redis pub/sub?", "answer": "Redis pub/sub is fire-and-forget with no persistence or per-consumer offsets; if you need durable history, replay, or ordered per-key streams you move to Redis Streams, NATS JetStream, or Kafka." }
+        ]
+      },
+      {
+        "id": "go-web-8-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "A long-running WebSocket service slowly leaks memory and goroutines over days; connection counts reported by the app keep climbing even though users have closed their laptops. What's happening and how do you fix it?",
+        "directAnswer": "Clients that vanish without a clean close (laptop sleep, network drop, mobile handoff) leave half-open TCP connections. Without application-level liveness checks, ReadMessage on those connections blocks indefinitely, so the readPump and writePump goroutines and their buffers never get freed — a slow leak. The fix is ping/pong keepalive plus read deadlines: set SetReadDeadline(now+pongWait) and a PongHandler that extends the deadline on each pong, and have the writePump send periodic PingMessage frames on a ticker (pingPeriod < pongWait). If no pong arrives before the deadline, ReadMessage returns an i/o timeout, the pumps exit, and cleanup (unregister + Close) reclaims resources. Also set SetReadLimit and write deadlines to bound abuse.",
+        "detailedExplanation": {
+          "whatItIs": "Application-layer liveness detection for long-lived connections that TCP alone won't reap promptly.",
+          "whyItExists": "OS TCP keepalive is slow (often minutes) and frequently disabled, and a half-open socket looks 'connected' to a blocking read.",
+          "howItWorks": "Pings from the writer + pong-reset read deadlines turn a silent dead peer into a prompt read timeout that triggers goroutine and memory cleanup."
+        },
+        "whyImportant": "Real-time services run for days or weeks; without keepalives they accumulate zombie connections until they exhaust memory or file descriptors and fall over.",
+        "realWorldExample": "The canonical gorilla chat example ships exactly this: pongWait, pingPeriod = pongWait*9/10, a PongHandler that resets the deadline, and a writePump ticker sending pings.",
+        "followUps": [
+          { "question": "Why set pingPeriod strictly less than pongWait?", "answer": "You must send a ping and receive its pong before the read deadline expires; making pingPeriod ~90% of pongWait gives the round trip time to complete so healthy connections aren't killed." },
+          { "question": "What else bounds resource use per connection?", "answer": "SetReadLimit caps message size to prevent memory blowups from a malicious client, write deadlines prevent a stuck writer from hanging, and a bounded send channel with slow-client eviction prevents unbounded queue growth." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-8-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design a real-time chat backend in Go that supports rooms, scales to many instances, and stays reliable. Walk through the architecture.",
+        "directAnswer": "Expose a `/ws` endpoint that upgrades with gorilla/websocket (CheckOrigin allow-list, auth via token before Upgrade). Each connection gets a client with a buffered send channel plus exactly one readPump (sole reader) and one writePump (sole writer) that also sends ping frames; the readPump sets a read deadline and a pong handler for keepalive, and SetReadLimit bounds message size. A per-instance hub goroutine owns the local client registry (keyed by room) with register/unregister/broadcast channels, so no locks are needed. For horizontal scale, put Redis pub/sub between instances: a client message is PUBLISHed to a room channel; every instance SUBSCRIBEs and broadcasts to its local room members, so delivery is global regardless of which instance a client is pinned to (use sticky/least-conn LB). Persist message history and membership in a datastore (Redis Streams or Postgres) for replay and offline delivery. Add graceful shutdown (drain: stop accepting, close sockets), structured logs and RED metrics per room, and back-pressure via non-blocking sends that evict slow clients. Reserve SSE for any one-way feeds (e.g., presence or system announcements) where bidirectional isn't needed.",
+        "detailedExplanation": {
+          "whatItIs": "A horizontally scaled WebSocket gateway with per-instance hubs, a Redis fan-out bus, and keepalive/back-pressure/observability baked in.",
+          "whyItExists": "Chat needs bidirectional low-latency delivery, room semantics, and correctness across load-balanced instances, plus resilience to slow/dead clients.",
+          "howItWorks": "One reader + one writer per connection satisfy the concurrency rule; a single hub goroutine owns state lock-free; Redis pub/sub bridges instances; keepalives and bounded channels reclaim and protect resources."
+        },
+        "whyImportant": "It combines the concurrency rule, the hub pattern, keepalives, and cross-instance fan-out — the full picture interviewers and real systems demand.",
+        "realWorldExample": "Slack, Discord-style, and multiplayer gateways follow this shape: stateless WebSocket gateways + a pub/sub or streaming bus + a durable store for history.",
+        "followUps": [
+          { "question": "How do you handle a user connected on two devices, or reconnection?", "answer": "Key the registry by userID with a set of connections; broadcast to all of a user's connections. On reconnect, replay missed messages from the durable store (Redis Streams / message table) using a last-seen message id, similar to SSE's Last-Event-ID." },
+          { "question": "How do you deliver messages to offline users?", "answer": "Persist messages and per-user read cursors in a datastore; on (re)connect, fetch and replay everything after the user's cursor, then switch to live delivery. Pub/sub handles online fan-out; the store handles offline/history." },
+          { "question": "Where might you prefer SSE in this design?", "answer": "For purely one-way streams like system status banners, presence heartbeats to the client, or a live 'someone is typing' broadcast where the client never needs to reply on the same channel — SSE avoids the upgrade and reconnects automatically." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-8-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a concurrency-safe hub with `Register`, `Unregister`, and `Broadcast` methods where a single goroutine owns the client set (no mutex), and broadcasts never block on a slow client. Clients are represented by a struct with a buffered `send chan []byte`.",
+        "thoughtProcess": "The rule 'one goroutine owns the state' means I run a single loop selecting over register/unregister/broadcast channels; the public methods just send onto those channels. That removes the need for any mutex on the client map. For broadcast, I use a non-blocking select send onto each client's buffered channel so a slow client can't stall the loop — on the default branch I evict it (close its send channel and delete it). I close send on unregister/eviction so each client's writePump ranging over send exits cleanly.",
+        "solution": {
+          "code": "type Client struct {\n\tSend chan []byte\n}\n\ntype Hub struct {\n\tclients    map[*Client]bool\n\tregister   chan *Client\n\tunregister chan *Client\n\tbroadcast  chan []byte\n}\n\nfunc NewHub() *Hub {\n\th := &Hub{\n\t\tclients:    make(map[*Client]bool),\n\t\tregister:   make(chan *Client),\n\t\tunregister: make(chan *Client),\n\t\tbroadcast:  make(chan []byte),\n\t}\n\tgo h.run() // single owner goroutine\n\treturn h\n}\n\nfunc (h *Hub) Register(c *Client)   { h.register <- c }\nfunc (h *Hub) Unregister(c *Client) { h.unregister <- c }\nfunc (h *Hub) Broadcast(msg []byte) { h.broadcast <- msg }\n\n// run is the ONLY goroutine that touches h.clients: no mutex needed.\nfunc (h *Hub) run() {\n\tfor {\n\t\tselect {\n\t\tcase c := <-h.register:\n\t\t\th.clients[c] = true\n\t\tcase c := <-h.unregister:\n\t\t\tif _, ok := h.clients[c]; ok {\n\t\t\t\tdelete(h.clients, c)\n\t\t\t\tclose(c.Send)\n\t\t\t}\n\t\tcase msg := <-h.broadcast:\n\t\t\tfor c := range h.clients {\n\t\t\t\tselect {\n\t\t\t\tcase c.Send <- msg: // fast client\n\t\t\t\tdefault: // slow client: evict rather than block the loop\n\t\t\t\t\tclose(c.Send)\n\t\t\t\t\tdelete(h.clients, c)\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}",
+          "language": "go"
+        },
+        "lineByLine": "NewHub starts run() as the single owner goroutine. Register/Unregister/Broadcast are thin wrappers that send onto channels, so callers never touch the map directly. In run, the select serializes all state changes: register adds to the map, unregister deletes and closes the client's Send (which lets its writePump exit). Broadcast ranges over clients and does a non-blocking send; the default branch fires when a client's buffered channel is full, so we evict that slow client instead of blocking every other client (head-of-line blocking). Because only run mutates h.clients, there is no data race and no mutex.",
+        "timeComplexity": "O(n) per broadcast for n connected clients; O(1) per register/unregister.",
+        "spaceComplexity": "O(n) for the client set plus each client's bounded send buffer.",
+        "followUps": [
+          { "question": "How would you add rooms so a broadcast only reaches one room?", "answer": "Change clients to map[string]map[*Client]bool keyed by roomID (or store the room on Client) and range only over the target room's set in broadcast; register/unregister add/remove from the right room and clean up empty rooms." },
+          { "question": "Why close(c.Send) on unregister/eviction rather than just delete?", "answer": "The client's writePump is `for msg := range c.Send`; closing the channel makes that loop terminate and the writePump return, so the goroutine and the connection are cleaned up. Deleting from the map alone would leave the writePump blocked forever." }
+        ]
+      },
+      {
+        "id": "go-web-8-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Write an SSE broadcaster: `Broadcaster` with `Subscribe() (<-chan string, func())` and `Publish(msg string)`, plus an `http.HandlerFunc` that streams events to a subscriber and cleans up on disconnect. Publish must never block on a slow or gone subscriber.",
+        "thoughtProcess": "I need many subscribers each with their own channel, guarded by a mutex since Subscribe/Publish/unsubscribe can race. Subscribe creates a buffered channel, registers it, and returns an unsubscribe closure that removes and closes it. Publish takes a read-ish lock and does a non-blocking send to each subscriber (default = drop) so one slow client can't block the publisher. The handler subscribes, sets SSE headers, and loops: on r.Context().Done() it unsubscribes and returns; on a channel message it writes a data frame and flushes.",
+        "solution": {
+          "code": "type Broadcaster struct {\n\tmu   sync.Mutex\n\tsubs map[chan string]struct{}\n}\n\nfunc NewBroadcaster() *Broadcaster {\n\treturn &Broadcaster{subs: make(map[chan string]struct{})}\n}\n\n// Subscribe returns a receive channel and an unsubscribe function.\nfunc (b *Broadcaster) Subscribe() (<-chan string, func()) {\n\tch := make(chan string, 16) // buffered for back-pressure headroom\n\tb.mu.Lock()\n\tb.subs[ch] = struct{}{}\n\tb.mu.Unlock()\n\tunsub := func() {\n\t\tb.mu.Lock()\n\t\tif _, ok := b.subs[ch]; ok {\n\t\t\tdelete(b.subs, ch)\n\t\t\tclose(ch)\n\t\t}\n\t\tb.mu.Unlock()\n\t}\n\treturn ch, unsub\n}\n\n// Publish fans out without blocking on slow subscribers.\nfunc (b *Broadcaster) Publish(msg string) {\n\tb.mu.Lock()\n\tdefer b.mu.Unlock()\n\tfor ch := range b.subs {\n\t\tselect {\n\t\tcase ch <- msg:\n\t\tdefault: // slow subscriber: drop this message for them\n\t\t}\n\t}\n}\n\nfunc (b *Broadcaster) Handler(w http.ResponseWriter, r *http.Request) {\n\tflusher, ok := w.(http.Flusher)\n\tif !ok {\n\t\thttp.Error(w, \"streaming unsupported\", http.StatusInternalServerError)\n\t\treturn\n\t}\n\tw.Header().Set(\"Content-Type\", \"text/event-stream\")\n\tw.Header().Set(\"Cache-Control\", \"no-cache\")\n\tch, unsub := b.Subscribe()\n\tdefer unsub()\n\tfor {\n\t\tselect {\n\t\tcase <-r.Context().Done(): // client disconnected\n\t\t\treturn\n\t\tcase msg, open := <-ch:\n\t\t\tif !open {\n\t\t\t\treturn\n\t\t\t}\n\t\t\tfmt.Fprintf(w, \"data: %s\\n\\n\", msg)\n\t\t\tflusher.Flush()\n\t\t}\n\t}\n}",
+          "language": "go"
+        },
+        "lineByLine": "Broadcaster holds a set of subscriber channels behind a mutex. Subscribe creates a buffered channel, registers it, and returns an idempotent unsub closure that deletes and closes it. Publish locks, then does a non-blocking select send to each subscriber, dropping the message for any whose buffer is full so the publisher never blocks. Handler checks for http.Flusher, sets the SSE headers, subscribes, and defers unsub so a disconnect always cleans up. The loop returns on r.Context().Done() (client gone) or a closed channel, and otherwise writes a `data: ...\\n\\n` frame and flushes it immediately so the browser receives each event live.",
+          "timeComplexity": "O(n) per Publish for n subscribers; O(1) subscribe/unsubscribe.",
+          "spaceComplexity": "O(n) for subscriber channels plus their bounded buffers.",
+          "followUps": [
+            { "question": "Why buffer the subscriber channel and drop on a full buffer instead of blocking?", "answer": "A single slow client (e.g., paused tab) would otherwise block Publish while holding the mutex, stalling delivery to everyone. A bounded buffer absorbs bursts, and dropping on overflow keeps the publisher fast; for lossless delivery you'd back it with a durable store and Last-Event-ID replay." },
+            { "question": "How would you add event ids and reconnection support?", "answer": "Maintain a monotonically increasing id, emit `id: N` with each event, read the Last-Event-ID header on connect, and replay buffered/stored events after that id before switching to live streaming." }
+          ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Model each connection as a client with a buffered send channel and exactly two goroutines (readPump = sole reader, writePump = sole writer). A single per-instance hub goroutine owns the client registry (optionally keyed by room) via register/unregister/broadcast channels, so no mutex guards the map. Keep the upgrade endpoint a thin http.Handler that authenticates and origin-checks before Upgrade. For one-way features, prefer an SSE endpoint over a WebSocket. To scale horizontally, place a Redis pub/sub (or NATS/Kafka) bus between instances and keep a durable store for history and offline delivery.",
+    "performance": "Go handles tens of thousands of concurrent connections cheaply because each is just two parked goroutines on the netpoller, but idle connections still cost read/write buffers and channel memory, so tune ReadBufferSize/WriteBufferSize, set SetReadLimit, and size send channels deliberately. Broadcast is O(n); for large rooms shard the hub or fan out via the message bus. SSE avoids WebSocket frame masking overhead for one-way data. Reuse a single Redis client with pooling; batch or coalesce high-frequency updates before broadcasting.",
+    "concurrency": "The load-bearing rule is one reader and one writer per *websocket.Conn — every architecture decision (pumps, send channels, hub) exists to honor it and avoid the 'concurrent write' panic. The hub is a single-owner goroutine so the client map needs no lock; all cross-goroutine communication is via channels. Broadcasts use non-blocking sends so a slow client is dropped/evicted rather than causing head-of-line blocking. Any downstream fan-out should be bounded (semaphore/errgroup) and respect r.Context() cancellation.",
+    "reliability": "Ping/pong keepalive with read deadlines detects and reaps half-open connections that TCP would keep 'open' for minutes, preventing goroutine/memory leaks. Set write deadlines so a stuck writer can't hang. On shutdown, stop accepting new upgrades, send close frames, and drain within a deadline. With a message bus, tolerate broker blips with reconnect-and-resubscribe logic, and use a durable store (Redis Streams/Postgres) plus Last-Event-ID/last-seen cursors so clients can replay missed messages after reconnect.",
+    "observability": "Emit structured logs with a connection/request ID and room. Track RED metrics per route/room: connection count (gauge), messages in/out rate, broadcast fan-out size, send-channel drops (slow-client evictions), and handler/broadcast latency histograms. Alert on rising drop counts, growing connection counts without matching disconnects (leak signal), and pub/sub lag. Expose pprof on an internal endpoint to catch goroutine leaks.",
+    "security": "Authenticate BEFORE Upgrade (validate token/cookie in the handler) and set a strict Upgrader.CheckOrigin allow-list, because browsers don't apply same-origin to WebSockets — an always-true CheckOrigin invites cross-site WebSocket hijacking. Bound resources with SetReadLimit, read/write deadlines, and per-IP/user connection limits. Terminate TLS (wss://) at the proxy or server. Validate and size-limit inbound messages, never trust client-supplied routing/room ids without authorization, and never log message contents or tokens.",
+    "caseStudies": [
+      { "company": "Real-time collaboration/chat gateway", "problem": "A single-instance gorilla/websocket chat crashed under load with 'concurrent write to websocket connection' and messages didn't reach users after adding replicas.", "solution": "Introduced one writePump per connection fed by a buffered send channel (fixing the panic) and a per-instance hub, then added Redis pub/sub so a message published on any instance is broadcast by every instance's subscribe loop.", "tradeoffs": "Redis pub/sub is fire-and-forget with no durability, so offline/history needed a separate store; non-blocking broadcasts can drop messages for very slow clients.", "lessons": "Serialize writes with a single writer goroutine, and never assume a local hub is enough once you scale past one instance." },
+      { "company": "Streaming LLM/API product", "problem": "Needed to stream generated tokens to browsers with minimal infrastructure and automatic reconnection, over standard proxies.", "solution": "Used SSE (text/event-stream + http.Flusher) instead of WebSockets since the stream is one-way, with id: fields and Last-Event-ID support for resume, plus periodic comment heartbeats to keep intermediaries from closing idle streams.", "tradeoffs": "SSE is one-way (client requests use normal POSTs) and text-only, and under HTTP/1.1 competes for per-host connections, mitigated by HTTP/2.", "lessons": "For server-to-client-only feeds, SSE is simpler, proxy-friendly, and reconnects for free — reach for WebSockets only when you truly need bidirectional traffic." }
+    ]
+  },
+  "keyTakeaways": [
+    "A WebSocket is born from an HTTP Upgrade handshake (101 Switching Protocols); your upgrade endpoint is just an http.Handler, so authenticate and origin-check there — gorilla/websocket (or coder/websocket) turns the request into a *websocket.Conn.",
+    "The one hard rule of gorilla/websocket is at most one concurrent reader and one concurrent writer per connection; concurrent writes panic, which is why every connection gets a single readPump and a single writePump fed by a buffered send channel.",
+    "Use a single hub goroutine that owns the client registry via register/unregister/broadcast channels so no mutex is needed, and make broadcasts non-blocking so one slow client is evicted instead of stalling everyone.",
+    "Detect dead clients with ping/pong keepalive and read deadlines (pingPeriod < pongWait), or half-open connections leak goroutines and memory for minutes.",
+    "Prefer Server-Sent Events for one-way server-to-client streams (notifications, live feeds, LLM tokens): text/event-stream + http.Flusher, framed data:/event:/id: events, auto-reconnect via EventSource — reserve WebSockets for genuinely bidirectional traffic.",
+    "Scale realtime horizontally with a Redis pub/sub (or NATS/Kafka) bus: publish on send, subscribe-and-broadcast-locally on receive, so clients on any instance receive every message; add a durable store for history and reconnection replay."
+  ]
+}

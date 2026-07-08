@@ -1,0 +1,364 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-7",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Event-Driven Messaging with Kafka & NATS",
+  "difficulty": "advanced",
+  "summary": "Event-driven architecture replaces brittle synchronous RPC chains with asynchronous messages: producers publish events to a broker and consumers react on their own schedule, so services decouple in time and scale independently. Go is a first-class citizen here — `github.com/segmentio/kafka-go` gives you a plain `kafka.Writer`/`kafka.Reader` over topics, partitions, and consumer groups, while `github.com/nats-io/nats.go` covers both fire-and-forget NATS core and durable JetStream streams. Master partitions, consumer groups, delivery semantics, idempotency, and offset commits and you can build systems that stay up even when downstream services fall behind.",
+  "prerequisites": ["golang-web-6"],
+  "relatedConcepts": ["golang-web-6", "golang-web-8"],
+  "nestedConcepts": ["event-driven vs sync RPC", "Kafka topics/partitions/offsets", "consumer groups & ordering", "delivery semantics & idempotency", "NATS core & JetStream", "backpressure & consumer lag"],
+  "subtopics": [
+    { "title": "Why async messaging over synchronous RPC", "explanation": "In synchronous RPC (HTTP/gRPC) the caller blocks until the callee replies, so a slow or down dependency propagates failure upstream and every service must be available at the same instant. Event-driven messaging inverts this: a producer writes an event to a durable broker and returns immediately, and consumers process it whenever they are ready — decoupling services in time, absorbing traffic spikes in the log, and letting each side scale independently. Understanding this trade-off is the foundation of event-driven messaging: everything else (partitions, consumer groups, delivery semantics) exists to make that decoupled log correct and fast.", "example": "// Sync: caller blocks and fails if 'billing' is down.\nfunc placeOrderSync(billing BillingClient, o Order) error {\n\treturn billing.Charge(o) // blocks; downstream outage = upstream error\n}\n\n// Async: publish an event and return; billing consumes later.\nfunc placeOrderAsync(w *kafka.Writer, o Order) error {\n\tpayload, _ := json.Marshal(o)\n\t// The order is durable in Kafka even if billing is offline right now.\n\treturn w.WriteMessages(context.Background(), kafka.Message{\n\t\tKey:   []byte(o.ID), // key -> partition, preserves per-order ordering\n\t\tValue: payload,\n\t})\n}" },
+    { "title": "Kafka topics, partitions, and offsets", "explanation": "A Kafka topic is an append-only log split into partitions; each record within a partition gets a monotonically increasing offset. Ordering is guaranteed only within a single partition, and the producer's message key is hashed to choose a partition — so all events for the same key (e.g. an order ID) land in one partition and stay ordered. Consumers track their position by committing offsets. Grasping topics/partitions/offsets is what lets event-driven messaging scale horizontally while still preserving the per-key ordering your business logic depends on.", "example": "package main\n\nimport (\n\t\"context\"\n\n\t\"github.com/segmentio/kafka-go\"\n)\n\nfunc produce(ctx context.Context) error {\n\tw := &kafka.Writer{\n\t\tAddr:     kafka.TCP(\"localhost:9092\"),\n\t\tTopic:    \"orders\",\n\t\tBalancer: &kafka.Hash{}, // hash Key -> partition (per-key ordering)\n\t}\n\tdefer w.Close()\n\t// Same Key always maps to the same partition, preserving offset order.\n\treturn w.WriteMessages(ctx,\n\t\tkafka.Message{Key: []byte(\"order-1\"), Value: []byte(`{\"n\":1}`)},\n\t\tkafka.Message{Key: []byte(\"order-1\"), Value: []byte(`{\"n\":2}`)},\n\t)\n}" },
+    { "title": "Consumer groups & partition ordering", "explanation": "A consumer group is a set of consumers that share the work of a topic: Kafka assigns each partition to exactly one member, so partitions are the unit of parallelism and per-partition ordering is preserved even as you scale out. Adding consumers up to the partition count increases throughput; beyond that, extra consumers sit idle. When members join or leave, the group rebalances and partitions are reassigned. Consumer groups are how event-driven messaging turns one ordered log into many workers processing in parallel without double-processing a partition.", "example": "package main\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\n\t\"github.com/segmentio/kafka-go\"\n)\n\nfunc consume(ctx context.Context) error {\n\tr := kafka.NewReader(kafka.ReaderConfig{\n\t\tBrokers: []string{\"localhost:9092\"},\n\t\tGroupID: \"order-workers\", // group => partitions split across members\n\t\tTopic:   \"orders\",\n\t})\n\tdefer r.Close()\n\tfor {\n\t\tm, err := r.ReadMessage(ctx) // auto-joins group, gets assigned partitions\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// Records from one partition arrive in offset order.\n\t\tfmt.Printf(\"p%d off%d key=%s\\n\", m.Partition, m.Offset, m.Key)\n\t}\n}" },
+    { "title": "Delivery semantics & consumer idempotency", "explanation": "Most real systems run at-least-once: a consumer might process a message and crash before committing its offset, so on restart it re-reads and reprocesses it. Exactly-once is achievable with Kafka transactions but is expensive and easy to get subtly wrong; the pragmatic answer is to make consumers idempotent — deduplicate by a stable event ID or use upserts so reprocessing has no extra effect. This is the single most important correctness idea in event-driven messaging: assume duplicates and redeliveries, and design handlers so replaying an event never corrupts state.", "example": "package main\n\nimport \"sync\"\n\n// A tiny idempotency guard keyed by event ID.\ntype dedupe struct {\n\tmu   sync.Mutex\n\tseen map[string]struct{}\n}\n\n// process returns true only the FIRST time an event ID is seen.\nfunc (d *dedupe) process(eventID string, apply func()) bool {\n\td.mu.Lock()\n\tdefer d.mu.Unlock()\n\tif _, ok := d.seen[eventID]; ok {\n\t\treturn false // duplicate under at-least-once: skip side effects\n\t}\n\td.seen[eventID] = struct{}{}\n\tapply() // in production this is a DB upsert keyed by eventID\n\treturn true\n}" },
+    { "title": "NATS core and JetStream", "explanation": "NATS core is a lightweight pub/sub over hierarchical subjects (e.g. `orders.created`) with built-in request/reply, but it is fire-and-forget: if no subscriber is listening the message is gone. JetStream layers durability on top — messages are persisted into streams, consumers acknowledge each message, and unacked messages are redelivered — giving you Kafka-like at-least-once guarantees with a much simpler operational footprint. NATS gives event-driven messaging a spectrum: ephemeral, ultra-low-latency signaling with core, and durable, replayable streams with JetStream.", "example": "package main\n\nimport (\n\t\"fmt\"\n\n\t\"github.com/nats-io/nats.go\"\n)\n\nfunc jetstream() error {\n\tnc, err := nats.Connect(nats.DefaultURL)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer nc.Close()\n\tjs, _ := nc.JetStream()\n\t// Durable stream persists messages for replay & redelivery.\n\tjs.AddStream(&nats.StreamConfig{Name: \"ORDERS\", Subjects: []string{\"orders.*\"}})\n\tjs.Publish(\"orders.created\", []byte(`{\"id\":\"o1\"}`))\n\n\t// Explicit ack: unacked msgs are redelivered (at-least-once).\n\tsub, _ := js.PullSubscribe(\"orders.created\", \"workers\")\n\tmsgs, _ := sub.Fetch(1)\n\tfor _, m := range msgs {\n\t\tfmt.Printf(\"got %s\\n\", m.Data)\n\t\tm.Ack() // ack only after successful processing\n\t}\n\treturn nil\n}" },
+    { "title": "Backpressure and consumer lag", "explanation": "Consumer lag is the gap between the latest offset a partition has produced and the offset a consumer group has committed — it is the primary health signal of an event-driven system. Rising lag means consumers can't keep up; you respond by adding consumers (up to the partition count), speeding up per-message work, or partitioning more. Because the broker buffers the backlog, the log itself provides backpressure — producers aren't blocked, but you must alert on lag and cap in-flight work so a consumer doesn't OOM. Watching lag is how you keep event-driven messaging from silently falling arbitrarily behind reality.", "example": "package main\n\nimport (\n\t\"context\"\n\t\"log\"\n\t\"time\"\n\n\t\"github.com/segmentio/kafka-go\"\n)\n\nfunc watchLag(ctx context.Context, r *kafka.Reader) {\n\tfor range time.Tick(10 * time.Second) {\n\t\t// Reader.Stats().Lag = messages behind the newest offset.\n\t\tlag := r.Stats().Lag\n\t\tif lag > 10_000 {\n\t\t\tlog.Printf(\"WARN consumer lag=%d: scale out or speed up\", lag)\n\t\t}\n\t}\n}"}
+  ],
+  "foundations": {
+    "overview": "Event-driven messaging lets services communicate through a durable log of events instead of direct calls. A producer publishes an event and moves on; one or more consumers read it later, independently, and at their own pace. Kafka and NATS are the two dominant brokers in the Go ecosystem: Kafka is a partitioned, replayable commit log optimized for high-throughput streaming and ordered-per-key processing; NATS is a lightweight subject-based messaging system whose JetStream layer adds durability. In Go you reach for kafka-go or nats.go, and the core competencies — partitions, consumer groups, delivery semantics, idempotency, offset commits, and lag — transfer between them.",
+    "formalDefinition": "An event-driven system is a set of services that communicate asynchronously via immutable events on a broker. Kafka models a topic as N partitions, each an ordered, offset-indexed append-only log replicated across brokers; a consumer group assigns each partition to one member and tracks committed offsets. NATS models messages as publishes to hierarchical subjects; JetStream persists matching messages into a stream and delivers them to consumers that must acknowledge each message, redelivering unacked ones.",
+    "whyItMatters": "Async messaging is how large systems stay available and scalable: it decouples services in time (a down consumer doesn't fail the producer), absorbs spikes, enables replay and audit, and lets teams evolve independently. Kafka underpins a huge share of modern data pipelines and event backbones, and NATS is common in microservices and edge/IoT for its simplicity — knowing both, and their trade-offs, is a staple of senior backend interviews.",
+    "mentalModel": "Think of Kafka as a numbered ticket line frozen on tape: every event gets a permanent offset in its partition, and each consumer group holds its own bookmark, so different teams replay the same tape at different speeds. NATS core is a walkie-talkie — whoever's listening hears it, and if nobody is, the words vanish; JetStream is the same walkie-talkie with a recorder that keeps replaying a message until someone confirms 'got it'.",
+    "runtimePerspective": "kafka-go's Reader runs a background loop that joins the consumer group, fetches batches per assigned partition, and hands you messages in offset order; committing an offset (manually via CommitMessages or automatically) records how far you've processed. On rebalance, partitions are revoked and reassigned. nats.go maintains a persistent TCP connection with an async message pump; JetStream consumers track ack state server-side and redeliver messages whose AckWait deadline passes without acknowledgment.",
+    "realWorldUsage": "Order/payment pipelines, change-data-capture and stream processing, cross-service event notifications, audit logs, IoT/edge telemetry, request/reply RPC over NATS, and fan-out notifications. Kafka dominates high-volume analytics and event-sourcing backbones; NATS shines for low-latency internal messaging and control planes.",
+    "businessImpact": "Decoupling services through a broker directly protects revenue: an outage in billing no longer takes down checkout, spikes are buffered instead of dropped, and events can be replayed to recover from bugs. Getting delivery semantics and idempotency right prevents double-charges and data corruption that erode customer trust.",
+    "engineeringImpact": "Events become the contract between teams, so services deploy and scale independently and new consumers can be added without touching producers. Idempotent, offset-aware consumers make the system self-healing under redelivery. The cost is operational complexity — brokers, schemas, and monitoring — and harder end-to-end reasoning than a single synchronous call.",
+    "performanceImpact": "Partitions are the throughput knob: more partitions allow more parallel consumers, but too many increase rebalance and metadata overhead. Batching writes and commits raises throughput at the cost of latency; NATS core offers the lowest latency by skipping durability. The dominant failure mode is unbounded consumer lag, so bounding in-flight work and monitoring lag are essential for predictable performance.",
+    "commonUseCases": [
+      "Publishing domain events (order placed, payment captured) for multiple independent consumers",
+      "Scaling stream processing horizontally via consumer groups and partitions",
+      "Durable JetStream work queues with explicit acks and redelivery",
+      "Low-latency request/reply and control-plane messaging over NATS core"
+    ],
+    "commonMisconceptions": [
+      { "myth": "Kafka guarantees global ordering across a topic.", "reality": "Ordering is guaranteed only WITHIN a partition. To keep related events ordered you must give them the same message key so they hash to the same partition." },
+      { "myth": "Exactly-once delivery makes idempotency unnecessary.", "reality": "Most deployments are at-least-once; exactly-once (Kafka transactions) is costly and doesn't cover external side effects. Idempotent consumers (dedupe by event ID / upsert) are the robust, portable answer." },
+      { "myth": "NATS core is a durable message queue.", "reality": "NATS core is fire-and-forget pub/sub — if no subscriber is connected, the message is lost. You need JetStream (persistent streams + acks) for durability and redelivery." },
+      { "myth": "Adding more consumers than partitions always adds throughput.", "reality": "Each partition is consumed by at most one member of a group, so consumers beyond the partition count sit idle. Scale partitions first, then consumers." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "advanced",
+      "title": "Idempotent at-least-once consumer with manual offset commit",
+      "explanation": "Under at-least-once you must commit the offset AFTER processing, and make processing idempotent so a redelivery is harmless. Here we read without auto-commit, dedupe by event ID, do the work, then CommitMessages — so a crash before commit replays the message safely.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"log\"\n\n\t\"github.com/segmentio/kafka-go\"\n)\n\ntype event struct {\n\tID string `json:\"id\"`\n}\n\nfunc main() {\n\tr := kafka.NewReader(kafka.ReaderConfig{\n\t\tBrokers: []string{\"localhost:9092\"},\n\t\tGroupID: \"order-workers\",\n\t\tTopic:   \"orders\",\n\t})\n\tdefer r.Close()\n\n\tseen := map[string]struct{}{}\n\tctx := context.Background()\n\tfor {\n\t\tm, err := r.FetchMessage(ctx) // FetchMessage does NOT auto-commit\n\t\tif err != nil {\n\t\t\tlog.Fatal(err)\n\t\t}\n\t\tvar e event\n\t\tif err := json.Unmarshal(m.Value, &e); err != nil {\n\t\t\tlog.Printf(\"bad payload off=%d: %v\", m.Offset, err)\n\t\t\t_ = r.CommitMessages(ctx, m) // poison message: skip, don't loop forever\n\t\t\tcontinue\n\t\t}\n\t\tif _, dup := seen[e.ID]; !dup {\n\t\t\tseen[e.ID] = struct{}{}\n\t\t\tlog.Printf(\"processed %s (off=%d)\", e.ID, m.Offset)\n\t\t}\n\t\t_ = r.CommitMessages(ctx, m) // commit AFTER processing\n\t}\n}",
+        "caption": "FetchMessage + CommitMessages gives you at-least-once with control over when the offset advances; dedupe makes replays harmless.",
+        "expectedOutput": "processed order-1 (off=0)\nprocessed order-2 (off=1)\n// a redelivered order-1 is silently skipped by the dedupe guard"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "NATS core request/reply for synchronous-feeling RPC",
+      "explanation": "NATS core supports request/reply on top of pub/sub: the requester publishes with a temporary reply subject and blocks for a response with a timeout. This gives you RPC ergonomics with the location-transparency of subjects, without HTTP endpoints.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"time\"\n\n\t\"github.com/nats-io/nats.go\"\n)\n\nfunc main() {\n\tnc, err := nats.Connect(nats.DefaultURL)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdefer nc.Close()\n\n\t// Responder: any listener on the subject can reply.\n\tnc.Subscribe(\"time.now\", func(m *nats.Msg) {\n\t\tm.Respond([]byte(time.Now().Format(time.RFC3339)))\n\t})\n\n\t// Requester: blocks up to the timeout for exactly one reply.\n\tresp, err := nc.Request(\"time.now\", nil, time.Second)\n\tif err != nil {\n\t\tpanic(err) // nats.ErrTimeout if no responder answered in time\n\t}\n\tfmt.Printf(\"reply: %s\\n\", resp.Data)\n}",
+        "caption": "nc.Request blocks for a single reply with a timeout, turning fire-and-forget pub/sub into request/reply RPC.",
+        "expectedOutput": "reply: 2026-07-07T10:15:30Z"
+      }
+    },
+    {
+      "level": "production",
+      "title": "JetStream durable pull consumer with explicit ack and redelivery",
+      "explanation": "JetStream persists messages and redelivers any that aren't acked within AckWait. A durable pull consumer lets a group of workers Fetch batches, process them, and Ack — or Nak to trigger immediate redelivery. This is the durable, at-least-once counterpart to NATS core.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"log\"\n\t\"time\"\n\n\t\"github.com/nats-io/nats.go\"\n)\n\nfunc main() {\n\tnc, _ := nats.Connect(nats.DefaultURL)\n\tdefer nc.Close()\n\tjs, _ := nc.JetStream()\n\n\t// Durable stream + explicit-ack consumer.\n\tjs.AddStream(&nats.StreamConfig{Name: \"ORDERS\", Subjects: []string{\"orders.*\"}})\n\tjs.Publish(\"orders.created\", []byte(`{\"id\":\"o1\"}`))\n\n\tsub, _ := js.PullSubscribe(\"orders.created\", \"order-workers\",\n\t\tnats.AckWait(30*time.Second)) // unacked after 30s => redelivered\n\tdefer sub.Unsubscribe()\n\n\tmsgs, err := sub.Fetch(10, nats.MaxWait(2*time.Second))\n\tif err != nil && err != nats.ErrTimeout {\n\t\tlog.Fatal(err)\n\t}\n\tfor _, m := range msgs {\n\t\tif err := handle(m.Data); err != nil {\n\t\t\tm.Nak() // negative ack -> redeliver soon\n\t\t\tcontinue\n\t\t}\n\t\tm.Ack() // ack ONLY after success; commits progress\n\t}\n}\n\nfunc handle(b []byte) error {\n\tlog.Printf(\"handling %s\", b)\n\treturn nil\n}",
+        "caption": "AckWait + explicit Ack/Nak give JetStream at-least-once semantics; a crash before Ack causes safe redelivery.",
+        "expectedOutput": "handling {\"id\":\"o1\"}\n// message acked; a processing error would Nak and redeliver"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "In Kafka, what is the scope of message ordering guarantees?",
+      "options": ["Global across the entire topic", "Within a single partition only", "Across all partitions of a consumer group", "Only between messages with different keys"],
+      "answerIndex": 1,
+      "explanation": "Kafka guarantees ordering only within a single partition. Because the producer hashes the message key to pick a partition, giving related events the same key keeps them in one partition and therefore ordered. There is no global cross-partition ordering."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "A kafka-go consumer uses ReadMessage (which auto-commits), processes each message, but the process crashes AFTER ReadMessage returns and BEFORE processing finishes. On restart, what happens to that message?",
+      "code": "for {\n\tm, err := r.ReadMessage(ctx) // auto-commits the offset\n\tif err != nil { return err }\n\tprocess(m) // crash can happen here\n}",
+      "options": ["The message is reprocessed on restart (at-least-once)", "The message is LOST because ReadMessage already committed its offset", "The message is processed exactly once", "The consumer blocks forever on that offset"],
+      "answerIndex": 1,
+      "explanation": "ReadMessage auto-commits the offset when it returns, before your process(m) runs. If the process crashes during processing, the offset was already advanced, so on restart the consumer skips that message — it is lost. Use FetchMessage + CommitMessages to commit only after successful processing."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This JetStream consumer aims for at-least-once durability, but messages are effectively processed at-most-once. What's wrong?",
+      "code": "msgs, _ := sub.Fetch(10)\nfor _, m := range msgs {\n\tm.Ack()          // acked immediately on receipt\n\tif err := handle(m.Data); err != nil {\n\t\tlog.Print(err) // processing may fail AFTER ack\n\t}\n}",
+      "options": ["Fetch(10) is too large a batch", "The message is acked BEFORE processing, so a failure loses it", "handle must return the message, not an error", "Ack must be called with a context"],
+      "answerIndex": 1,
+      "explanation": "Calling m.Ack() before handle runs tells JetStream the message is done, so it won't be redelivered even if handle fails or the process crashes — that's at-most-once. Ack only AFTER successful processing (and Nak on failure) to get at-least-once."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the kafka-go consumer so the offset advances only after processing succeeds (at-least-once).",
+      "codeBefore": "m, err := r.FetchMessage(ctx)\nif err != nil { return err }\nif err := process(m); err != nil { return err }",
+      "codeAfter": "// offset now durably advanced",
+      "options": ["r.CommitMessages(ctx, m)", "r.ReadMessage(ctx)", "m.Ack()", "r.SetOffset(m.Offset)"],
+      "answerIndex": 0,
+      "explanation": "FetchMessage does not commit. After processing succeeds you call r.CommitMessages(ctx, m) to advance the committed offset, giving at-least-once semantics. m.Ack() is a NATS JetStream API, not kafka-go; ReadMessage would fetch the next message, not commit this one."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-web-7-lab-idempotent-handler",
+      "title": "Build an idempotent event handler",
+      "instructions": "Implement `type IdempotentStore` with `Handle(eventID string, apply func() error) error`. It must run `apply` at most once per unique eventID: the first call with a given ID runs apply and records it as done only if apply returns nil; a duplicate ID returns nil WITHOUT running apply. If apply returns an error, the ID must NOT be recorded (so a later retry can run it). It must be safe for concurrent use.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"sync\"\n\n// IdempotentStore ensures each event ID is applied at most once.\ntype IdempotentStore struct {\n\tmu   sync.Mutex\n\tdone map[string]struct{}\n}\n\nfunc NewIdempotentStore() *IdempotentStore {\n\treturn &IdempotentStore{done: make(map[string]struct{})}\n}\n\n// Handle runs apply at most once per eventID.\nfunc (s *IdempotentStore) Handle(eventID string, apply func() error) error {\n\t// TODO: skip duplicates; only record after apply succeeds; be concurrency-safe.\n\treturn nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"sync\"\n\n// IdempotentStore ensures each event ID is applied at most once.\ntype IdempotentStore struct {\n\tmu   sync.Mutex\n\tdone map[string]struct{}\n}\n\nfunc NewIdempotentStore() *IdempotentStore {\n\treturn &IdempotentStore{done: make(map[string]struct{})}\n}\n\n// Handle runs apply at most once per eventID.\nfunc (s *IdempotentStore) Handle(eventID string, apply func() error) error {\n\ts.mu.Lock()\n\tif _, ok := s.done[eventID]; ok {\n\t\ts.mu.Unlock()\n\t\treturn nil // duplicate: already applied, no side effect\n\t}\n\ts.mu.Unlock()\n\n\tif err := apply(); err != nil {\n\t\treturn err // do NOT record on failure so retry can run\n\t}\n\n\ts.mu.Lock()\n\ts.done[eventID] = struct{}{} // record only after success\n\ts.mu.Unlock()\n\treturn nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"errors\"\n\t\"testing\"\n)\n\nfunc TestIdempotent(t *testing.T) {\n\ts := NewIdempotentStore()\n\tcalls := 0\n\tapply := func() error { calls++; return nil }\n\n\t_ = s.Handle(\"e1\", apply)\n\t_ = s.Handle(\"e1\", apply) // duplicate -> skipped\n\tif calls != 1 {\n\t\tt.Fatalf(\"apply ran %d times, want 1\", calls)\n\t}\n\n\tfailCalls := 0\n\tfail := func() error { failCalls++; return errors.New(\"boom\") }\n\tif err := s.Handle(\"e2\", fail); err == nil {\n\t\tt.Fatal(\"expected error propagated\")\n\t}\n\t// e2 not recorded on failure, so retry runs again\n\t_ = s.Handle(\"e2\", func() error { failCalls++; return nil })\n\tif failCalls != 2 {\n\t\tt.Fatalf(\"failCalls=%d, want 2 (retry ran)\", failCalls)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Check the map under the lock; if the ID is present, return nil immediately without calling apply.",
+        "Call apply OUTSIDE the lock so a slow apply doesn't block other event IDs, then relock to record success.",
+        "Only insert into the done map when apply returns nil — on error, leave it out so a retry can run."
+      ]
+    },
+    {
+      "id": "go-web-7-lab-partition-router",
+      "title": "Route events to partitions by key (mimic Kafka's Hash balancer)",
+      "instructions": "Implement `PartitionFor(key []byte, numPartitions int) int` that maps a message key to a partition index in [0, numPartitions) using an FNV-1a 32-bit hash, matching the deterministic 'same key -> same partition' behavior Kafka relies on for per-key ordering. It must return 0 when numPartitions <= 1, and the result must be non-negative and deterministic for a given key.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport \"hash/fnv\"\n\n// PartitionFor deterministically maps a key to a partition index.\nfunc PartitionFor(key []byte, numPartitions int) int {\n\t_ = fnv.New32a\n\t// TODO: hash the key and reduce modulo numPartitions (handle <=1).\n\treturn 0\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport \"hash/fnv\"\n\n// PartitionFor deterministically maps a key to a partition index,\n// mirroring how a hash balancer pins one key to one partition.\nfunc PartitionFor(key []byte, numPartitions int) int {\n\tif numPartitions <= 1 {\n\t\treturn 0\n\t}\n\th := fnv.New32a()\n\t_, _ = h.Write(key)\n\t// Mask off the sign bit to stay non-negative, then reduce.\n\treturn int(h.Sum32()&0x7fffffff) % numPartitions\n}"
+      },
+      "testHarness": "package solution\n\nimport \"testing\"\n\nfunc TestPartitionFor(t *testing.T) {\n\tif got := PartitionFor([]byte(\"x\"), 1); got != 0 {\n\t\tt.Fatalf(\"numPartitions=1 got %d want 0\", got)\n\t}\n\tp1 := PartitionFor([]byte(\"order-1\"), 8)\n\tp2 := PartitionFor([]byte(\"order-1\"), 8)\n\tif p1 != p2 {\n\t\tt.Fatalf(\"non-deterministic: %d vs %d\", p1, p2)\n\t}\n\tif p1 < 0 || p1 >= 8 {\n\t\tt.Fatalf(\"out of range: %d\", p1)\n\t}\n\t// Different keys should (usually) spread; at least be in range.\n\tif p := PartitionFor([]byte(\"order-2\"), 8); p < 0 || p >= 8 {\n\t\tt.Fatalf(\"out of range: %d\", p)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Return 0 early when numPartitions <= 1 to avoid a modulo-by-zero or trivial case.",
+        "Use fnv.New32a(), Write the key bytes, then read Sum32().",
+        "Mask with 0x7fffffff before the modulo so the int conversion can't go negative."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-web-7-debug-commit-before-process",
+      "difficulty": "advanced",
+      "title": "Messages vanish under load: offset committed before processing",
+      "symptom": "Under normal operation everything works, but whenever a consumer pod is killed mid-batch (deploys, OOM), some orders are never processed — they silently disappear. Reprocessing from an earlier offset shows the events existed in Kafka.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func consume(ctx context.Context, r *kafka.Reader) error {\n\tfor {\n\t\tm, err := r.FetchMessage(ctx)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\t// BUG: commit the offset BEFORE doing the work\n\t\tif err := r.CommitMessages(ctx, m); err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := process(m); err != nil { // if this crashes, offset is already advanced\n\t\t\treturn err\n\t\t}\n\t}\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "The offset is committed with CommitMessages before process(m) runs. Once committed, Kafka considers that message consumed, so if the process crashes (or process returns an error and the loop exits) after the commit but before/during processing, the message is never handled and, on restart, the consumer resumes from the next offset. This turns at-least-once into at-most-once and loses data on any mid-batch failure. The fix is to commit only AFTER processing succeeds.",
+      "commonMistakes": [
+        "Committing offsets before the work is done, converting at-least-once into at-most-once.",
+        "Assuming FetchMessage auto-commits (it doesn't) and mixing it up with ReadMessage (which does).",
+        "Not handling processing errors — either retry, send to a dead-letter topic, or don't commit."
+      ],
+      "fixChallenge": "Reorder so the offset is committed only after process(m) returns nil, and make process idempotent so a redelivery after a crash-before-commit is harmless.",
+      "solution": {
+        "language": "go",
+        "code": "func consume(ctx context.Context, r *kafka.Reader) error {\n\tfor {\n\t\tm, err := r.FetchMessage(ctx)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\t\tif err := process(m); err != nil { // do the work FIRST\n\t\t\t// on failure: retry / dead-letter, but do NOT commit\n\t\t\tcontinue\n\t\t}\n\t\t// commit ONLY after successful processing -> at-least-once\n\t\tif err := r.CommitMessages(ctx, m); err != nil {\n\t\t\treturn err\n\t\t}\n\t}\n}",
+        "expectedOutput": "// A crash between process and commit re-delivers the message on restart;\n// an idempotent process() makes that replay harmless (no data loss)."
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-7-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Explain Kafka partitions and consumer groups, and how they trade off ordering against parallelism.",
+        "directAnswer": "A topic is split into partitions, each an ordered append-only log; ordering is guaranteed only within a partition, and the producer's key is hashed to pick one so same-key events stay ordered. A consumer group assigns each partition to exactly one member, so partitions are the unit of parallelism: you scale throughput by adding partitions and consumers (up to the partition count), but any consumer beyond that count is idle. The trade-off is that more partitions give more parallelism but coarser ordering — you only get ordering per key, not globally.",
+        "detailedExplanation": {
+          "whatItIs": "Partitions are ordered sub-logs of a topic; consumer groups distribute those partitions across cooperating consumers.",
+          "whyItExists": "To let one logical topic scale horizontally while preserving useful ordering (per key) and avoiding double-processing.",
+          "howItWorks": "The producer hashes the key to a partition; the group coordinator assigns partitions to members and rebalances on membership changes; each member commits offsets for its partitions."
+        },
+        "whyImportant": "Partition/consumer-group mechanics decide throughput, ordering, and correctness of every Kafka-based Go service, and are a near-guaranteed interview topic.",
+        "realWorldExample": "An 'orders' topic keyed by order ID with 12 partitions lets 12 consumers process in parallel while all events for one order stay ordered.",
+        "followUps": [
+          { "question": "What happens during a rebalance?", "answer": "Partitions are revoked and reassigned across the group; in-flight uncommitted work may be reprocessed by the new owner, which is why idempotency and committing after processing matter." },
+          { "question": "How do you increase per-key parallelism if one key is hot?", "answer": "You can't split a single key across partitions without changing the key scheme; options are a composite key, sub-keying, or processing that hot key's partition faster." }
+        ]
+      },
+      {
+        "id": "go-web-7-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Compare at-least-once, at-most-once, and exactly-once delivery, and how you achieve correctness in a Go consumer.",
+        "directAnswer": "At-most-once commits/acks before processing, so a crash loses the message; at-least-once processes then commits, so a crash before commit causes a redelivery (duplicate); exactly-once means each effect happens once, which Kafka approximates with transactions but is expensive and doesn't cover external side effects. In practice you run at-least-once and make the consumer idempotent: dedupe by a stable event ID or use upserts keyed by that ID, and commit the offset (kafka-go CommitMessages) or Ack (JetStream) only after processing succeeds. That way redeliveries have no extra effect.",
+        "detailedExplanation": {
+          "whatItIs": "The three delivery guarantees describe how many times a message's effects can be observed under failures.",
+          "whyItExists": "Networks and processes fail between processing and acknowledging, so a guarantee must define the behavior on retry.",
+          "howItWorks": "Ordering of commit-vs-process picks at-most vs at-least once; idempotent handlers make at-least-once behave like exactly-once for state."
+        },
+        "whyImportant": "Choosing the wrong point to commit causes silent data loss or double side effects (e.g. double charges) — the most common correctness bug in event systems.",
+        "realWorldExample": "A payments consumer inserts a charge with the event ID as a unique key; a redelivery hits a duplicate-key conflict and is safely ignored.",
+        "followUps": [
+          { "question": "Why is true exactly-once hard for external side effects?", "answer": "Kafka transactions cover Kafka reads/writes atomically, but a side effect like sending an email or calling a third-party API isn't part of that transaction, so you still need idempotency at the boundary." },
+          { "question": "Where do you store the dedupe set in production?", "answer": "In a durable store (DB unique constraint, Redis with TTL) rather than in-memory, so it survives restarts and is shared across consumer instances." }
+        ]
+      },
+      {
+        "id": "go-web-7-th-3",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "When would you choose Kafka over NATS (and vice versa) for a Go system?",
+        "directAnswer": "Choose Kafka when you need a durable, replayable log with high sustained throughput, long retention, consumer-group parallelism, and per-key ordering — e.g. event sourcing, analytics pipelines, or CDC. Choose NATS core when you need ultra-low-latency, ephemeral pub/sub or request/reply for internal microservices and control planes, and NATS JetStream when you want Kafka-like durability and at-least-once acks but with far simpler operations and a lighter footprint. The decision hinges on durability/replay needs, operational complexity you can absorb, latency targets, and whether you need long retention and reprocessing.",
+        "detailedExplanation": {
+          "whatItIs": "A selection between a partitioned commit log (Kafka) and a subject-based messaging system (NATS core + JetStream).",
+          "whyItExists": "Different workloads weight durability, latency, throughput, and operational simplicity differently.",
+          "howItWorks": "Kafka retains an ordered offsetted log for replay; NATS routes by subject with optional JetStream persistence and server-side ack tracking."
+        },
+        "whyImportant": "Picking the right broker shapes cost, latency, and operational burden for years; interviewers probe whether you understand the trade-offs rather than defaulting to one tool.",
+        "realWorldExample": "A team uses Kafka for its analytics/event-sourcing backbone but NATS for low-latency service-to-service control messages and request/reply health checks.",
+        "followUps": [
+          { "question": "Can NATS JetStream replay like Kafka?", "answer": "Yes to a degree — JetStream persists streams and supports replay policies and durable consumers, but Kafka's ecosystem and long-retention/reprocessing story is more mature for large-scale streaming." },
+          { "question": "How does operational complexity differ?", "answer": "Kafka typically needs brokers plus coordination (ZooKeeper or KRaft) and careful partition/retention tuning; NATS is a single lightweight binary that's much simpler to run, with JetStream adding storage config." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-7-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "Your Kafka consumer group's lag is climbing steadily during peak hours and never fully recovers, while producers are healthy. How do you diagnose and fix it?",
+        "directAnswer": "Rising lag with healthy producers means consumers can't keep up. First measure: expose per-partition lag (kafka-go Reader.Stats().Lag, or the group's committed offset vs log-end offset) and confirm all partitions are being consumed and members aren't stuck in rebalance loops. Then scale the right dimension: if you have fewer consumers than partitions, add consumers up to the partition count; if you're already at the partition count, increase partitions (and rebalance) or make per-message processing faster (batch DB writes, remove synchronous downstream calls, parallelize within a partition carefully while preserving ordering). Bound in-flight work so a burst doesn't OOM the consumer, and check for a slow or failing downstream causing retries. Long term, alert on lag thresholds and autoscale consumers on lag.",
+        "detailedExplanation": {
+          "whatItIs": "Consumer lag is the backlog between produced and committed offsets — the core saturation signal.",
+          "whyItExists": "When arrival rate exceeds processing rate, the durable log buffers the difference, so lag grows instead of dropping messages.",
+          "howItWorks": "You reduce lag by raising consumer throughput (more consumers up to partition count, more partitions, faster per-message work) or reducing arrival rate."
+        },
+        "whyImportant": "Unbounded lag means your event system is silently falling behind reality — stale data, delayed side effects, and eventual OOM; diagnosing it is a common on-call scenario.",
+        "realWorldExample": "A team found lag climbing because each message made a synchronous per-record DB write; batching writes and doubling consumers (still within partition count) brought lag back to zero.",
+        "followUps": [
+          { "question": "Why not just add consumers without adding partitions?", "answer": "Extra consumers beyond the partition count sit idle since each partition is owned by one group member; you must add partitions to gain more parallelism." },
+          { "question": "How do you prevent the consumer from OOMing while catching up?", "answer": "Bound in-flight messages (batch size, a worker pool with a semaphore) and apply backpressure so you don't fetch faster than you can process." }
+        ]
+      },
+      {
+        "id": "go-web-7-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "After a deploy that killed consumer pods mid-batch, customers report duplicate emails from your notification service. What went wrong and how do you fix it?",
+        "directAnswer": "This is classic at-least-once redelivery: a pod processed messages (sent emails) but was killed before committing offsets, so on restart the group replayed those messages and re-sent the emails. The system is behaving correctly for at-least-once; the bug is a non-idempotent side effect. Fix it by making sends idempotent: dedupe on a stable event ID stored durably (DB unique constraint or Redis with TTL) so a replay of the same event ID is a no-op, or use the provider's idempotency key. Also ensure you commit/ack only after processing so ordering is right, and consider a dead-letter path for poison messages. Graceful shutdown (drain then commit) reduces, but cannot eliminate, redelivery — idempotency is the real fix.",
+        "detailedExplanation": {
+          "whatItIs": "A duplicate side effect caused by at-least-once redelivery of already-processed messages after a crash before commit.",
+          "whyItExists": "Committing after processing guarantees no loss but permits redelivery, and email sending is a non-idempotent external effect.",
+          "howItWorks": "Recording processed event IDs durably lets the handler skip effects for any redelivered event."
+        },
+        "whyImportant": "Duplicated user-facing side effects (emails, charges) directly damage trust; understanding that at-least-once requires idempotency is essential for correctness.",
+        "realWorldExample": "The team added a 'sent_notifications' table with the event ID as a unique key; the send is skipped if the insert conflicts, eliminating duplicate emails across redeliveries.",
+        "followUps": [
+          { "question": "Would exactly-once have prevented this?", "answer": "Not for the email itself — Kafka transactions don't cover the external email API, so you'd still need an idempotency key at the send boundary." },
+          { "question": "How long should the dedupe record live?", "answer": "At least as long as the topic retention / max possible redelivery window; a TTL comfortably longer than that in Redis, or permanent rows in a DB for audit." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-7-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design an event-driven order-processing pipeline in Go where placing an order triggers inventory, billing, and notification services independently and resiliently. Walk through the design.",
+        "directAnswer": "Have the order service publish an immutable 'order.placed' event (keyed by order ID for per-order ordering) to a Kafka topic instead of calling downstream services synchronously. Three independent consumer groups — inventory, billing, notifications — each subscribe to the topic and process at their own pace, so a slow or down consumer never fails order placement. Each consumer uses at-least-once with idempotent handlers: FetchMessage, process, then CommitMessages, deduping by event ID (DB unique key) so redeliveries are harmless — critical for billing (no double charge) and notifications (no duplicate email). Partition by order ID so all events for an order stay ordered; size partitions to peak throughput and scale each group's consumers up to the partition count. Add per-message context timeouts and propagate context to DB/RPC calls, a dead-letter topic for poison messages, and monitoring of consumer lag per group with alerts and autoscaling. Use graceful shutdown (drain, commit, then exit) on SIGTERM. For low-latency internal signals (e.g. cache invalidation) you could layer NATS core, and use JetStream where you want durable acks without Kafka's operational weight.",
+        "detailedExplanation": {
+          "whatItIs": "A Kafka-backed fan-out pipeline where one order event drives multiple independent, idempotent consumer groups.",
+          "whyItExists": "Synchronous chaining couples availability and scaling of all services; an event log decouples them and buffers spikes.",
+          "howItWorks": "Producer writes keyed events; each consumer group processes independently, commits after processing, and dedupes for idempotency; lag and DLQ handle saturation and bad messages."
+        },
+        "whyImportant": "This is the canonical event-driven design interviewers use to test decoupling, delivery semantics, idempotency, ordering, and operational maturity together.",
+        "realWorldExample": "E-commerce platforms publish order events to Kafka and let fulfillment, payments, and email services consume independently, replaying the log to recover from bugs.",
+        "followUps": [
+          { "question": "How do you keep billing exactly once from the user's perspective?", "answer": "At-least-once delivery plus an idempotency key (order/event ID) on the charge so a redelivery hits a unique-constraint conflict and is skipped." },
+          { "question": "How do you handle a consumer that keeps failing on one message?", "answer": "Bounded retries then route it to a dead-letter topic with the error context so the main flow isn't blocked, and alert for manual inspection." },
+          { "question": "How would you add a new consumer (e.g. analytics) later?", "answer": "Create a new consumer group on the same topic; it reads from the desired offset (even the beginning) without affecting existing consumers." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-7-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a bounded worker pool that consumes messages from a channel and processes them concurrently while capping in-flight work (backpressure). Signature: `func RunPool(ctx context.Context, in <-chan []byte, workers int, handle func(context.Context, []byte) error)`.",
+        "thoughtProcess": "Backpressure means we never buffer unbounded work: spawn a fixed number of worker goroutines that all read from the same input channel, so the number of in-flight messages is capped at 'workers'. Each worker loops on the channel, calls handle with the context, and stops when the channel closes or the context is cancelled. Use a WaitGroup to wait for all workers before returning, and select on ctx.Done() so cancellation drains cleanly.",
+        "solution": {
+          "code": "func RunPool(ctx context.Context, in <-chan []byte, workers int, handle func(context.Context, []byte) error) {\n\tvar wg sync.WaitGroup\n\twg.Add(workers)\n\tfor i := 0; i < workers; i++ {\n\t\tgo func() {\n\t\t\tdefer wg.Done()\n\t\t\tfor {\n\t\t\t\tselect {\n\t\t\t\tcase <-ctx.Done(): // cancellation: stop pulling work\n\t\t\t\t\treturn\n\t\t\t\tcase msg, ok := <-in:\n\t\t\t\t\tif !ok { // channel closed: no more work\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\tif err := handle(ctx, msg); err != nil {\n\t\t\t\t\t\tlog.Printf(\"handle error: %v\", err)\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}()\n\t}\n\twg.Wait() // block until all workers drain/stop\n}",
+          "language": "go"
+        },
+        "lineByLine": "We add 'workers' to the WaitGroup and launch that many goroutines, so at most 'workers' messages are ever in flight — that is the backpressure cap. Each worker selects on ctx.Done() (to stop on cancellation) and on the input channel (reading msg, ok); ok==false means the channel closed and the worker returns. handle is called with the context so downstream work is cancellable. wg.Wait() blocks until every worker has returned, giving a clean drain on channel close or cancel.",
+        "timeComplexity": "O(n) total over n messages; up to 'workers' processed concurrently.",
+        "spaceComplexity": "O(workers) goroutines plus O(1) per in-flight message — bounded, no unbounded buffering.",
+        "followUps": [
+          { "question": "How would you commit Kafka offsets safely with this pool while preserving per-partition order?", "answer": "Don't fan a single partition across workers; use one worker (or one channel) per partition, or track completed offsets and commit the lowest contiguous committed offset to avoid gaps." },
+          { "question": "How do you add a retry/dead-letter for failed handle calls?", "answer": "On error, retry with bounded backoff; after exhausting retries, publish the message to a dead-letter topic with the error and commit/ack so the pool isn't blocked." }
+        ]
+      },
+      {
+        "id": "go-web-7-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement `LowestUncommitted(committed int64, done map[int64]bool) int64` that, given the last committed offset and a set of completed (out-of-order) offsets, returns the highest offset that is safe to commit — i.e. advance past every contiguous completed offset starting at committed+1. This is how you commit offsets when messages within a partition finish out of order.",
+        "thoughtProcess": "Committing an offset in Kafka means 'everything up to and including this is done'. If offsets complete out of order, you can only advance the committed offset through a contiguous run of completed offsets — a gap must stop you, or you'd skip an unfinished message on restart. So start at committed+1 and keep incrementing while that offset is in the done set; return the last offset you could advance to (or the original committed if the next one isn't done yet). Clean up the map as you consume it.",
+        "solution": {
+          "code": "func LowestUncommitted(committed int64, done map[int64]bool) int64 {\n\tnext := committed + 1\n\tfor done[next] { // advance only through a contiguous completed run\n\t\tdelete(done, next) // no longer needed once folded into committed\n\t\tcommitted = next\n\t\tnext++\n\t}\n\treturn committed // highest safe-to-commit offset; a gap stops us\n}",
+          "language": "go"
+        },
+        "lineByLine": "next starts at committed+1 (the first not-yet-committed offset). The loop checks done[next]: if that offset finished, we can fold it into committed, so we delete it from the map (it's accounted for), set committed=next, and advance. The moment done[next] is false — a gap where a message is still in flight — we stop, because committing past it would mark an unfinished message as done. We return the updated committed, which is the highest offset safe to commit.",
+        "timeComplexity": "O(k) where k is the length of the contiguous completed run being folded in.",
+        "spaceComplexity": "O(1) extra; the done map shrinks as offsets are folded in.",
+        "followUps": [
+          { "question": "Why not just commit the highest completed offset regardless of gaps?", "answer": "Because a gap means an earlier offset is still in flight; committing past it would skip that message on restart, causing data loss." },
+          { "question": "How does this interact with kafka-go's CommitMessages?", "answer": "You'd call CommitMessages for the message at the returned safe offset, so the committed position only ever advances through fully-processed contiguous ranges." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Model events as immutable, versioned facts (order.placed) published to topics keyed for per-key ordering; downstream services are independent consumer groups, never synchronous callers. Keep serialization explicit (JSON with a schema, or Avro/Protobuf with a schema registry) so producers and consumers evolve safely. Add a dead-letter topic for poison messages and treat the log as the source of truth you can replay. Choose Kafka for durable high-throughput replayable streams and NATS/JetStream for lightweight low-latency or simpler durable messaging.",
+    "performance": "Partitions are the parallelism knob — size them to peak throughput and scale consumers up to (not beyond) the partition count. Batch producer writes and offset commits to raise throughput at the cost of latency; reuse a single kafka.Writer/Reader and one NATS connection. Bound fetch/in-flight work so bursts don't OOM the consumer, and prefer async publish where the durability model allows. NATS core gives the lowest latency by skipping persistence; JetStream and Kafka trade some latency for durability.",
+    "concurrency": "Each partition must be processed by a single logical worker to preserve order, so parallelize across partitions, not within one (unless you carefully track per-offset completion). Use a bounded worker pool for backpressure and always pass a per-message context.Context into DB/RPC calls so timeouts and shutdown cancel downstream work. Guard any shared dedupe/state with sync primitives or push it to a durable store.",
+    "reliability": "Default to at-least-once and make every handler idempotent (dedupe by event ID / upsert) so redeliveries and rebalances are harmless. Commit offsets / Ack only AFTER successful processing; never before. Handle rebalances (kafka-go) and AckWait redelivery (JetStream) explicitly, add bounded retries with backoff plus a dead-letter path, and implement graceful shutdown that drains and commits before exit.",
+    "observability": "Consumer lag per group/partition is the primary health metric — export it and alert on thresholds; also track processing latency, error rate, redelivery/Nak counts, and dead-letter volume. Propagate a correlation/event ID through logs and tracing (OpenTelemetry) so an event can be followed across producer and every consumer. Emit RED metrics per handler.",
+    "security": "Enable TLS between clients and brokers and authenticate (SASL for Kafka, NATS credentials/nkeys/JWT for NATS); authorize per topic/subject with ACLs. Validate and size-limit message payloads, never log full payloads containing PII or secrets, and encrypt sensitive fields at the application layer if the broker is shared. Rotate credentials and scope consumer/producer permissions narrowly.",
+    "caseStudies": [
+      { "company": "Large e-commerce order platform", "problem": "Synchronous checkout calls to inventory, billing, and email meant any downstream outage failed order placement and couldn't absorb flash-sale spikes.", "solution": "Publish keyed order events to Kafka; independent idempotent consumer groups process inventory, billing, and notifications at-least-once, committing after processing, with a dead-letter topic and lag-based autoscaling.", "tradeoffs": "Eventual consistency and more operational surface (brokers, schemas, monitoring) versus resilience, replayability, and independent scaling.", "lessons": "Decoupling via a durable log plus idempotent consumers turns downstream outages and spikes into buffered backlog instead of user-facing failures." },
+      { "company": "Microservices control plane", "problem": "Needed ultra-low-latency internal signaling and request/reply between services without standing up heavy Kafka infrastructure.", "solution": "Adopted NATS core for fire-and-forget signals and request/reply, and JetStream for the few flows needing durable at-least-once delivery with acks.", "tradeoffs": "Less mature long-retention/replay ecosystem than Kafka, but far simpler operations and lower latency.", "lessons": "Match the broker to the workload: NATS for lightweight low-latency messaging, JetStream/Kafka where durability and replay justify the added weight." }
+    ]
+  },
+  "keyTakeaways": [
+    "Event-driven messaging decouples services in time: producers write durable events and consumers react independently, so a down or slow consumer never fails the producer and spikes are buffered in the log.",
+    "Kafka ordering is per-partition only; key your messages so related events land in one partition, and use consumer groups (parallelism = partition count) to scale processing.",
+    "Assume at-least-once: commit offsets (kafka-go CommitMessages) or Ack (JetStream) ONLY after processing succeeds, and make handlers idempotent (dedupe by event ID / upsert) so redeliveries are harmless.",
+    "NATS core is fire-and-forget pub/sub and request/reply for low-latency signaling; NATS JetStream adds durable streams with explicit acks and redelivery.",
+    "Choose Kafka for high-throughput, replayable, long-retention streams; choose NATS/JetStream for lightweight, low-latency, or operationally simpler durable messaging.",
+    "Consumer lag is the core health signal — monitor and alert on it, bound in-flight work for backpressure, and scale partitions/consumers or speed up per-message work when it climbs."
+  ]
+}

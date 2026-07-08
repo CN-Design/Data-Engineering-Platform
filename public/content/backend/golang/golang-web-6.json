@@ -1,0 +1,364 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-6",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Caching & Sessions with Redis (go-redis)",
+  "difficulty": "intermediate",
+  "summary": "Redis is an in-memory data-structure store that Go services reach for whenever a database round-trip is too slow or too expensive to repeat. With `github.com/redis/go-redis/v9` you connect once (a pooled, goroutine-safe `*redis.Client`) and then lean on Redis's rich types — strings, hashes, sets, sorted sets, lists — to cache query results, hold sessions, rate-limit callers, and fan out pub/sub events. The two patterns you'll use daily are **cache-aside** (check cache, fall back to the DB, then populate) and **counter-based rate limiting** (`INCR` + `EXPIRE`). Get TTLs, `redis.Nil`, and stampede control right and Redis becomes the cheapest latency win in your stack.",
+  "prerequisites": ["golang-web-1"],
+  "relatedConcepts": ["golang-web-5", "golang-web-7"],
+  "nestedConcepts": ["client & connection pool", "core data types", "cache-aside pattern", "TTL & session storage", "distributed rate limiting", "pipelines, transactions & pub/sub"],
+  "subtopics": [
+    { "title": "Connecting: redis.NewClient & the pool", "explanation": "redis.NewClient(*redis.Options) returns a *redis.Client that is safe for concurrent use and internally manages a connection pool (PoolSize defaults to 10*GOMAXPROCS). You do NOT open a connection per request — you create one client at startup and share it. Ping verifies connectivity. Every command takes a context.Context for cancellation and per-call timeouts. This single shared, pooled client is the foundation everything else in Redis caching builds on.", "example": "// One pooled, goroutine-safe client for the whole process.\nfunc newClient() *redis.Client {\n\trdb := redis.NewClient(&redis.Options{\n\t\tAddr:         \"localhost:6379\",\n\t\tPassword:     \"\",\n\t\tDB:           0,\n\t\tPoolSize:     20,               // max sockets in the pool\n\t\tMinIdleConns: 5,                // keep warm connections\n\t\tDialTimeout:  5 * time.Second,\n\t\tReadTimeout:  3 * time.Second,\n\t})\n\tctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)\n\tdefer cancel()\n\tif err := rdb.Ping(ctx).Err(); err != nil { // verify at startup\n\t\tlog.Fatalf(\"redis unreachable: %v\", err)\n\t}\n\treturn rdb\n\t// Output: (client connected; Ping returns PONG)\n}" },
+    { "title": "Core data types & client methods", "explanation": "Redis is not just a key/value blob store — its value is the typed data structures, each with O(1)-ish commands. go-redis maps them to methods: Set/Get for strings, HSet/HGetAll for hashes, SAdd/SIsMember for sets, ZAdd/ZRange for sorted sets, LPush/RPop for lists. Picking the right type (a hash for a session object, a sorted set for a leaderboard) is what makes Redis usage idiomatic rather than a dumb cache. Choosing the correct structure shapes every caching, session, and rate-limit design that follows.", "example": "// Each type has purpose-built commands.\nfunc demoTypes(ctx context.Context, rdb *redis.Client) {\n\trdb.Set(ctx, \"page:home:views\", 0, 0)          // string\n\trdb.HSet(ctx, \"user:42\", \"name\", \"alice\", \"tier\", \"pro\") // hash\n\trdb.SAdd(ctx, \"post:9:tags\", \"go\", \"redis\")    // set\n\trdb.ZAdd(ctx, \"leaderboard\", redis.Z{Score: 99, Member: \"alice\"}) // sorted set\n\trdb.LPush(ctx, \"jobs\", \"email:welcome\")         // list\n\n\tfields, _ := rdb.HGetAll(ctx, \"user:42\").Result()\n\ttop, _ := rdb.ZRevRange(ctx, \"leaderboard\", 0, 0).Result()\n\tfmt.Println(fields[\"tier\"], top)\n\t// Output: pro [alice]\n}" },
+    { "title": "The cache-aside pattern", "explanation": "Cache-aside (lazy loading) is the workhorse read pattern: the application checks Redis first; on a miss (Get returns redis.Nil) it reads the source of truth (the DB), then writes the result back into Redis with a TTL before returning it. The cache never talks to the DB itself — your code owns the flow, which is why redis.Nil must be handled explicitly as 'not an error, just a miss'. This decision tree — hit, miss, populate — is the single most common way Go services put Redis in front of a database.", "example": "// Cache-aside: try cache, fall back to DB, then populate.\nfunc getUser(ctx context.Context, rdb *redis.Client, id string) (string, error) {\n\tkey := \"user:\" + id\n\tval, err := rdb.Get(ctx, key).Result()\n\tif err == nil {\n\t\treturn val, nil // cache hit\n\t}\n\tif err != redis.Nil { // real error, not a miss\n\t\treturn \"\", err\n\t}\n\tuser := loadUserFromDB(id)                       // miss -> source of truth\n\trdb.Set(ctx, key, user, 10*time.Minute)          // populate with TTL\n\treturn user, nil\n}\n// Output: first call hits DB; subsequent calls served from Redis" },
+    { "title": "TTL, expiration & session storage", "explanation": "Redis makes data ephemeral with TTLs: Set accepts an expiration argument, and Expire/PExpire add or reset a TTL on an existing key. This is exactly what sessions need — store the session as a hash or JSON string keyed by a random token, give it a sliding TTL, and let Redis evict abandoned sessions automatically. TTL(key) reports the remaining lifetime. Getting expiration right is what turns Redis from a memory leak into a self-cleaning cache and session store.", "example": "// Store a session hash with a 30-minute sliding TTL.\nfunc saveSession(ctx context.Context, rdb *redis.Client, token, userID string) error {\n\tkey := \"session:\" + token\n\tif err := rdb.HSet(ctx, key,\n\t\t\"user_id\", userID,\n\t\t\"created\", time.Now().Unix(),\n\t).Err(); err != nil {\n\t\treturn err\n\t}\n\treturn rdb.Expire(ctx, key, 30*time.Minute).Err() // auto-evict when idle\n}\n\nfunc touchSession(ctx context.Context, rdb *redis.Client, token string) {\n\trdb.Expire(ctx, \"session:\"+token, 30*time.Minute) // slide the window on activity\n}\n// Output: session key lives 30m; refreshed on each request" },
+    { "title": "Distributed rate limiting", "explanation": "Because Redis is shared across every instance of your service, it is the natural place for distributed rate limits. The simplest is a fixed window: INCR a per-client key and, on the FIRST increment, set an EXPIRE equal to the window; reject once the count exceeds the limit. A smoother variant uses a sorted set as a sliding window (ZADD timestamps, ZREMRANGEBYSCORE to drop old ones, ZCARD to count). Doing this in Redis means all pods enforce one global limit rather than N separate local ones.", "example": "// Fixed-window rate limit: INCR + EXPIRE on first hit.\nfunc allow(ctx context.Context, rdb *redis.Client, clientID string, limit int64, window time.Duration) (bool, error) {\n\tkey := \"rl:\" + clientID\n\tcount, err := rdb.Incr(ctx, key).Result() // atomic increment\n\tif err != nil {\n\t\treturn false, err\n\t}\n\tif count == 1 { // first request in this window sets the TTL\n\t\trdb.Expire(ctx, key, window)\n\t}\n\treturn count <= limit, nil\n}\n// Output: allow=true until the 'limit'-th call within 'window', then false" },
+    { "title": "Pipelines, transactions & pub/sub", "explanation": "Round-trips dominate Redis latency, so batch them: Pipeline sends many commands in one network write, and TxPipeline wraps them in MULTI/EXEC so they execute atomically. For read-modify-write across keys, Watch implements optimistic locking (WATCH/MULTI/EXEC, retry on conflict). Separately, Publish/Subscribe turns Redis into a lightweight message bus for cache-invalidation fan-out and real-time events. Together these are how you keep Redis usage both fast and consistent under concurrency.", "example": "// A transactional pipeline: both commands run atomically via MULTI/EXEC.\nfunc chargeAndLog(ctx context.Context, rdb *redis.Client, user string, amount int64) error {\n\tpipe := rdb.TxPipeline()\n\tpipe.DecrBy(ctx, \"balance:\"+user, amount)\n\tpipe.LPush(ctx, \"ledger:\"+user, amount)\n\t_, err := pipe.Exec(ctx) // one round-trip, atomic\n\treturn err\n}\n\nfunc listen(ctx context.Context, rdb *redis.Client) {\n\tsub := rdb.Subscribe(ctx, \"cache:invalidate\")\n\tfor msg := range sub.Channel() {\n\t\tfmt.Println(\"evict:\", msg.Payload) // react to publishes\n\t}\n}\n// Output: evict: user:42  (when another node publishes)" }
+  ],
+  "foundations": {
+    "overview": "Redis is a single-threaded, in-memory data-structure server, and go-redis is the idiomatic Go client for it. The core idea for a Go backend is simple: create one shared *redis.Client at startup, then use it to cache expensive reads (cache-aside), hold session state, and enforce rate limits — all keyed operations backed by TTLs so memory reclaims itself. The two habits that separate correct code from buggy code are treating redis.Nil as a normal cache miss (not an error) and always attaching an expiration so keys don't accumulate forever.",
+    "formalDefinition": "go-redis exposes a *redis.Client (or ClusterClient/Ring) whose methods issue Redis commands; each method takes a context.Context and returns a typed *Cmd wrapper (e.g. *StringCmd) with .Result()/.Err(). A cache-aside read is: lookup key -> on redis.Nil, load from the system of record -> write back with TTL. Rate limiting is a counter (INCR) bounded by a window (EXPIRE) or a timestamp sorted set trimmed by score.",
+    "whyItMatters": "Almost every latency-sensitive Go service — API backends, session layers, feed and leaderboard systems, rate limiters — puts Redis in the hot path. Caching turns 50ms database queries into sub-millisecond memory reads, and a shared Redis is the only sane place to coordinate limits and sessions across horizontally scaled instances. It's also a perennial backend interview topic.",
+    "mentalModel": "Think of Redis as a shared whiteboard next to your app: writing and reading are instant, but the board is finite, so every note has a fade timer (TTL). Cache-aside is 'check the whiteboard first, and if it's blank, look it up the slow way and jot it down for next time.' A rate limiter is a tally-mark counter on that board that erases itself when the window ends.",
+    "runtimePerspective": "The *redis.Client owns a connection pool; a command borrows a connection, writes the RESP-encoded request, reads the reply, and returns the socket to the pool. The Redis server itself executes commands one at a time on a single thread, which is why INCR and MULTI/EXEC are atomic. A pipeline batches N commands into one write/read cycle, collapsing N round-trips into one. Contexts propagate cancellation so a client disconnect or timeout aborts the pending command.",
+    "realWorldUsage": "Caching DB query results and rendered fragments, HTTP session stores, distributed rate limiting and throttling, leaderboards and counters (sorted sets), job/queue lists, ephemeral locks, and pub/sub for cache invalidation and real-time notifications.",
+    "businessImpact": "Cutting database load with a cache directly lowers infrastructure cost and improves p99 latency, which correlates with conversion and retention. A shared rate limiter protects paid downstream APIs and shields the service from abuse, and Redis-backed sessions let you scale stateless app servers freely.",
+    "engineeringImpact": "A single shared client keeps connection management trivial; TTLs make cache correctness self-healing; and moving session/limit state out of process memory makes services stateless and easy to autoscale. The cost is a new failure mode (Redis down) that must be handled gracefully.",
+    "performanceImpact": "In-memory reads are microseconds; the dominant cost is network round-trips, so pipelines and batching matter more than raw command speed. Big risks are missing TTLs (unbounded memory growth), cache stampedes on hot-key expiry, and treating redis.Nil as a fatal error (turning every miss into a 500).",
+    "commonUseCases": [
+      "Cache-aside read-through in front of a SQL/NoSQL database",
+      "Redis-backed HTTP sessions with sliding TTLs",
+      "Distributed rate limiting (INCR+EXPIRE fixed window or sorted-set sliding window)",
+      "Leaderboards, counters, and feeds via sorted sets and lists",
+      "Pub/sub cache invalidation across service instances"
+    ],
+    "commonMisconceptions": [
+      { "myth": "You should open a Redis connection per request.", "reality": "redis.NewClient returns a goroutine-safe, pooled client. Create ONE at startup and share it; opening/closing clients per request destroys the pool's benefit and leaks sockets." },
+      { "myth": "redis.Nil is an error you should return or log.", "reality": "redis.Nil means the key doesn't exist — a normal cache miss. Check `err == redis.Nil` explicitly and fall back to the source of truth; only treat OTHER errors as failures." },
+      { "myth": "Cached keys clean themselves up automatically.", "reality": "Only if you set a TTL. Set without an expiration (or SET after HSET without EXPIRE) leaves keys forever; you must pass an expiration or call Expire or Redis will grow until eviction kicks in." },
+      { "myth": "A cache is the source of truth once populated.", "reality": "The database is authoritative; the cache is a disposable copy. Design for the cache being empty, stale, or unavailable at any moment — never for correctness depending on a hit." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "Cache-aside with JSON marshaling and redis.Nil handling",
+      "explanation": "A complete cache-aside read of a struct: marshal to JSON on populate, unmarshal on hit, and treat redis.Nil as a miss (not an error). Note the TTL on Set — without it the key would live forever.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\ntype Product struct {\n\tID    string `json:\"id\"`\n\tName  string `json:\"name\"`\n\tPrice int    `json:\"price\"`\n}\n\n// loadFromDB is the slow source of truth (simulated).\nfunc loadFromDB(id string) Product {\n\treturn Product{ID: id, Name: \"Widget\", Price: 999}\n}\n\nfunc getProduct(ctx context.Context, rdb *redis.Client, id string) (Product, error) {\n\tkey := \"product:\" + id\n\tif raw, err := rdb.Get(ctx, key).Bytes(); err == nil {\n\t\tvar p Product\n\t\treturn p, json.Unmarshal(raw, &p) // cache hit\n\t} else if err != redis.Nil {\n\t\treturn Product{}, err // real error\n\t}\n\tp := loadFromDB(id) // miss -> DB\n\tif b, err := json.Marshal(p); err == nil {\n\t\trdb.Set(ctx, key, b, 5*time.Minute) // populate WITH TTL\n\t}\n\treturn p, nil\n}\n\nfunc main() {\n\trdb := redis.NewClient(&redis.Options{Addr: \"localhost:6379\"})\n\tctx := context.Background()\n\tp, _ := getProduct(ctx, rdb, \"42\") // first: DB then populate\n\tfmt.Println(p.Name, p.Price)\n\tp, _ = getProduct(ctx, rdb, \"42\") // second: served from Redis\n\tfmt.Println(p.Name, p.Price)\n}",
+        "caption": "Cache-aside always handles three outcomes: hit, miss (redis.Nil), and error. The TTL makes the entry self-expiring.",
+        "expectedOutput": "Widget 999\nWidget 999"
+      }
+    },
+    {
+      "level": "intermediate",
+      "title": "Fixed-window rate limiter as HTTP middleware",
+      "explanation": "INCR is atomic on Redis's single thread, so it's a correct distributed counter. We set the TTL only on the first increment (count == 1) so each client gets a fresh window, and return 429 when the limit is exceeded.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"net/http\"\n\t\"strconv\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\nfunc RateLimit(rdb *redis.Client, limit int64, window time.Duration) func(http.Handler) http.Handler {\n\treturn func(next http.Handler) http.Handler {\n\t\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\t\tctx := r.Context()\n\t\t\tkey := \"rl:\" + r.RemoteAddr\n\t\t\tcount, err := rdb.Incr(ctx, key).Result()\n\t\t\tif err != nil { // fail-open: don't take the site down if Redis blips\n\t\t\t\tnext.ServeHTTP(w, r)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tif count == 1 {\n\t\t\t\trdb.Expire(ctx, key, window) // start the window on first hit\n\t\t\t}\n\t\t\tif count > limit {\n\t\t\t\tw.Header().Set(\"Retry-After\", strconv.Itoa(int(window.Seconds())))\n\t\t\t\thttp.Error(w, \"rate limit exceeded\", http.StatusTooManyRequests)\n\t\t\t\treturn\n\t\t\t}\n\t\t\tnext.ServeHTTP(w, r)\n\t\t})\n\t}\n}",
+        "caption": "Setting EXPIRE only when count==1 anchors the window to the first request; INCR's atomicity means all pods share one global count.",
+        "expectedOutput": "// First 'limit' requests -> 200; the next in-window request -> 429 with Retry-After"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "Sliding-window limiter with a sorted set in one pipeline",
+      "explanation": "A fixed window allows bursts at boundaries. A sorted set of request timestamps gives a true sliding window: drop entries older than the window, add now, count, and set a safety TTL — all batched in a single TxPipeline round-trip.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"strconv\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\n// allowSliding returns true if the client is under 'limit' requests in the last 'window'.\nfunc allowSliding(ctx context.Context, rdb *redis.Client, id string, limit int64, window time.Duration) (bool, error) {\n\tkey := \"slide:\" + id\n\tnow := time.Now().UnixNano()\n\tmin := strconv.FormatInt(now-int64(window), 10)\n\n\tpipe := rdb.TxPipeline()\n\tpipe.ZRemRangeByScore(ctx, key, \"0\", min)                        // evict old timestamps\n\tpipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: now})   // record this request\n\tcountCmd := pipe.ZCard(ctx, key)                                 // how many in window\n\tpipe.Expire(ctx, key, window)                                    // safety TTL\n\tif _, err := pipe.Exec(ctx); err != nil {\n\t\treturn false, err\n\t}\n\treturn countCmd.Val() <= limit, nil\n}",
+        "caption": "The sorted set stores one member per request scored by timestamp; trimming by score turns it into a rolling window with no boundary bursts.",
+        "expectedOutput": "// allow=true while <=limit requests fall in the trailing window, else false"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "In a cache-aside read, what does it mean when rdb.Get(ctx, key).Err() returns redis.Nil?",
+      "options": ["Redis is unreachable and you should return a 500", "The key exists but has expired mid-read", "The key does not exist — a normal cache miss; fall back to the DB and populate", "The value is nil and must be deleted"],
+      "answerIndex": 2,
+      "explanation": "redis.Nil is the sentinel error meaning the key was not found — the expected cache-miss path. You handle it by reading the source of truth and writing the result back with a TTL. Only errors that are NOT redis.Nil indicate a real failure."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This fixed-window limiter is supposed to reset every minute, but keys stay forever and clients get blocked permanently once they hit the limit. What's the bug?",
+      "code": "count, _ := rdb.Incr(ctx, key).Result()\nrdb.Expire(ctx, key, time.Minute) // set TTL every call\nif count > limit {\n\treturn false\n}\nreturn true",
+      "options": ["Incr should be IncrBy", "Expire is reset on EVERY request, so an active client's window never actually ends", "limit should be compared with >=", "Result() should be Val()"],
+      "answerIndex": 1,
+      "explanation": "Calling Expire on every request keeps pushing the TTL a full window into the future, so as long as the client keeps hitting the endpoint the key never expires and the count never resets. Set the TTL only on the first increment (when count == 1) to anchor the window to the first request."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "Given an empty Redis, what do these two lines print?",
+      "code": "rdb.Set(ctx, \"k\", \"v\", time.Hour)\nval, err := rdb.Get(ctx, \"missing\").Result()\nfmt.Println(val, err == redis.Nil)",
+      "options": ["v true", "empty string, true", "empty string, false", "v false"],
+      "answerIndex": 1,
+      "explanation": "Get on the non-existent key \"missing\" returns the zero value (empty string) and err == redis.Nil, so `err == redis.Nil` is true. The earlier Set on \"k\" doesn't affect the lookup of \"missing\"."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the cache-aside miss branch: only treat non-miss errors as real failures.",
+      "codeBefore": "val, err := rdb.Get(ctx, key).Result()\nif err == nil {\n\treturn val, nil\n}\nif",
+      "codeAfter": "return \"\", err\n}\n// otherwise it's a miss: load from DB and populate",
+      "options": ["err != redis.Nil {", "err == redis.Nil {", "err != nil {", "val == \"\" {"],
+      "answerIndex": 0,
+      "explanation": "After ruling out err == nil (a hit), any error that is NOT redis.Nil is a genuine failure to propagate. Once you've returned on `err != redis.Nil`, the only remaining case is redis.Nil — the cache miss — so you fall through to the DB load."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-cache-aside",
+      "title": "Implement a generic cache-aside GetOrLoad",
+      "instructions": "Implement `GetOrLoad(ctx, rdb, key string, ttl time.Duration, load func() (string, error)) (string, error)`. Return the cached value on a hit. On redis.Nil (miss), call load(), store the result with `ttl`, and return it. Propagate any error that is NOT redis.Nil, and propagate load()'s error without caching on failure.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\n// GetOrLoad implements cache-aside: cache hit, else load and populate.\nfunc GetOrLoad(ctx context.Context, rdb *redis.Client, key string, ttl time.Duration, load func() (string, error)) (string, error) {\n\t// TODO: try the cache; on redis.Nil call load() and Set with ttl.\n\treturn \"\", nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\n// GetOrLoad implements cache-aside: cache hit, else load and populate.\nfunc GetOrLoad(ctx context.Context, rdb *redis.Client, key string, ttl time.Duration, load func() (string, error)) (string, error) {\n\tval, err := rdb.Get(ctx, key).Result()\n\tif err == nil {\n\t\treturn val, nil // hit\n\t}\n\tif err != redis.Nil {\n\t\treturn \"\", err // real error, not a miss\n\t}\n\t// miss: load from source of truth\n\tval, err = load()\n\tif err != nil {\n\t\treturn \"\", err // don't cache failures\n\t}\n\tif err := rdb.Set(ctx, key, val, ttl).Err(); err != nil {\n\t\treturn val, err // return value even if caching fails\n\t}\n\treturn val, nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"testing\"\n\t\"time\"\n\n\t\"github.com/alicebob/miniredis/v2\"\n\t\"github.com/redis/go-redis/v9\"\n)\n\nfunc TestGetOrLoad(t *testing.T) {\n\tmr, _ := miniredis.Run()\n\tdefer mr.Close()\n\trdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})\n\tctx := context.Background()\n\n\tcalls := 0\n\tload := func() (string, error) { calls++; return \"loaded\", nil }\n\n\tv, err := GetOrLoad(ctx, rdb, \"k\", time.Minute, load)\n\tif err != nil || v != \"loaded\" {\n\t\tt.Fatalf(\"miss: got %q,%v want loaded,nil\", v, err)\n\t}\n\tv, err = GetOrLoad(ctx, rdb, \"k\", time.Minute, load)\n\tif err != nil || v != \"loaded\" {\n\t\tt.Fatalf(\"hit: got %q,%v\", v, err)\n\t}\n\tif calls != 1 {\n\t\tt.Fatalf(\"load called %d times, want 1 (second read should hit cache)\", calls)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.02s)",
+      "hints": [
+        "First branch: err == nil means a hit — return val immediately.",
+        "Distinguish a miss from a failure: `if err != redis.Nil { return \"\", err }` before you load.",
+        "On the miss path, only Set the value AFTER load() succeeds — never cache an error."
+      ]
+    },
+    {
+      "id": "go-lab-rate-limit",
+      "title": "Build a fixed-window rate limiter",
+      "instructions": "Implement `Allow(ctx, rdb, clientID string, limit int64, window time.Duration) (bool, error)`. Use INCR on key \"rl:\"+clientID. On the FIRST increment (count == 1) set the TTL to `window`. Return true while the count is <= limit, false once it exceeds. The TTL must be set exactly once per window.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\n// Allow reports whether clientID is under the limit for the current window.\nfunc Allow(ctx context.Context, rdb *redis.Client, clientID string, limit int64, window time.Duration) (bool, error) {\n\t// TODO: INCR the key; on the first hit set EXPIRE(window); compare to limit.\n\treturn false, nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"time\"\n\n\t\"github.com/redis/go-redis/v9\"\n)\n\n// Allow reports whether clientID is under the limit for the current window.\nfunc Allow(ctx context.Context, rdb *redis.Client, clientID string, limit int64, window time.Duration) (bool, error) {\n\tkey := \"rl:\" + clientID\n\tcount, err := rdb.Incr(ctx, key).Result()\n\tif err != nil {\n\t\treturn false, err\n\t}\n\tif count == 1 {\n\t\t// Anchor the window to the first request; don't reset on later hits.\n\t\tif err := rdb.Expire(ctx, key, window).Err(); err != nil {\n\t\t\treturn false, err\n\t\t}\n\t}\n\treturn count <= limit, nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"testing\"\n\t\"time\"\n\n\t\"github.com/alicebob/miniredis/v2\"\n\t\"github.com/redis/go-redis/v9\"\n)\n\nfunc TestAllow(t *testing.T) {\n\tmr, _ := miniredis.Run()\n\tdefer mr.Close()\n\trdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})\n\tctx := context.Background()\n\n\tfor i := 1; i <= 3; i++ {\n\t\tok, err := Allow(ctx, rdb, \"c1\", 3, time.Minute)\n\t\tif err != nil || !ok {\n\t\t\tt.Fatalf(\"request %d should be allowed, got %v,%v\", i, ok, err)\n\t\t}\n\t}\n\tok, _ := Allow(ctx, rdb, \"c1\", 3, time.Minute)\n\tif ok {\n\t\tt.Fatalf(\"4th request should be blocked\")\n\t}\n\t// After the window elapses, the counter resets.\n\tmr.FastForward(time.Minute)\n\tok, _ = Allow(ctx, rdb, \"c1\", 3, time.Minute)\n\tif !ok {\n\t\tt.Fatalf(\"request after window should be allowed again\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.02s)",
+      "hints": [
+        "INCR returns the new count; a return value of 1 means this is the first request in the window.",
+        "Only call Expire when count == 1, or the window will keep sliding forward and never reset.",
+        "Compare with `count <= limit`: the limit-th request is still allowed; the next one is rejected."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-redis-nil-and-ttl",
+      "difficulty": "intermediate",
+      "title": "Every cache miss returns a 500, and Redis memory grows without bound",
+      "symptom": "The handler works when the key is already cached, but the very first request for any key returns HTTP 500 'redis: nil'. Separately, ops report Redis memory climbing steadily and never dropping.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func getUser(ctx context.Context, rdb *redis.Client, id string) (string, error) {\n\tkey := \"user:\" + id\n\tval, err := rdb.Get(ctx, key).Result()\n\tif err != nil {\n\t\treturn \"\", err // BUG 1: treats a cache MISS (redis.Nil) as a hard error\n\t}\n\treturn val, nil\n}\n\nfunc populate(ctx context.Context, rdb *redis.Client, id, user string) {\n\t// BUG 2: expiration 0 means NO TTL -> the key lives forever\n\trdb.Set(ctx, \"user:\"+id, user, 0)\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "Two independent bugs. (1) rdb.Get returns redis.Nil when the key is absent — a normal miss — but the code returns it as an error, so the first request for any user 500s instead of falling back to the database. You must special-case `err == redis.Nil`. (2) Set is called with an expiration of 0, which in go-redis means 'no expiration'. Every populated key persists forever, so the cache is really an unbounded memory leak that only stops when Redis hits maxmemory and starts evicting (or OOMs).",
+      "commonMistakes": [
+        "Returning redis.Nil to the caller instead of treating it as a cache miss.",
+        "Passing 0 (or omitting the TTL) to Set so keys never expire.",
+        "Populating the cache in a code path that never runs because the miss already errored out."
+      ],
+      "fixChallenge": "Handle redis.Nil as a miss (load from the DB and populate), and give every Set a real TTL so keys self-expire.",
+      "solution": {
+        "language": "go",
+        "code": "func getUser(ctx context.Context, rdb *redis.Client, id string) (string, error) {\n\tkey := \"user:\" + id\n\tval, err := rdb.Get(ctx, key).Result()\n\tif err == nil {\n\t\treturn val, nil // hit\n\t}\n\tif err != redis.Nil {\n\t\treturn \"\", err // genuine failure\n\t}\n\t// miss: load from the source of truth, then populate WITH a TTL\n\tuser := loadUserFromDB(id)\n\trdb.Set(ctx, key, user, 10*time.Minute) // real expiration, not 0\n\treturn user, nil\n}",
+        "expectedOutput": "first request: DB load + populate (200); later requests: cache hit; keys expire after 10m"
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-6-th-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Explain the cache-aside pattern in Go with go-redis, and how you handle a cache miss correctly.",
+        "directAnswer": "Cache-aside (lazy loading) means the application, not the cache, owns the flow: on a read you first Get the key from Redis; if it's a hit you return it; if Get returns redis.Nil (a miss) you read the source of truth (the DB), write the result back into Redis with a TTL, and return it. The critical correctness detail is that redis.Nil is NOT an error — it's the expected miss signal — so you branch on `err == redis.Nil` and only propagate other errors. Writes typically invalidate or update the cache key so it doesn't serve stale data.",
+        "detailedExplanation": {
+          "whatItIs": "A read-through-by-hand caching strategy where the app checks the cache, falls back to the DB on a miss, and populates the cache.",
+          "whyItExists": "It keeps the cache a disposable, optional accelerator: the DB stays authoritative, and the cache can be empty or down without breaking correctness.",
+          "howItWorks": "Get -> hit returns value; redis.Nil -> load from DB -> Set with TTL -> return; other error -> propagate."
+        },
+        "whyImportant": "It's the most common caching pattern in production Go services and the mishandling of redis.Nil / missing TTLs is a classic bug and interview trap.",
+        "realWorldExample": "A product page reads product:{id} from Redis; on a miss it queries Postgres, caches the JSON for 5 minutes, and returns it, so repeat views are sub-millisecond.",
+        "followUps": [
+          { "question": "How do you keep the cache from serving stale data after a write?", "answer": "On update, either delete the key (let the next read repopulate) or write-through the new value. Deletion is safer because it avoids racing a concurrent populate." },
+          { "question": "What's the difference between cache-aside and read-through?", "answer": "In cache-aside the application code loads from the DB on a miss; in read-through the cache library itself fetches from the backing store. go-redis is cache-aside — your code owns the miss path." }
+        ]
+      },
+      {
+        "id": "go-web-6-th-2",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Why is the *redis.Client goroutine-safe and pooled, and what mistakes do people make around connections?",
+        "directAnswer": "redis.NewClient returns a *redis.Client that internally holds a connection pool and is safe for concurrent use by many goroutines. You create ONE client at startup and share it everywhere; each command borrows a connection from the pool, does its round-trip, and returns it. The common mistakes are opening a client (or connection) per request — which defeats pooling and leaks sockets — and never closing the single client on shutdown. You tune PoolSize, MinIdleConns, and the dial/read/write timeouts on Options.",
+        "detailedExplanation": {
+          "whatItIs": "A pooled, concurrency-safe Redis client that multiplexes commands over a managed set of TCP connections.",
+          "whyItExists": "Connection setup is expensive and Redis benefits from connection reuse; a shared pool amortizes that across all goroutines.",
+          "howItWorks": "A command acquires a pooled conn, writes RESP, reads the reply, returns the conn; the pool grows to PoolSize and reuses idle conns."
+        },
+        "whyImportant": "Connection mismanagement is a frequent source of latency spikes and 'too many open files' in production, and shows up in interviews about scaling Redis clients.",
+        "realWorldExample": "A high-QPS API creates one *redis.Client in main(), passes it into handlers via a dependency struct, and calls rdb.Close() during graceful shutdown.",
+        "followUps": [
+          { "question": "How do you use Redis Cluster or sharding?", "answer": "Use redis.NewClusterClient (or Ring for client-side sharding); the API is nearly identical but keys are routed to slots/nodes." },
+          { "question": "What does the context on each command do?", "answer": "It carries per-call cancellation and deadlines; if the context is cancelled (client disconnect, timeout) the pending command is aborted instead of blocking." }
+        ]
+      },
+      {
+        "id": "go-web-6-th-3",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "What is a cache stampede (thundering herd) and how do you mitigate it in a Go/Redis service?",
+        "directAnswer": "A cache stampede happens when a hot key expires and many concurrent requests all miss simultaneously, so they all hit the database at once and can overwhelm it. Mitigations: (1) a per-key lock (SET key value NX PX ttl) so only one goroutine/instance rebuilds the value while others briefly wait or serve stale; (2) jittered/randomized TTLs so many keys don't expire at the exact same instant; (3) single-flight in-process (golang.org/x/sync/singleflight) to collapse concurrent identical loads within one instance; and (4) serving a slightly-stale value while refreshing in the background (stale-while-revalidate).",
+        "detailedExplanation": {
+          "whatItIs": "A burst of simultaneous cache misses on the same key that stampede the backing store.",
+          "whyItExists": "Because cache-aside populates lazily, the moment a popular key expires every in-flight request misses at once.",
+          "howItWorks": "A distributed lock or singleflight ensures a single rebuild; jittered TTLs desynchronize expiry; stale-while-revalidate hides the rebuild latency."
+        },
+        "whyImportant": "Stampedes are a real production outage cause and a favorite senior-level interview follow-up to basic caching.",
+        "realWorldExample": "A homepage feed cached for 60s adds +/-10s of random jitter and uses SET NX as a rebuild lock, so a traffic spike after expiry results in one DB query, not thousands.",
+        "followUps": [
+          { "question": "How does SET NX act as a lock?", "answer": "SET key token NX PX 5000 succeeds only if the key is absent, atomically granting the lock with a 5s safety TTL; the holder rebuilds the cache and releases (deleting only if the token matches)." },
+          { "question": "Why add jitter to TTLs?", "answer": "Fixed TTLs cause many keys populated together to expire together, synchronizing misses; jitter spreads expirations out so misses don't align into a herd." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-6-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Your Go API sits in front of Postgres with a Redis cache. During a traffic spike the database CPU pegs at 100% every minute, exactly when a popular cache key expires. How do you diagnose and fix it?",
+        "directAnswer": "The symptom — DB spikes aligned with cache expiry — is a classic cache stampede on a hot key. Confirm by correlating the DB query spike with the key's TTL boundary and checking for a burst of identical queries. Fix layered: (1) add a rebuild lock with SET NX PX so only one worker repopulates the key while others wait briefly or serve the last-known value; (2) add jitter to the TTL (e.g. base + rand up to 20%) so keys don't all expire on the same tick; (3) collapse concurrent in-process loads with singleflight so each instance issues at most one DB query per key; and optionally (4) refresh hot keys proactively in the background before they expire (stale-while-revalidate). Also make the miss path resilient: on Redis errors, fail open to the DB with a timeout so a Redis blip doesn't cascade.",
+        "detailedExplanation": {
+          "whatItIs": "A hot-key expiry causing synchronized misses that stampede Postgres.",
+          "whyItExists": "Lazy cache-aside population means every request misses the instant a popular key's TTL elapses.",
+          "howItWorks": "A distributed SET NX lock + singleflight funnels the rebuild to one query; jitter and background refresh keep expirations from aligning."
+        },
+        "whyImportant": "It's a common real outage pattern and tests whether a candidate understands caching failure modes, not just the happy path.",
+        "realWorldExample": "Adding SET NX rebuild locks plus 15% TTL jitter to a trending-items key turned a per-minute DB CPU spike into a flat line with a single rebuild query per expiry.",
+        "followUps": [
+          { "question": "How do you release the SET NX lock safely?", "answer": "Store a unique token as the value and delete the key only if it still holds your token (a small Lua script does the compare-and-delete atomically) so you never release someone else's lock." },
+          { "question": "What if Redis itself goes down during the spike?", "answer": "Fail open with a short DB timeout and a local in-process cache or singleflight as a fallback, and add a circuit breaker so a Redis outage degrades latency instead of causing a full outage." }
+        ]
+      },
+      {
+        "id": "go-web-6-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "You added a per-IP fixed-window rate limiter in Redis, but users report they get blocked far longer than the one-minute window, and a few users bypass the limit entirely. What's going on?",
+        "directAnswer": "Two bugs are likely. First, if you call Expire on every request instead of only on the first increment (count == 1), an active client keeps pushing the TTL forward so the window never resets and they stay blocked — set the TTL only when INCR returns 1. Second, if a client's very first INCR errors (Redis blip) and you never set the TTL, or you key on something spoofable/shared like a proxy's RemoteAddr, some clients share or reset counters and appear to bypass the limit — key on a trustworthy identifier (authenticated user or X-Forwarded-For validated at the proxy) and set the TTL exactly once. For fairer boundary behavior, switch to a sorted-set sliding window.",
+        "detailedExplanation": {
+          "whatItIs": "A fixed-window limiter whose window never ends (TTL reset) and whose key isn't a reliable client identity.",
+          "whyItExists": "Resetting EXPIRE on every hit extends the window indefinitely; a bad key groups or splits clients incorrectly.",
+          "howItWorks": "INCR is atomic and correct; the window semantics depend entirely on setting EXPIRE once and choosing a stable, per-client key."
+        },
+        "whyImportant": "Rate limiting protects downstream systems, and these subtle TTL/key bugs are exactly the kind interviewers probe after the basic INCR+EXPIRE answer.",
+        "realWorldExample": "Moving the Expire call inside an `if count == 1` block and keying on the authenticated API key (not RemoteAddr) fixed both the over-blocking and the bypass in one deploy.",
+        "followUps": [
+          { "question": "Why does a sorted-set sliding window avoid the boundary burst?", "answer": "It counts requests in the trailing window continuously rather than in discrete buckets, so a client can't fire 2x the limit by straddling a window edge." },
+          { "question": "Should the limiter fail open or fail closed on Redis errors?", "answer": "Usually fail open for availability (don't block legitimate traffic if Redis blips), unless the endpoint protects something so sensitive that over-allowing is worse than a brief outage." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-6-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "intermediate",
+        "question": "Design a Redis-backed session store and caching layer for a horizontally scaled Go API. Walk through keys, TTLs, invalidation, and failure handling.",
+        "directAnswer": "Use one shared *redis.Client per instance (pooled). Sessions: on login, generate a random opaque token, store the session as a hash session:{token} with user_id and metadata, and set a sliding TTL (e.g. 30m) refreshed via Expire on each authenticated request; logout deletes the key. Store only a session ID in the client cookie, never the payload. Caching: cache-aside with namespaced keys (user:{id}, product:{id}) and per-type TTLs; on writes, delete (invalidate) the affected keys so the next read repopulates. Guard hot keys against stampedes with SET NX rebuild locks and jittered TTLs. For failure handling, fail open to the DB with short timeouts and a circuit breaker so a Redis outage degrades latency, not availability, and expose metrics for hit ratio and Redis errors. For scale beyond one node, use Redis Cluster (NewClusterClient) and design keys to distribute across slots.",
+        "detailedExplanation": {
+          "whatItIs": "A shared Redis layer holding ephemeral sessions and cache-aside entries for a stateless, autoscaled Go service.",
+          "whyItExists": "Externalizing session and cache state lets app servers stay stateless and scale horizontally while sharing one consistent view.",
+          "howItWorks": "Random-token session hashes with sliding TTLs; namespaced cache-aside keys with TTLs and delete-on-write invalidation; stampede and failure controls around the hot path."
+        },
+        "whyImportant": "It combines the day-to-day uses of Redis (sessions, caching, invalidation, resilience) into one coherent design that interviewers and real systems both demand.",
+        "realWorldExample": "A multi-pod API stores sessions as session:{token} hashes with 30m sliding TTL and caches DB reads with 5m jittered TTLs, invalidating keys on writes and failing open on Redis errors.",
+        "followUps": [
+          { "question": "How do you invalidate a user's session everywhere on password change?", "answer": "Track a per-user session set (SADD sessions:user:{id} token) or bump a per-user token version; deleting the set's members (or incrementing the version) invalidates all active sessions at once." },
+          { "question": "How do you keep session and cache data from filling memory?", "answer": "Every key has a TTL and Redis runs with a maxmemory + eviction policy (e.g. allkeys-lru for pure cache, but keep sessions in a DB or a volatile policy so critical keys aren't evicted unexpectedly)." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-6-th-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement a cache-aside function that caches a JSON-serializable struct with a TTL. Signature: `func GetProduct(ctx context.Context, rdb *redis.Client, id string, ttl time.Duration) (Product, error)`. Handle hit, miss (redis.Nil), and error correctly.",
+        "thoughtProcess": "Get the key as bytes; on nil error unmarshal and return (hit). If the error is not redis.Nil, it's a real failure — propagate it. Otherwise it's a miss: load from the DB, marshal to JSON, Set with the TTL, and return the loaded value. Marshal/unmarshal errors are returned, and a Set failure shouldn't lose the already-loaded value.",
+        "solution": {
+          "code": "type Product struct {\n\tID    string `json:\"id\"`\n\tName  string `json:\"name\"`\n\tPrice int    `json:\"price\"`\n}\n\nfunc GetProduct(ctx context.Context, rdb *redis.Client, id string, ttl time.Duration) (Product, error) {\n\tkey := \"product:\" + id\n\traw, err := rdb.Get(ctx, key).Bytes()\n\tif err == nil { // hit\n\t\tvar p Product\n\t\tif err := json.Unmarshal(raw, &p); err != nil {\n\t\t\treturn Product{}, err\n\t\t}\n\t\treturn p, nil\n\t}\n\tif err != redis.Nil { // real error\n\t\treturn Product{}, err\n\t}\n\tp := loadProductFromDB(id) // miss -> source of truth\n\tb, err := json.Marshal(p)\n\tif err != nil {\n\t\treturn Product{}, err\n\t}\n\trdb.Set(ctx, key, b, ttl) // populate with TTL\n\treturn p, nil\n}",
+          "language": "go"
+        },
+        "lineByLine": "We build a namespaced key and call Get(...).Bytes(). err == nil is a hit: unmarshal the JSON and return. err != redis.Nil is a genuine failure to propagate. The remaining case is redis.Nil (a miss): load the product from the DB, marshal it, Set it with the caller-provided TTL, and return the freshly loaded value. Marshal errors are surfaced; we deliberately don't fail the whole call just because the Set write hiccuped.",
+        "timeComplexity": "O(n) in the size of the JSON payload for (un)marshaling; the Redis Get/Set are O(1) plus one network round-trip.",
+        "spaceComplexity": "O(n) for the serialized payload buffer.",
+        "followUps": [
+          { "question": "How would you make this generic across types?", "answer": "Use a type parameter: func GetOrLoad[T any](ctx, rdb, key, ttl, load func() (T, error)) (T, error) with json.Marshal/Unmarshal on T." },
+          { "question": "How do you avoid caching negative results forever?", "answer": "Cache misses (not-found) with a short 'negative TTL' or a sentinel value so a nonexistent id doesn't hammer the DB, but keep that TTL small to recover quickly when the row appears." }
+        ]
+      },
+      {
+        "id": "go-web-6-th-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement a sliding-window rate limiter using a Redis sorted set, in a single atomic pipeline. Signature: `func AllowSliding(ctx context.Context, rdb *redis.Client, id string, limit int64, window time.Duration) (bool, error)`.",
+        "thoughtProcess": "Model each request as a member in a sorted set scored by its nanosecond timestamp. In one TxPipeline: ZRemRangeByScore to evict timestamps older than now-window, ZAdd the current timestamp, ZCard to count what remains, and Expire as a safety net so idle keys clean up. Read the ZCard result after Exec and compare to the limit. Doing all four in one pipeline keeps it atomic and one round-trip.",
+        "solution": {
+          "code": "func AllowSliding(ctx context.Context, rdb *redis.Client, id string, limit int64, window time.Duration) (bool, error) {\n\tkey := \"slide:\" + id\n\tnow := time.Now().UnixNano()\n\tmin := strconv.FormatInt(now-int64(window), 10)\n\n\tpipe := rdb.TxPipeline()\n\tpipe.ZRemRangeByScore(ctx, key, \"0\", min)                      // drop old entries\n\tpipe.ZAdd(ctx, key, redis.Z{Score: float64(now), Member: now}) // record this request\n\tcountCmd := pipe.ZCard(ctx, key)                               // count in window\n\tpipe.Expire(ctx, key, window)                                  // safety TTL\n\tif _, err := pipe.Exec(ctx); err != nil {\n\t\treturn false, err\n\t}\n\treturn countCmd.Val() <= limit, nil\n}",
+          "language": "go"
+        },
+        "lineByLine": "We compute now and the lower score bound now-window. TxPipeline queues four commands executed atomically via MULTI/EXEC: ZRemRangeByScore removes timestamps older than the window; ZAdd inserts the current request scored by its timestamp; ZCard captures the current count (its result is read after Exec via countCmd.Val()); Expire sets a TTL so an inactive client's key is reclaimed. After Exec succeeds, the request is allowed iff the count is within the limit.",
+        "timeComplexity": "O(log n) for ZAdd and O(log n + m) for the range removal of m expired members; one round-trip via the pipeline.",
+        "spaceComplexity": "O(k) where k is the number of requests currently within the window for that client.",
+        "followUps": [
+          { "question": "Why include ZAdd before ZCard rather than after checking the limit?", "answer": "Adding first then counting keeps the operation atomic and simple; if you must not count rejected requests, use a Lua script to conditionally ZADD only when under the limit." },
+          { "question": "What's the downside of the sorted-set approach vs INCR?", "answer": "It stores one member per request (more memory and O(log n) ops) versus a single counter, so for very high volume a token-bucket or fixed window is cheaper — you trade precision for cost." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Create a single pooled *redis.Client at startup and inject it into handlers via a dependency struct. Namespace keys by domain and version (e.g. v1:product:{id}, session:{token}, rl:{clientID}) so you can invalidate and reason about them. Keep the database authoritative and treat Redis as a disposable accelerator: every read path must work (slower) with an empty or unavailable cache. Isolate concerns — caching, sessions, and rate limiting each get their own key prefix and TTL policy.",
+    "performance": "Latency is dominated by network round-trips, so batch with Pipeline/TxPipeline and avoid N+1 command patterns (use MGET/HGETAll/pipelines). Reuse the shared client and tune PoolSize/MinIdleConns to your concurrency; set DialTimeout/ReadTimeout/WriteTimeout so a slow Redis can't block goroutines indefinitely. Prefer compact serializations and appropriate data types (a hash beats many string keys for an object). Track cache hit ratio — a low ratio means your TTLs or keys are wrong.",
+    "concurrency": "The client is goroutine-safe and Redis executes commands single-threaded, so INCR, ZADD, and MULTI/EXEC are atomic without app-side locks. Use WATCH/MULTI/EXEC (optimistic locking) for multi-key read-modify-write, and SET NX PX for distributed mutual exclusion. Within one process, collapse duplicate concurrent loads with singleflight so a miss triggers one backend fetch, not many.",
+    "reliability": "Always set TTLs so keys self-expire and memory is bounded; configure Redis maxmemory with an eviction policy suited to the data (allkeys-lru for pure cache). Design the miss and error paths to fail open to the database with short timeouts and a circuit breaker, so a Redis outage degrades latency rather than causing a full outage. Guard hot keys against stampedes with rebuild locks and jittered TTLs, and never cache negative results with a long TTL.",
+    "observability": "Emit metrics for cache hit/miss ratio, Redis command latency and error rate, rate-limit rejections (429s), and pool saturation (waits/timeouts). Log Redis errors with the operation and key namespace (never the raw session token). Trace cache lookups as spans so you can see hit vs miss and DB fallback in a distributed trace. Alert on rising miss ratio, growing memory, and pool exhaustion.",
+    "security": "Store only an opaque random session ID client-side; keep the session payload server-side in Redis and never log full tokens. Enable AUTH/ACLs and TLS (redis.Options.TLSConfig) for Redis over untrusted networks, and run it on a private network. Validate and bound anything used to build keys (rate-limit identity) so a client can't spoof or explode your keyspace. Set sane TTLs on sessions and rotate/invalidate on privilege changes.",
+    "caseStudies": [
+      { "company": "Consumer API with a hot homepage feed", "problem": "The trending-feed cache key expired every 60s, and the ensuing simultaneous misses stampeded Postgres, spiking DB CPU to 100% each minute.", "solution": "Added a SET NX PX rebuild lock so a single worker repopulates the key, applied ~15% TTL jitter, and used singleflight per instance; the miss path fails open to the DB with a timeout.", "tradeoffs": "Requests during a rebuild may briefly serve slightly stale data or wait a few milliseconds, accepted in exchange for eliminating the DB spike.", "lessons": "Cache-aside is not complete without stampede protection and jittered TTLs for hot keys." },
+      { "company": "Multi-region rate-limited gateway", "problem": "Per-instance in-memory limiters let clients exceed global limits by hitting different pods, and a naive Redis limiter reset windows because EXPIRE was called on every request.", "solution": "Centralized the counter in Redis with INCR and set EXPIRE only on the first increment; moved to a sorted-set sliding window for boundary fairness and keyed on the authenticated API key.", "tradeoffs": "Every request now makes a Redis round-trip (added latency and a Redis dependency), mitigated by pipelining and failing open on Redis errors.", "lessons": "Distributed limits require shared state in Redis, and the correctness lives in setting the TTL exactly once and choosing a trustworthy key." }
+    ]
+  },
+  "keyTakeaways": [
+    "Create ONE pooled, goroutine-safe *redis.Client at startup with github.com/redis/go-redis/v9 and share it; never open a connection per request, and pass a context to every command.",
+    "Cache-aside is the core read pattern: check Redis, on redis.Nil load the DB and Set with a TTL — and redis.Nil is a normal miss, not an error.",
+    "Always attach a TTL (Set expiration or Expire); a missing/zero expiration turns your cache into an unbounded memory leak.",
+    "Pick the right data type — hashes for objects/sessions, sorted sets for leaderboards and sliding windows, strings/counters for cache values and rate limits.",
+    "Distributed rate limiting lives in Redis: INCR + EXPIRE (set the TTL only on the first hit) for fixed windows, or a timestamp sorted set for a burst-free sliding window.",
+    "Protect hot keys from cache stampedes with SET NX rebuild locks, jittered TTLs, and singleflight, and batch round-trips with pipelines and transactions (TxPipeline / WATCH-MULTI-EXEC)."
+  ]
+}

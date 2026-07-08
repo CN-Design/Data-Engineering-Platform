@@ -10,12 +10,13 @@
   "relatedConcepts": ["golang-beginner-10", "golang-intermediate-6"],
   "nestedConcepts": ["per-P free list", "New func", "Get/Put", "victim cache", "GC clearing", "reset-before-use"],
   "subtopics": [
-    { "title": "Get, Put, and the New func", "explanation": "Get returns either a previously Put object or, if the pool is empty, a freshly allocated one from the New func. It returns `any` (interface{}), so you type-assert. Put hands an object back for reuse. There are NO ordering or lifetime guarantees: Get/Put are best-effort.", "example": "p := &sync.Pool{New: func() any { return new(bytes.Buffer) }}; b := p.Get().(*bytes.Buffer)" },
-    { "title": "Reset before you reuse", "explanation": "A pooled object carries whatever state the previous user left in it. You MUST reset it after Get (e.g. buf.Reset()) before use, or you leak the previous request's data into the current one — a classic correctness and security bug.", "example": "buf := pool.Get().(*bytes.Buffer); buf.Reset(); defer pool.Put(buf)" },
-    { "title": "Per-P caching & the victim cache", "explanation": "Internally a Pool keeps a free list per logical processor (P), so concurrent Get/Put on different Ps rarely contend. Since Go 1.13 a 'victim cache' lets objects survive ONE GC cycle: on GC the live list becomes the victim, and the next GC drops it. So an object lives at most ~2 GC cycles unreferenced.", "example": "// no API — runtime keeps poolLocal slices keyed by P" },
-    { "title": "Pooling slices: Put a pointer", "explanation": "Putting a `[]byte` value boxes the 24-byte slice header into an interface, which itself allocates — defeating the purpose. Pool a `*[]byte` instead so no allocation happens on Put. Reset length with `*bp = (*bp)[:0]`, and guard against pooling giant backing arrays.", "example": "bp := pool.Get().(*[]byte); *bp = (*bp)[:0]" },
-    { "title": "When NOT to pool", "explanation": "Pooling helps only when objects are large or allocated very frequently in a hot path. For small, short-lived objects the bookkeeping can be slower than just letting the GC handle them. Profile first; don't pool by reflex.", "example": "// benchmark with -benchmem before and after" },
-    { "title": "Concurrency safety", "explanation": "A sync.Pool is safe for concurrent use by many goroutines without external locking. That's the whole point — high-throughput servers Get/Put from thousands of goroutines simultaneously.", "example": "var pool sync.Pool // shared safely across goroutines" }
+    { "title": "Get, Put, and the New func", "explanation": "Get returns either a previously Put object or, if the pool is empty, a freshly allocated one from the New func. It returns `any` (interface{}), so you type-assert. Put hands an object back for reuse. There are NO ordering or lifetime guarantees: Get/Put are best-effort. This trio is the entire public API you use to recycle temporary objects and cut allocations in a hot path.", "example": "package main\n\nimport (\n\t\"bytes\"\n\t\"fmt\"\n\t\"sync\"\n)\n\nvar bufPool = sync.Pool{\n\tNew: func() any { return new(bytes.Buffer) }, // called only when empty\n}\n\nfunc main() {\n\tb := bufPool.Get().(*bytes.Buffer) // borrow or allocate via New\n\tb.WriteString(\"hi\")\n\tfmt.Println(b.String())\n\tbufPool.Put(b) // return for the next caller\n\t// Output: hi\n}" },
+    { "title": "Reset before you reuse", "explanation": "A pooled object carries whatever state the previous user left in it. You MUST reset it after Get (e.g. buf.Reset()) before use, or you leak the previous request's data into the current one — a classic correctness and security bug. This is the single most important discipline that makes sync.Pool safe to use for recycling scratch memory.", "example": "package main\n\nimport (\n\t\"bytes\"\n\t\"fmt\"\n\t\"sync\"\n)\n\nvar pool = sync.Pool{New: func() any { return new(bytes.Buffer) }}\n\nfunc render(name string) string {\n\tbuf := pool.Get().(*bytes.Buffer)\n\tbuf.Reset()            // MUST reset: it may hold a previous caller's bytes\n\tdefer pool.Put(buf)\n\tbuf.WriteString(name)\n\treturn buf.String()    // String copies, so it's safe after Put\n}\n\nfunc main() {\n\tfmt.Println(render(\"ada\"))\n\t// Output: ada\n}" },
+    { "title": "Per-P caching & the victim cache", "explanation": "Internally a Pool keeps a free list per logical processor (P), so concurrent Get/Put on different Ps rarely contend. Since Go 1.13 a 'victim cache' lets objects survive ONE GC cycle: on GC the live list becomes the victim, and the next GC drops it. So an object lives at most ~2 GC cycles unreferenced. Understanding this per-P, GC-cleared structure is what lets you reason about when a pooled object is actually still there.", "example": "package main\n\nimport (\n\t\"runtime\"\n\t\"sync\"\n)\n\n// The runtime keeps a poolLocal slice keyed by P (one slot per logical CPU),\n// so most Get/Put touch only the current P's slot with no contention.\nfunc numFreeLists() int {\n\tvar p sync.Pool\n\t_ = p\n\treturn runtime.GOMAXPROCS(0) // upper bound on per-P free lists\n}" },
+    { "title": "GC clearing the pool", "explanation": "sync.Pool is not a persistent cache: a registered GC hook (poolCleanup) empties it on every collection, promoting the live list to the victim cache and discarding the previous victim. Because the GC can reclaim any pooled object at any time, Get must always be prepared to call New. This is why you can never treat a pool as a place to stash long-lived state — it is scratch space the collector is free to reclaim.", "example": "package main\n\nimport (\n\t\"fmt\"\n\t\"runtime\"\n\t\"sync\"\n)\n\nfunc main() {\n\tpool := sync.Pool{New: func() any { return \"fresh\" }}\n\tpool.Put(\"recycled\")\n\truntime.GC() // clears local; \"recycled\" moves to victim\n\truntime.GC() // drops the victim -> object is gone\n\tfmt.Println(pool.Get()) // New is called again\n\t// Output: fresh\n}" },
+    { "title": "Pooling slices: Put a pointer", "explanation": "Putting a `[]byte` value boxes the 24-byte slice header into an interface, which itself allocates — defeating the purpose. Pool a `*[]byte` instead so no allocation happens on Put. Reset length with `*bp = (*bp)[:0]`, and guard against pooling giant backing arrays. Getting this right is what keeps a byte-slice pool actually allocation-free, which is the whole reason to reach for sync.Pool.", "example": "package main\n\nimport (\n\t\"fmt\"\n\t\"sync\"\n)\n\nvar pool = sync.Pool{New: func() any {\n\tb := make([]byte, 0, 64)\n\treturn &b // store the address, not the header\n}}\n\nfunc build(n int) string {\n\tbp := pool.Get().(*[]byte)\n\tb := (*bp)[:0] // reset length, keep the backing array\n\tfor i := 0; i < n; i++ {\n\t\tb = append(b, 'x')\n\t}\n\tout := string(b)\n\t*bp = b\n\tpool.Put(bp) // allocation-free: a pointer, not a header\n\treturn out\n}\n\nfunc main() {\n\tfmt.Println(build(3))\n\t// Output: xxx\n}" },
+    { "title": "When NOT to pool", "explanation": "Pooling helps only when objects are large or allocated very frequently in a hot path. For small, short-lived objects the bookkeeping can be slower than just letting the GC handle them. Profile first; don't pool by reflex. The right use of sync.Pool is a measured optimization of a proven hot path, not a reflexive wrapper around every allocation.", "example": "package main\n\nimport (\n\t\"bytes\"\n\t\"sync\"\n\t\"testing\"\n)\n\nvar pool = sync.Pool{New: func() any { return new(bytes.Buffer) }}\n\n// Run: go test -bench . -benchmem  and compare allocs/op before vs after.\nfunc BenchmarkPooled(b *testing.B) {\n\tb.ReportAllocs()\n\tfor i := 0; i < b.N; i++ {\n\t\tbuf := pool.Get().(*bytes.Buffer)\n\t\tbuf.Reset()\n\t\tbuf.WriteString(\"work\")\n\t\tpool.Put(buf)\n\t}\n}" },
+    { "title": "Concurrency safety", "explanation": "A sync.Pool is safe for concurrent use by many goroutines without external locking. That's the whole point — high-throughput servers Get/Put from thousands of goroutines simultaneously. This lock-free-on-the-fast-path safety is exactly what makes pooling viable in the concurrent hot paths where allocation pressure hurts most.", "example": "package main\n\nimport (\n\t\"bytes\"\n\t\"sync\"\n)\n\nvar bufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}\n\n// Safe to Get/Put from many goroutines with no external lock.\nfunc handle(payload string) {\n\tbuf := bufPool.Get().(*bytes.Buffer)\n\tbuf.Reset()\n\tdefer bufPool.Put(buf)\n\tbuf.WriteString(payload)\n}\n\nfunc main() {\n\tvar wg sync.WaitGroup\n\tfor i := 0; i < 100; i++ {\n\t\twg.Add(1)\n\t\tgo func() { defer wg.Done(); handle(\"req\") }()\n\t}\n\twg.Wait()\n}" }
   ],
   "foundations": {
     "overview": "Every allocation in a hot path is work for the garbage collector later. In a high-throughput server that encodes JSON, hashes payloads, or formats logs millions of times a second, allocating a fresh buffer per call creates enormous GC pressure. `sync.Pool` solves this by letting you recycle temporary objects: instead of `new(bytes.Buffer)` each call, you Get a buffer from the pool, use it, and Put it back. The pool keeps a per-processor free list so this is cheap and concurrent, and the GC quietly reclaims anything the pool isn't actively reusing.",
@@ -200,6 +201,44 @@
         "followUps": [
           { "question": "How do you guard against retaining a giant backing array?", "answer": "Before Put, check cap(*bp); if it exceeds a threshold, simply don't Put it (let the GC reclaim it) so the pool never holds oversized buffers." }
         ]
+      },
+      {
+        "id": "golang-master-10-p5-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Explain how sync.Pool interacts with the garbage collector: what is the victim cache, why can a pooled object 'vanish' between GC cycles, and how does the per-P structure avoid contention?",
+        "directAnswer": "On every GC, a registered hook (runtime.poolCleanup) clears each pool: it discards the previous 'victim' list and promotes the current 'local' list to victim. That two-list scheme (the victim cache, added in Go 1.13) means an unused, Put object survives at most about one extra GC cycle before it's dropped — so between GCs a pooled object can effectively vanish and Get must always be ready to call New. The pool avoids contention by keeping a poolLocal structure per logical processor (P): Get first hits the current P's private slot, then its shared deque, then steals from other Ps' shared deques, and only then calls New. Because the common Get/Put touches just the current P's slot, the fast path is essentially lock-free even under heavy concurrency.",
+        "detailedExplanation": {
+          "whatItIs": "The GC-clearing behavior and per-P data layout that together define sync.Pool's weak lifetime and strong concurrency properties.",
+          "whyItExists": "Clearing on GC keeps pools from pinning memory or acting as a persistent cache; the victim cache softens that so a steady workload doesn't lose all its recycled objects on a single GC. Per-P slots exist to make Get/Put scale without a global lock.",
+          "howItWorks": "poolCleanup runs before marking: old victim is freed, local becomes the new victim. Each P has private + shared slots; Get checks private (no sync), then shared, then steals, then New. So an object is reachable only while it's in local or victim, and most operations never leave the current P."
+        },
+        "whyImportant": "Misunderstanding the victim cache leads engineers to treat sync.Pool as a durable cache and to be surprised by allocation spikes after GC; the per-P story explains why it scales, both frequent senior interview probes.",
+        "realWorldExample": "Under bursty traffic a service saw allocation spikes right after each GC because objects Put during the quiet period had aged out through the victim cache; understanding the two-cycle lifetime explained the pattern and confirmed the pool was behaving correctly, not leaking.",
+        "followUps": [
+          { "question": "Roughly how long does a Put object survive if never re-Got?", "answer": "At most about two GC cycles: one as 'local', then promoted to 'victim' for one more cycle, after which poolCleanup drops it and the object becomes collectable." },
+          { "question": "Does the per-P design mean an object always comes back on the same P?", "answer": "No. Under contention a Get can steal from another P's shared deque, so an object Put on one P may be handed to a goroutine running on a different P; you must never assume locality or identity." }
+        ]
+      },
+      {
+        "id": "golang-master-10-p5-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "When does pooling with sync.Pool actually help, and when does it hurt or even regress performance?",
+        "directAnswer": "Pooling helps when objects are large and/or allocated very frequently on a proven hot path, so recycling them removes a meaningful share of allocation and GC work — think per-request response buffers, encoder scratch state, or hash/compression buffers in tight loops. It hurts when objects are small and cheap or allocated only occasionally: the pool's bookkeeping, the interface boxing of the stored value, the type assertion on Get, and the victim-cache churn can cost more than the allocation you saved. It also hurts correctness (not just speed) if you skip Reset, return a view into a pooled buffer, or forget to cap oversized buffers. The rule is to profile first with -benchmem, add the pool, and keep it only if allocs/op and ns/op actually improve.",
+        "detailedExplanation": {
+          "whatItIs": "The cost/benefit boundary that decides whether wrapping an allocation in sync.Pool is a net win.",
+          "whyItExists": "sync.Pool trades allocation cost for bookkeeping and indirection cost; that trade is favorable only above a certain object size and allocation frequency.",
+          "howItWorks": "Each Get/Put touches per-P state, boxes/unboxes an interface, and participates in GC cleanup. When the saved allocation is tiny or rare, those fixed costs dominate; when it's large or extremely frequent, they're dwarfed by the GC work removed."
+        },
+        "whyImportant": "Reflexively pooling everything is a common anti-pattern that adds complexity and can regress performance; knowing when NOT to pool distinguishes a measured engineer from a cargo-culting one.",
+        "realWorldExample": "A team pooled small 16-byte structs and saw a benchmark regression from interface boxing and bookkeeping; removing the pool and letting the GC handle them was faster, while a separate 64KB buffer pool on a different path gave a large, real win.",
+        "followUps": [
+          { "question": "How do you decide empirically whether a pool pays off?", "answer": "Write a representative benchmark with b.ReportAllocs, measure allocs/op and ns/op with and without the pool over -count=10, and keep the pool only if benchstat shows a statistically significant improvement." },
+          { "question": "Can pooling increase memory usage?", "answer": "Yes: a pool holds objects between uses (up to the victim-cache lifetime), and without a capacity cap it can retain oversized backing arrays, so it trades some resident memory for fewer allocations." }
+        ]
       }
     ],
     "scenario": [
@@ -219,6 +258,46 @@
         "realWorldExample": "A web framework pooled request context buffers and returned Bytes() directly; under load, slow responses still referencing a buffer saw it overwritten by the next request that grabbed it.",
         "followUps": [
           { "question": "How would you catch this in testing?", "answer": "Run the package with `go test -race` under concurrent load, and add a test that calls the function twice with different inputs to assert no stale bytes survive." }
+        ]
+      },
+      {
+        "id": "golang-master-10-p5-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "A service pools *bytes.Buffer for request handling. After deploying, memory usage climbs steadily and never drops, and occasionally responses contain stale bytes from earlier requests. Diagnose both bugs and fix them.",
+        "directAnswer": "There are two distinct bugs. The stale-bytes bug is a missing `buf.Reset()` after Get (or returning `buf.Bytes()`, a view into memory that a later Get overwrites): the pooled buffer carries the previous caller's contents into the new response. The steady memory climb is a capacity-retention leak: occasional large requests grow a buffer's backing array to megabytes, and Putting that oversized buffer back keeps the huge array alive across GC cycles, so the pool's high-water mark only ratchets up. Fix by always calling Reset immediately after Get, copying results out (or using String(), which copies) before Put, and guarding Put with a capacity cap: `if buf.Cap() <= maxReuse { pool.Put(buf) }` so oversized buffers are dropped and reclaimed by the GC instead of pinned in the pool.",
+        "detailedExplanation": {
+          "whatItIs": "Two classic sync.Pool failure modes occurring together: cross-request state leakage and unbounded capacity retention.",
+          "whyItExists": "A pool hands the same backing memory to many goroutines over time; without reset+copy, request state bleeds between them, and without a capacity cap, a rare large payload permanently inflates the pooled objects.",
+          "howItWorks": "Reset clears length so old bytes aren't reused; copying detaches the result from the recycled array; a cap check on Put lets giant buffers fall out of the pool and be collected, keeping the pool's memory footprint bounded."
+        },
+        "whyImportant": "This combines the two most common production pool incidents — a data-disclosure/correctness bug and a slow memory leak — that reviewers and interviewers specifically look for in pool code.",
+        "realWorldExample": "An API gateway pooled response buffers without a cap; a few multi-megabyte exports made every pooled buffer huge, and a missing Reset caused intermittent data bleed — adding Reset-on-Get, copy-on-return, and a 64KB cap on Put fixed both the leak and the corruption.",
+        "followUps": [
+          { "question": "What capacity threshold should you cap at?", "answer": "Pick a value near your typical (e.g. p95) payload size — large enough that normal requests reuse buffers, small enough that rare giant payloads are dropped rather than pooled; tune it from production size distributions." },
+          { "question": "How do you catch the stale-bytes bug before production?", "answer": "Run go test -race with a test that borrows, uses, and returns a buffer, then borrows again with different input and asserts no leftover bytes; concurrent load plus -race surfaces both the leak of state and any aliasing of Bytes()." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "golang-master-10-p5-sd-1",
+        "tech": "golang",
+        "category": "systemDesign",
+        "difficulty": "advanced",
+        "question": "Design an object-pooling layer for a high-QPS HTTP server that reuses buffers for request and response bodies. Cover the API surface, correctness (reset, copy, ownership), and capacity capping.",
+        "directAnswer": "Wrap sync.Pool behind a small, private API rather than exposing Get/Put directly: `AcquireBuffer() *bytes.Buffer` (Get + Reset so callers always receive a clean buffer) and `ReleaseBuffer(b *bytes.Buffer)` (cap check, then Put). Make the borrowing site own the release, ideally via `defer ReleaseBuffer(b)`, so ownership is unambiguous and buffers are never shared across goroutines. Enforce correctness in the wrapper: Acquire resets length; callers must copy any result out (or use String()) before Release because the backing array is recycled; Release drops buffers whose Cap() exceeds a threshold (e.g. 64KB) so rare large bodies don't pin memory. Use separate pools sized for request-read and response-write paths if their size distributions differ. Validate under load with go test -race and pprof (alloc_objects, GC CPU fraction), keeping the pool only where benchmarks show a real allocs/op reduction. The result is a hot path that recycles buffers safely, bounds its memory high-water mark, and cannot leak one request's bytes into another's.",
+        "detailedExplanation": {
+          "whatItIs": "A safe, encapsulated pooling layer for per-request/response buffers built on sync.Pool with reset, copy, ownership, and capacity-cap invariants baked into the API.",
+          "whyItExists": "Exposing raw Get/Put invites the classic misuse bugs (missing Reset, returned views, retained giant buffers); wrapping them enforces the invariants centrally so every caller is correct by construction.",
+          "howItWorks": "Acquire does Get+Reset and returns a clean buffer; the caller writes, copies the result out, and defers Release; Release checks Cap() against a threshold and either Puts the buffer back to the current P's free list or drops it for the GC. Per-P slots keep Acquire/Release lock-free on the fast path."
+        },
+        "whyImportant": "It's the standard-library pattern (Acquire/Release, capped reuse) generalized into a design, and demonstrates that a candidate can turn sync.Pool's sharp edges into a safe, reusable abstraction for a real server.",
+        "realWorldExample": "fasthttp and many production servers expose AcquireByteBuffer/ReleaseByteBuffer wrappers with capacity caps; a gateway adopting the pattern cut response-path allocs/op to ~1 and kept its buffer-pool memory bounded even under multi-megabyte payload spikes.",
+        "followUps": [
+          { "question": "Why hide sync.Pool behind Acquire/Release instead of exposing it?", "answer": "Centralizing Reset-on-Acquire and the capacity cap on Release makes every caller correct by default, preventing the missing-Reset, returned-view, and retained-giant-buffer bugs that raw Get/Put usage repeatedly causes." },
+          { "question": "Should request and response paths share one pool?", "answer": "Not if their size distributions differ: separate pools with path-appropriate capacity caps avoid a large-response buffer being handed to a small-request read (or vice versa), keeping reuse effective and memory bounded on each path." }
         ]
       }
     ],
@@ -240,6 +319,25 @@
         "followUps": [
           { "question": "Why copy with string(dst) instead of returning the bytes directly?", "answer": "The scratch slice goes back to the pool and will be overwritten by the next caller; string() makes an immutable, independent copy so the result is safe." },
           { "question": "When would pooling here NOT pay off?", "answer": "If HashHex is called rarely, the pool bookkeeping and victim-cache churn can outweigh saving a single 64-byte allocation — measure with -benchmem before committing." }
+        ]
+      },
+      {
+        "id": "golang-master-10-p5-cd-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement a typed `BufferPool` wrapper around sync.Pool for *bytes.Buffer with `Get()` that returns a reset buffer and `Put(b)` that caps capacity to avoid retaining oversized buffers. Show correct lifecycle usage.",
+        "thoughtProcess": "The wrapper must bake in the two invariants that raw Get/Put callers forget: reset-on-Get and capacity-cap-on-Put. Get does pool.Get(), type-asserts to *bytes.Buffer, and Resets it so callers never see stale bytes. Put checks b.Cap() against maxCap; if the buffer grew too large from a rare big payload, we drop it (don't Put) so the GC reclaims it and the pool never pins megabytes. Callers use defer Put and must copy results out (String() copies) before the buffer is recycled. This encapsulation makes every call site correct by construction.",
+        "solution": {
+          "code": "// BufferPool is a typed, safe wrapper over sync.Pool for *bytes.Buffer.\ntype BufferPool struct {\n\tpool   sync.Pool\n\tmaxCap int // buffers larger than this are dropped, not pooled\n}\n\nfunc NewBufferPool(maxCap int) *BufferPool {\n\treturn &BufferPool{\n\t\tpool:   sync.Pool{New: func() any { return new(bytes.Buffer) }},\n\t\tmaxCap: maxCap,\n\t}\n}\n\n// Get returns a reset buffer, so callers never see a prior user's bytes.\nfunc (p *BufferPool) Get() *bytes.Buffer {\n\tb := p.pool.Get().(*bytes.Buffer)\n\tb.Reset() // invariant: always clean on acquire\n\treturn b\n}\n\n// Put returns the buffer for reuse, but drops oversized ones so the\n// pool can't pin a huge backing array alive across GC cycles.\nfunc (p *BufferPool) Put(b *bytes.Buffer) {\n\tif b.Cap() > p.maxCap {\n\t\treturn // let the GC reclaim the giant buffer\n\t}\n\tp.pool.Put(b)\n}\n\n// Example lifecycle: borrow, use, copy out, release.\nvar pool = NewBufferPool(64 << 10) // 64KB cap\n\nfunc Render(name string) string {\n\tb := pool.Get()\n\tdefer pool.Put(b)\n\tb.WriteString(\"hello, \")\n\tb.WriteString(name)\n\treturn b.String() // String copies, so it's safe after Put recycles b\n}",
+          "language": "go"
+        },
+        "lineByLine": "BufferPool holds a sync.Pool and a maxCap threshold. NewBufferPool wires a New func that allocates an empty *bytes.Buffer only when the pool is empty. Get type-asserts the pooled object and Resets it before returning, enforcing the reset-on-acquire invariant so callers can never observe stale bytes. Put checks b.Cap(): if the buffer grew past maxCap (from a rare large payload) it is dropped so the GC reclaims it, otherwise it is returned to the pool — this caps the pool's memory high-water mark. Render shows the lifecycle: Get a clean buffer, defer Put, write into it, and return b.String(), which copies the bytes into an immutable string so the buffer is safe to recycle immediately.",
+        "timeComplexity": "O(1) for Get/Put; Render is O(n) in the length of the name written.",
+        "spaceComplexity": "O(1) extra per call in steady state — buffers are recycled; only the returned string allocates, and oversized buffers are dropped rather than retained.",
+        "followUps": [
+          { "question": "Why drop the buffer in Put instead of shrinking it?", "answer": "bytes.Buffer offers no way to shrink its backing array, so the only way to release a giant array is to stop referencing it (skip Put) and let the GC reclaim it; keeping it would pin that memory across GC cycles." },
+          { "question": "Why must Render copy with String() before Put?", "answer": "defer Put returns the buffer to the pool where another goroutine can Get and overwrite it; String() makes an independent immutable copy, so the returned value is safe even though the buffer is recycled." }
         ]
       }
     ]

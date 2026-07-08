@@ -12,7 +12,14 @@ const LEVEL_COLOR: Record<string, string> = {
   advanced: '#ef4444',
 };
 
-const PROGRESS_KEY = 'de_project_progress';
+const DEFAULT_PROGRESS_KEY = 'de_project_progress';
+
+interface ProjectsTabProps {
+  dataUrl?: string;
+  progressKey?: string;
+  heading?: string;
+  blurb?: React.ReactNode;
+}
 
 // Render an "A -> B -> C" flow string as connected node boxes.
 const FlowDiagram: React.FC<{ flow: string }> = ({ flow }) => {
@@ -75,7 +82,12 @@ const SectionCard: React.FC<{ icon: React.ReactNode; title: string; children: Re
   </div>
 );
 
-export const ProjectsTab: React.FC = () => {
+export const ProjectsTab: React.FC<ProjectsTabProps> = ({
+  dataUrl = '/content/projects/projects.json',
+  progressKey = DEFAULT_PROGRESS_KEY,
+  heading = 'Build-Along Projects',
+  blurb,
+}) => {
   const [projects, setProjects] = useState<DeProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -84,7 +96,7 @@ export const ProjectsTab: React.FC = () => {
 
   const [progress, setProgress] = useState<Record<string, boolean>>(() => {
     try {
-      const saved = localStorage.getItem(PROGRESS_KEY);
+      const saved = localStorage.getItem(progressKey);
       return saved ? JSON.parse(saved) : {};
     } catch {
       return {};
@@ -95,7 +107,7 @@ export const ProjectsTab: React.FC = () => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/content/projects/projects.json');
+        const res = await fetch(dataUrl);
         if (res.ok) {
           const data = (await res.json()) as DeProject[];
           if (!cancelled) setProjects(Array.isArray(data) ? data.sort((a, b) => a.order - b.order) : []);
@@ -107,13 +119,13 @@ export const ProjectsTab: React.FC = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [dataUrl]);
 
   const toggleMilestone = (id: string) => {
     setProgress(prev => {
       const updated = { ...prev, [id]: !prev[id] };
       if (!updated[id]) delete updated[id];
-      try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
+      try { localStorage.setItem(progressKey, JSON.stringify(updated)); } catch { /* ignore */ }
       return updated;
     });
   };
@@ -145,13 +157,15 @@ export const ProjectsTab: React.FC = () => {
         <div className="glass-panel" style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Rocket size={22} color="#3b82f6" />
-            <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800 }}>Build-Along Projects</h2>
+            <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800 }}>{heading}</h2>
           </div>
           <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14.5px', lineHeight: 1.65, maxWidth: '75ch' }}>
-            A portfolio-ready ladder that turns concepts into a real, end-to-end data platform for the fictional
-            e-commerce company <strong>ShopFlow</strong>. Each project builds on the last — from a first batch ETL job all
-            the way to a unified cloud lakehouse. Work top to bottom, check off milestones as you go, and finish with a
-            capstone you can show in interviews.
+            {blurb || <>
+              A portfolio-ready ladder that turns concepts into a real, end-to-end data platform for the fictional
+              e-commerce company <strong>ShopFlow</strong>. Each project builds on the last — from a first batch ETL job all
+              the way to a unified cloud lakehouse. Work top to bottom, check off milestones as you go, and finish with a
+              capstone you can show in interviews.
+            </>}
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', marginTop: '4px' }}>
             <div style={{ flex: '1 1 220px', minWidth: '200px' }}>

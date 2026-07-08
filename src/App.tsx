@@ -81,8 +81,9 @@ export default function App() {
     };
     setCompletedTopics(updated);
     localStorage.setItem('de_completed_topics', JSON.stringify(updated));
-    // Record a real activity day when a DE topic is marked complete (fuels streak/XP).
-    if (currentDomain === 'data-engineering' && updated[activeTopic.id]) recordDeActivity();
+    // Record a real activity day when a topic is marked complete (fuels streak/XP).
+    // The engagement engine is shared across domains, so backend/frontend count too.
+    if (updated[activeTopic.id]) recordDeActivity();
   };
 
   const markChallengeCompleted = (challengeId: string) => {
@@ -119,7 +120,8 @@ export default function App() {
           const manifest = await loadBackendManifest(tech);
           const topics = manifest ? backendManifestToTopics(manifest) : [];
           setBackendTopics(topics);
-          setActiveTopic(topics[0] || null);
+          // Deep-link to a specific topic (resume / due-for-revision) when requested.
+          setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
         } else {
           const techTopics = allTopics.filter(t => t.category === tech);
           // Deep-link to a specific topic when requested (resume / due-for-revision),
@@ -276,7 +278,7 @@ export default function App() {
                     { id: 'learn', label: 'Learn', icon: BookOpen },
                     { id: 'interview', label: 'Interview Prep', icon: GraduationCap },
                     { id: 'practice', label: 'Coding Practice', icon: CheckSquare },
-                    ...(!isFrontend && !isBackend ? [{ id: 'projects', label: 'Projects', icon: Rocket }] : []),
+                    ...(!isFrontend ? [{ id: 'projects', label: 'Projects', icon: Rocket }] : []),
                     { id: 'playground', label: 'Playground', icon: Terminal },
                     { id: 'gemini', label: 'Ask Gemini', icon: Sparkles, color: '#a855f7' }
                   ].map((item) => (
@@ -420,7 +422,7 @@ export default function App() {
                   <CheckSquare size={15} />
                   Coding Practice
                 </button>
-                {!isFrontend && !isBackend && (
+                {!isFrontend && (
                   <button
                     className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`}
                     onClick={() => setActiveTab('projects')}
@@ -577,8 +579,16 @@ export default function App() {
             )
           )}
 
-          {activeTab === 'projects' && !isFrontend && !isBackend && (
-            <ProjectsTab />
+          {activeTab === 'projects' && !isFrontend && (
+            isBackend ? (
+              <ProjectsTab
+                dataUrl="/content/backend/golang/projects.json"
+                heading="Go Build-Along Projects"
+                blurb={<>A portfolio-ready ladder of real Go services — from a JSON REST API to a resilient gRPC microservice. Each project builds on the last, with staged milestones, tasks, acceptance criteria, and hints. Work top to bottom, check off milestones as you go, and finish with builds you can put on your resume and defend in interviews.</>}
+              />
+            ) : (
+              <ProjectsTab />
+            )
           )}
 
           {activeTab === 'playground' && (

@@ -4,7 +4,7 @@ import type { BackendManifest, BackendTechMeta } from '../../core/types/backend'
 // Backend Engineering technology registry — drives the backend PathSelection.
 // `available: true` means content exists; others render as "coming soon".
 export const BACKEND_TECHS: BackendTechMeta[] = [
-  { id: 'golang', title: 'Go (Golang)', description: 'Master Go from first principles to production: types, interfaces, goroutines, channels, generics, and concurrent system design — with interactive checkpoints, a code lab, and full technical + coding interview prep.', color: '#00ADD8', available: true, topicCount: 76 },
+  { id: 'golang', title: 'Go (Golang)', description: 'Master Go from first principles to production: types, interfaces, goroutines, channels, generics, and concurrent system design — plus the real-world web & services stack (Gin, GORM, JWT auth, Redis, Kafka/NATS, WebSockets, Docker) and microservices & distributed-systems architecture (service decomposition, inter-service comms, discovery/gateway, saga/outbox, resilience, observability) — with interactive checkpoints, a code lab, and full technical + coding interview prep.', color: '#00ADD8', available: true, topicCount: 94 },
   { id: 'python', title: 'Python', description: 'Backend Python: data model, typing, async, packaging, and web services. Coming soon.', color: '#ffd43b', available: false },
   { id: 'java', title: 'Java', description: 'JVM internals, collections, concurrency, Spring, and system design. Coming soon.', color: '#f89820', available: false },
 ];

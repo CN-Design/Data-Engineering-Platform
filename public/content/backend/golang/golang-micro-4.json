@@ -1,0 +1,365 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-micro-4",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Distributed Transactions: Saga & Outbox",
+  "difficulty": "advanced",
+  "summary": "Once a business operation spans multiple services or databases, the classic ACID transaction stops working — you cannot hold a lock across the network. Two-phase commit (2PC) tries and fails to scale because it blocks on a coordinator. The practical answer is a pair of patterns: the **Saga** (a sequence of local transactions, each with a compensating action that undoes it) for multi-step workflows, and the **Transactional Outbox** (write state and its event in one DB transaction, then relay the event) to kill the dual-write problem. Together with idempotency keys they give you *effectively-once* delivery over an at-least-once world, and eventual consistency you can actually reason about.",
+  "prerequisites": ["golang-micro-2", "golang-web-7"],
+  "relatedConcepts": ["golang-web-3", "golang-web-6", "golang-micro-3"],
+  "nestedConcepts": ["why 2PC doesn't scale", "the Saga pattern", "choreography vs orchestration", "compensating transactions", "the dual-write problem & Outbox", "idempotency & effectively-once"],
+  "subtopics": [
+    { "title": "Why 2PC doesn't scale across services", "explanation": "Two-phase commit uses a coordinator that asks every participant to prepare, then tells them all to commit. Between prepare and commit, each participant holds locks and blocks; if the coordinator crashes after prepare, participants are stuck 'in doubt' with locks held. This synchronous, blocking, all-or-nothing model couples the availability of every service to every other and to the coordinator. Understanding this failure mode is exactly why distributed transactions turn to sagas and outboxes instead of trying to fake ACID over the network.", "example": "// A sketch of 2PC's blocking window — DO NOT do this across services.\nfunc twoPhaseCommit(coord *Coordinator, ps []Participant) error {\n\t// Phase 1: everyone locks rows and votes.\n\tfor _, p := range ps {\n\t\tif err := p.Prepare(); err != nil { // holds locks until phase 2\n\t\t\tcoord.AbortAll(ps) // release everyone's locks\n\t\t\treturn err\n\t\t}\n\t}\n\t// If the coordinator dies HERE, every participant is stuck 'in doubt',\n\t// holding locks, unable to commit or roll back on its own.\n\tfor _, p := range ps {\n\t\tp.Commit() // phase 2: finally release locks\n\t}\n\treturn nil\n}" },
+    { "title": "The Saga pattern", "explanation": "A saga breaks a distributed operation into a sequence of local transactions T1, T2, ..., Tn, each committing in its own service. If step k fails, the saga runs compensating transactions Ck-1, ..., C1 in reverse to semantically undo the completed steps. There is no global lock and no coordinator holding rows hostage — each step commits immediately and durably. The saga is the backbone of building distributed transactions in Go: it trades atomicity for availability and gives you a workflow you can retry, resume, and reason about step by step.", "example": "// A saga is an ordered list of steps, each with a forward and a compensate.\ntype Step struct {\n\tName       string\n\tForward    func(ctx context.Context) error\n\tCompensate func(ctx context.Context) error\n}\n\nfunc runSaga(ctx context.Context, steps []Step) error {\n\tvar done []Step // steps whose Forward succeeded\n\tfor _, s := range steps {\n\t\tif err := s.Forward(ctx); err != nil {\n\t\t\t// Unwind in reverse: compensate everything already done.\n\t\t\tfor i := len(done) - 1; i >= 0; i-- {\n\t\t\t\t_ = done[i].Compensate(ctx)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\"saga failed at %s: %w\", s.Name, err)\n\t\t}\n\t\tdone = append(done, s)\n\t}\n\treturn nil\n}" },
+    { "title": "Choreography vs orchestration", "explanation": "A saga can be coordinated two ways. In choreography, each service reacts to events and emits its own — there is no central brain, just a chain of 'when X happened, do Y'. In orchestration, a single orchestrator explicitly calls each service and decides the next step (and when to compensate). Choreography is decoupled but the overall flow is implicit and hard to trace; orchestration centralizes the flow so it is visible and testable at the cost of one more moving part. Choosing between them is a core design decision when building distributed transactions: pick choreography for simple event chains, orchestration when the workflow is complex or must be observable.", "example": "// Orchestration: one place owns the flow and decides next/compensate.\nfunc (o *Orchestrator) PlaceOrder(ctx context.Context, id string) error {\n\tif err := o.payment.Charge(ctx, id); err != nil {\n\t\treturn err // nothing to undo yet\n\t}\n\tif err := o.inventory.Reserve(ctx, id); err != nil {\n\t\t_ = o.payment.Refund(ctx, id) // compensate the charge\n\t\treturn err\n\t}\n\tif err := o.shipping.Schedule(ctx, id); err != nil {\n\t\t_ = o.inventory.Release(ctx, id) // reverse order\n\t\t_ = o.payment.Refund(ctx, id)\n\t\treturn err\n\t}\n\treturn nil // choreography would instead emit events at each step\n}" },
+    { "title": "Compensating transactions", "explanation": "A compensating transaction semantically undoes a completed step — it is not a rollback (the original already committed and may be visible to others). Compensations must be idempotent (they may be retried) and must handle the reality that the world moved on: a refund, not an un-charge; a 'cancellation' record, not a delete. Some steps are hard to compensate (an email was sent) so you order the saga to do irreversible steps last (pivot transactions). Compensating transactions are what let a saga fail safely: they are the 'undo' half of every distributed transaction that has no true rollback.", "example": "// Compensation is a NEW forward action that offsets a prior commit.\n// Refund offsets Charge; it must be idempotent because it may be retried.\nfunc (p *PaymentService) Refund(ctx context.Context, orderID string) error {\n\t// Idempotency: if we already refunded this order, do nothing.\n\tif p.alreadyRefunded(ctx, orderID) {\n\t\treturn nil\n\t}\n\t// This does NOT delete the original charge row — it appends a refund,\n\t// leaving an auditable trail: charge(+$50) then refund(-$50).\n\treturn p.recordLedgerEntry(ctx, orderID, -p.amountOf(ctx, orderID))\n}" },
+    { "title": "The dual-write problem & Outbox", "explanation": "A service that must both commit to its database AND publish an event faces the dual-write problem: if the DB commit succeeds but the broker publish fails (or vice versa), the two stores diverge and there is no transaction spanning both. The Transactional Outbox fixes this by writing the event into an 'outbox' table inside the SAME DB transaction as the state change — one atomic commit. A separate relay then reads unsent outbox rows and publishes them to the broker, marking them sent. The outbox is the linchpin of reliable event-driven distributed transactions: it turns two unreliable writes into one atomic write plus an idempotent, retryable relay.", "example": "// One atomic transaction writes BOTH the business row and the event.\nfunc CreateOrder(ctx context.Context, db *sql.DB, o Order) error {\n\ttx, err := db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback() // no-op after a successful Commit\n\n\tif _, err := tx.ExecContext(ctx,\n\t\t`INSERT INTO orders(id, total) VALUES($1, $2)`, o.ID, o.Total); err != nil {\n\t\treturn err\n\t}\n\t// Same tx: the event can NEVER be lost relative to the state change.\n\tif _, err := tx.ExecContext(ctx,\n\t\t`INSERT INTO outbox(id, topic, payload) VALUES($1, 'order.created', $2)`,\n\t\to.ID, o.JSON()); err != nil {\n\t\treturn err\n\t}\n\treturn tx.Commit() // both rows commit together, or neither does\n}" },
+    { "title": "Idempotency & effectively-once", "explanation": "Message brokers give you at-least-once delivery: the same event can arrive twice (a publish retried after a lost ack, a relay re-running after a crash). Exactly-once delivery across a network is provably impossible, so the real goal is effectively-once: make consumers idempotent so processing a duplicate has no additional effect. You do this with an idempotency key — a unique ID per operation — recorded in a dedup table checked inside the consumer's transaction. Idempotency is the last piece of the distributed-transaction puzzle: it is what makes an at-least-once world behave as if every event were processed exactly once.", "example": "// Consumer dedup: process each event id at most once, atomically.\nfunc handleEvent(ctx context.Context, db *sql.DB, e Event) error {\n\ttx, err := db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback()\n\n\t// Claim the key; if it already exists this insert fails -> duplicate.\n\t_, err = tx.ExecContext(ctx,\n\t\t`INSERT INTO processed_events(id) VALUES($1)`, e.ID)\n\tif isUniqueViolation(err) {\n\t\treturn nil // already handled: effectively-once, safe to ack\n\t}\n\tif err != nil {\n\t\treturn err\n\t}\n\tapplyEffect(tx, e)   // the real work, in the same tx as the dedup claim\n\treturn tx.Commit()\n}" }
+  ],
+  "foundations": {
+    "overview": "Distributed transactions are what you reach for when a single business operation must change state that lives in more than one service or database. You cannot wrap them in one ACID transaction, so you give up global atomicity and instead compose independent local transactions. The saga pattern sequences those local transactions with compensating actions to undo partial work, and the transactional outbox guarantees that state changes and the events announcing them are committed together. Layer idempotency on top and you get eventual consistency that is correct, observable, and recoverable — without the blocking failure modes of two-phase commit.",
+    "formalDefinition": "A saga is a sequence of local transactions T1..Tn where each Ti has a compensating transaction Ci such that C1..Ci semantically undo T1..Ti; the saga guarantees that either all Ti commit or a prefix commits and its compensations run, yielding a consistent (if not atomic) outcome. The transactional outbox is a pattern where a state mutation and an outbound event are written in the same local ACID transaction to an 'outbox' table, and an asynchronous relay delivers the event to a broker at-least-once, achieving atomicity between the state change and event emission.",
+    "whyItMatters": "Every non-trivial microservice architecture eventually needs an operation that touches multiple services — place an order, transfer funds, book a trip. Doing this correctly (no lost events, no double charges, no orphaned reservations) is the difference between a reliable platform and a stream of data-integrity incidents. Sagas and outboxes are the industry-standard answers, and explaining their trade-offs is a staple senior/staff backend interview topic.",
+    "mentalModel": "Think of a saga as a relay race where each runner (service) commits their leg immediately, but every runner also carries a 'reverse' baton (compensation) so that if a later runner drops out, the finished runners run their legs backward to restore the start. The outbox is a mailbox nailed to the same desk as your ledger: you write the ledger entry and drop the letter in the mailbox in one motion, and a mail carrier (relay) later picks up letters and guarantees delivery even if it has to knock twice.",
+    "runtimePerspective": "At runtime an orchestrated saga is a state machine advancing step by step, persisting progress so it can resume after a crash. The outbox relay is a background loop: poll unsent rows, publish to the broker, mark sent — crash-safe because a row is only marked sent after a confirmed publish, so a mid-flight crash simply re-publishes (at-least-once), which downstream idempotency absorbs. Consumers run each handler inside a DB transaction that first claims an idempotency key, so duplicate deliveries collapse to no-ops.",
+    "realWorldUsage": "Order/checkout flows (charge, reserve inventory, ship), money transfers and ledgers, travel booking (flight + hotel + car), user onboarding across auth/billing/email services, and any change-data-capture pipeline where a service's writes must reliably become events for others.",
+    "businessImpact": "Correct distributed transactions prevent the incidents that cost real money and trust: double charges, shipped-but-unpaid orders, reserved-but-never-sold inventory, and 'ghost' records where one service knows about a change and another never heard. Eventual consistency done right keeps the system available during partial failures instead of taking the whole flow down.",
+    "engineeringImpact": "Sagas and outboxes let teams own their own databases (no shared DB, no cross-service 2PC) while still coordinating multi-step work, preserving service autonomy. Idempotent handlers make retries safe, which simplifies every failure path. The cost is more moving parts (relay, dedup tables, compensations) and code that must tolerate duplicates and out-of-order effects.",
+    "performanceImpact": "Sagas are asynchronous and lock-free per service, so they scale far better than blocking 2PC and keep each service independently available. The trade-offs are added latency (steps run sequentially, events flow through a broker) and extra write amplification (outbox rows, dedup rows, relay polling). Tuning the relay's poll interval/batch size and using CDC instead of polling reduce that overhead.",
+    "commonUseCases": [
+      "Order checkout: charge payment, reserve inventory, schedule shipping with compensations",
+      "Reliable event publishing via the transactional outbox to avoid dual-write drift",
+      "Idempotent consumers that dedup at-least-once broker deliveries",
+      "Money transfer / ledger sagas with refund-style compensations"
+    ],
+    "commonMisconceptions": [
+      { "myth": "Two-phase commit is the right way to do distributed transactions; you just need a good coordinator.", "reality": "2PC is synchronous and blocking: participants hold locks between prepare and commit, and a coordinator crash leaves them 'in doubt'. It couples availability across services and doesn't scale — sagas trade atomicity for availability instead." },
+      { "myth": "A compensating transaction is just a rollback.", "reality": "The original transaction already committed and may be visible to others, so you can't roll it back. A compensation is a NEW forward action that semantically offsets it (a refund, a cancellation record) and must be idempotent." },
+      { "myth": "If I commit to the DB and then publish the event, I'm safe.", "reality": "That's the dual-write problem: the commit can succeed and the publish fail (or the process crash between them), leaving state and events divergent. Use the outbox so state and event commit atomically, then relay the event." },
+      { "myth": "Exactly-once delivery is achievable, so I don't need idempotency.", "reality": "Exactly-once delivery over a network is impossible; brokers are at-least-once. You achieve effectively-once by making consumers idempotent (dedup on an idempotency key), so duplicate deliveries are harmless." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "advanced",
+      "title": "An orchestrated order saga with compensation",
+      "explanation": "The orchestrator runs each step's forward action in order; if any step fails it compensates the completed steps in REVERSE. Each service commits its own local transaction, so there is no global lock — atomicity is replaced by 'commit-then-compensate'. Watch the reserve step fail and the charge get refunded.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n)\n\n// Step: a local transaction plus the compensation that undoes it.\ntype Step struct {\n\tName       string\n\tForward    func(ctx context.Context) error\n\tCompensate func(ctx context.Context) error\n}\n\n// runSaga executes steps in order; on failure it compensates in reverse.\nfunc runSaga(ctx context.Context, steps []Step) error {\n\tvar done []Step\n\tfor _, s := range steps {\n\t\tif err := s.Forward(ctx); err != nil {\n\t\t\tfmt.Printf(\"step %q failed: %v -> compensating\\n\", s.Name, err)\n\t\t\tfor i := len(done) - 1; i >= 0; i-- {\n\t\t\t\t_ = done[i].Compensate(ctx) // best-effort, must be idempotent\n\t\t\t\tfmt.Printf(\"  compensated %q\\n\", done[i].Name)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\"saga aborted at %q: %w\", s.Name, err)\n\t\t}\n\t\tdone = append(done, s)\n\t\tfmt.Printf(\"step %q committed\\n\", s.Name)\n\t}\n\treturn nil\n}\n\nfunc main() {\n\tsteps := []Step{\n\t\t{Name: \"charge\",\n\t\t\tForward:    func(ctx context.Context) error { return nil },\n\t\t\tCompensate: func(ctx context.Context) error { return nil }}, // refund\n\t\t{Name: \"reserve\",\n\t\t\tForward:    func(ctx context.Context) error { return errors.New(\"out of stock\") },\n\t\t\tCompensate: func(ctx context.Context) error { return nil }}, // release\n\t}\n\tif err := runSaga(context.Background(), steps); err != nil {\n\t\tfmt.Println(\"result:\", err)\n\t}\n}",
+        "caption": "runSaga commits each step, then unwinds in reverse when a later step fails, so completed work is compensated rather than left dangling.",
+        "expectedOutput": "step \"charge\" committed\nstep \"reserve\" failed: out of stock -> compensating\n  compensated \"charge\"\nresult: saga aborted at \"reserve\": out of stock"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "Transactional outbox: atomic write plus a relay loop",
+      "explanation": "CreateOrder writes the order row and the outbox event in ONE transaction — they commit together or not at all, killing the dual-write problem. A separate relay polls unsent rows, 'publishes' them, and marks them sent; a crash mid-relay simply re-publishes (at-least-once), which idempotent consumers absorb.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport \"fmt\"\n\n// OutboxRow is an event staged in the same DB as the business state.\ntype OutboxRow struct {\n\tID      int\n\tTopic   string\n\tPayload string\n\tSent    bool\n}\n\n// store fakes a DB: orders plus an outbox table in one place.\ntype store struct {\n\torders []string\n\toutbox []*OutboxRow\n\tnextID int\n}\n\n// CreateOrder writes the order AND its event atomically (same 'tx').\nfunc (s *store) CreateOrder(id string) {\n\t// In real code these two writes share one sql.Tx and Commit together.\n\ts.orders = append(s.orders, id)\n\ts.nextID++\n\ts.outbox = append(s.outbox, &OutboxRow{\n\t\tID: s.nextID, Topic: \"order.created\", Payload: id,\n\t})\n}\n\n// relay publishes unsent rows, marking each sent only AFTER a publish.\nfunc (s *store) relay(publish func(OutboxRow) error) {\n\tfor _, row := range s.outbox {\n\t\tif row.Sent {\n\t\t\tcontinue // already delivered\n\t\t}\n\t\tif err := publish(*row); err != nil {\n\t\t\treturn // leave unsent; next relay pass retries (at-least-once)\n\t\t}\n\t\trow.Sent = true // marked sent only after confirmed publish\n\t}\n}\n\nfunc main() {\n\ts := &store{}\n\ts.CreateOrder(\"order-1\")\n\ts.CreateOrder(\"order-2\")\n\ts.relay(func(r OutboxRow) error {\n\t\tfmt.Printf(\"published %s -> %s\\n\", r.Topic, r.Payload)\n\t\treturn nil\n\t})\n\tfmt.Printf(\"orders=%d outbox[0].sent=%v\\n\", len(s.orders), s.outbox[0].Sent)\n}",
+        "caption": "The event lives in the same store as the order and is only marked sent after a confirmed publish, so no event is ever lost relative to its state change.",
+        "expectedOutput": "published order.created -> order-1\npublished order.created -> order-2\norders=2 outbox[0].sent=true"
+      }
+    },
+    {
+      "level": "production",
+      "title": "Edit it: make an at-least-once consumer idempotent",
+      "explanation": "This consumer applies every delivered event, so a duplicate delivery double-applies the effect (double credit!). Edit it to record an idempotency key inside the same transaction as the effect, so a re-delivered event is detected and skipped — turning at-least-once into effectively-once.",
+      "code": {
+        "language": "go",
+        "editable": true,
+        "code": "package main\n\nimport \"fmt\"\n\ntype Event struct {\n\tID     string\n\tAmount int\n}\n\n// BUG: no dedup. A duplicate delivery credits the balance twice.\nfunc handle(balance *int, e Event) {\n\t*balance += e.Amount // applied every time, even for duplicates\n\tfmt.Printf(\"applied %s (+%d) balance=%d\\n\", e.ID, e.Amount, *balance)\n}",
+        "solution": "package main\n\nimport \"fmt\"\n\ntype Event struct {\n\tID     string\n\tAmount int\n}\n\n// handle is idempotent: it claims the event id before applying the effect.\n// In real code the seen-check and the effect share ONE DB transaction.\nfunc handle(balance *int, seen map[string]bool, e Event) {\n\tif seen[e.ID] {\n\t\tfmt.Printf(\"duplicate %s ignored balance=%d\\n\", e.ID, *balance)\n\t\treturn // effectively-once: safe to ack, no double effect\n\t}\n\tseen[e.ID] = true // claim the idempotency key\n\t*balance += e.Amount\n\tfmt.Printf(\"applied %s (+%d) balance=%d\\n\", e.ID, e.Amount, *balance)\n}\n\nfunc main() {\n\tbalance := 0\n\tseen := map[string]bool{}\n\thandle(&balance, seen, Event{ID: \"evt-1\", Amount: 50})\n\thandle(&balance, seen, Event{ID: \"evt-1\", Amount: 50}) // duplicate delivery\n\tfmt.Println(\"final balance:\", balance) // 50, not 100\n}",
+        "expectedOutput": "applied evt-1 (+50) balance=50\nduplicate evt-1 ignored balance=50\nfinal balance: 50"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Why does two-phase commit (2PC) scale poorly across microservices?",
+      "options": ["It uses too much CPU on the coordinator", "Participants hold locks and block between prepare and commit, and a coordinator crash leaves them 'in doubt'", "It requires all services to share one database", "It cannot serialize its messages efficiently"],
+      "answerIndex": 1,
+      "explanation": "2PC is synchronous and blocking: each participant locks rows during the prepare phase and holds them until the coordinator says commit or abort. If the coordinator crashes after prepare, participants are stuck in-doubt holding locks, coupling every service's availability together. Sagas avoid this by committing each local step immediately and compensating on failure."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This service commits the order and then publishes the event. It looks fine but occasionally state and events diverge. What's the root issue?",
+      "code": "tx.Commit()               // (1) order saved\nerr := broker.Publish(evt) // (2) can fail or the process can crash here\nif err != nil {\n\tlog.Println(\"publish failed\") // order exists but no event emitted\n}",
+      "options": ["tx.Commit() should be deferred", "This is the dual-write problem: the commit and the publish are two separate, non-atomic writes", "broker.Publish should run before Commit", "The error should be returned instead of logged"],
+      "answerIndex": 1,
+      "explanation": "There is no transaction spanning the database and the broker, so the commit can succeed while the publish fails (or the process crashes between them), leaving the order saved but its event never emitted. The fix is the transactional outbox: write the event into an outbox table inside the SAME DB transaction as the order, then relay it asynchronously. Publishing first has the mirror problem (event without state)."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the consumer so a re-delivered event is processed at most once (effectively-once).",
+      "codeBefore": "tx, _ := db.BeginTx(ctx, nil)\n_, err := tx.ExecContext(ctx, `INSERT INTO processed_events(id) VALUES($1)`, e.ID)\nif",
+      "codeAfter": "{\n\treturn nil // duplicate: already handled, safe to ack\n}\napplyEffect(tx, e)\ntx.Commit()",
+      "options": ["isUniqueViolation(err)", "err == nil", "e.ID == \"\"", "tx == nil"],
+      "answerIndex": 0,
+      "explanation": "Inserting the event id into a processed_events table with a unique constraint claims the idempotency key. If the id was already processed, the insert fails with a unique-violation error, so isUniqueViolation(err) is true and we return early without re-applying the effect. Because the dedup claim and the effect share one transaction, duplicates collapse to no-ops."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "In this orchestrated saga, 'reserve' fails after 'charge' committed. What does the orchestrator do?",
+      "code": "if err := charge(ctx, id); err != nil {\n\treturn err\n}\nif err := reserve(ctx, id); err != nil { // fails: out of stock\n\t_ = refund(ctx, id) // compensate the charge\n\treturn err\n}\nschedule(ctx, id)",
+      "options": ["It retries reserve until it succeeds", "It runs refund to compensate the committed charge, then returns the error; schedule never runs", "It rolls back the charge transaction automatically", "It proceeds to schedule anyway"],
+      "answerIndex": 1,
+      "explanation": "The charge already committed in its own service, so it cannot be rolled back — the orchestrator instead runs the compensating action refund to semantically undo it, then returns the error. schedule is never reached. This commit-then-compensate flow is exactly how sagas replace global atomicity."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-saga-runner",
+      "title": "Build a saga runner with reverse-order compensation",
+      "instructions": "Implement `Run(ctx context.Context, steps []Step) error` where each `Step` has a `Forward` and a `Compensate` func. Run each Forward in order; if one fails, run Compensate for every already-succeeded step in REVERSE order, then return an error wrapping the failing step's name. If all succeed, return nil. Do not compensate the step that itself failed (its Forward did not commit).",
+      "starter": {
+        "language": "go",
+        "editable": true,
+        "code": "package solution\n\nimport \"context\"\n\ntype Step struct {\n\tName       string\n\tForward    func(ctx context.Context) error\n\tCompensate func(ctx context.Context) error\n}\n\n// Run executes steps in order; on failure it compensates completed steps in reverse.\nfunc Run(ctx context.Context, steps []Step) error {\n\t// TODO: run each Forward; on error, compensate done steps in reverse and return.\n\treturn nil\n}"
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"fmt\"\n)\n\ntype Step struct {\n\tName       string\n\tForward    func(ctx context.Context) error\n\tCompensate func(ctx context.Context) error\n}\n\n// Run executes steps in order; on failure it compensates completed steps in reverse.\nfunc Run(ctx context.Context, steps []Step) error {\n\tvar done []Step // steps whose Forward committed\n\tfor _, s := range steps {\n\t\tif err := s.Forward(ctx); err != nil {\n\t\t\t// Unwind: compensate everything already done, newest first.\n\t\t\tfor i := len(done) - 1; i >= 0; i-- {\n\t\t\t\t_ = done[i].Compensate(ctx) // best-effort, idempotent\n\t\t\t}\n\t\t\treturn fmt.Errorf(\"saga failed at %q: %w\", s.Name, err)\n\t\t}\n\t\tdone = append(done, s)\n\t}\n\treturn nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"testing\"\n)\n\nfunc TestCompensatesInReverse(t *testing.T) {\n\tvar order []string\n\tmk := func(name string, fail bool) Step {\n\t\treturn Step{\n\t\t\tName: name,\n\t\t\tForward: func(ctx context.Context) error {\n\t\t\t\tif fail {\n\t\t\t\t\treturn errors.New(\"boom\")\n\t\t\t\t}\n\t\t\t\torder = append(order, \"F:\"+name)\n\t\t\t\treturn nil\n\t\t\t},\n\t\t\tCompensate: func(ctx context.Context) error {\n\t\t\t\torder = append(order, \"C:\"+name)\n\t\t\t\treturn nil\n\t\t\t},\n\t\t}\n\t}\n\tsteps := []Step{mk(\"a\", false), mk(\"b\", false), mk(\"c\", true)}\n\terr := Run(context.Background(), steps)\n\tif err == nil {\n\t\tt.Fatal(\"expected error\")\n\t}\n\twant := []string{\"F:a\", \"F:b\", \"C:b\", \"C:a\"} // c never committed; b then a compensated\n\tif len(order) != len(want) {\n\t\tt.Fatalf(\"got %v want %v\", order, want)\n\t}\n\tfor i := range want {\n\t\tif order[i] != want[i] {\n\t\t\tt.Fatalf(\"got %v want %v\", order, want)\n\t\t}\n\t}\n}\n\nfunc TestAllSucceed(t *testing.T) {\n\tmk := func() Step {\n\t\treturn Step{\n\t\t\tForward:    func(ctx context.Context) error { return nil },\n\t\t\tCompensate: func(ctx context.Context) error { return nil },\n\t\t}\n\t}\n\tif err := Run(context.Background(), []Step{mk(), mk()}); err != nil {\n\t\tt.Fatalf(\"unexpected error: %v\", err)\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Track the steps whose Forward returned nil in a 'done' slice as you go.",
+        "On the first Forward error, loop 'done' from len-1 down to 0 calling Compensate — newest committed step compensates first.",
+        "Do not compensate the failing step itself; its Forward never committed, so it isn't in 'done'."
+      ]
+    },
+    {
+      "id": "go-lab-outbox-relay",
+      "title": "Build an idempotent outbox relay pass",
+      "instructions": "Implement `Relay(rows []*OutboxRow, publish func(OutboxRow) error) error`. For each row that is not yet Sent, call publish; only if publish returns nil set row.Sent = true. If publish returns an error, STOP immediately and return that error (leave the current and remaining rows unsent so a later pass retries). Already-sent rows must be skipped (never published twice by this pass).",
+      "starter": {
+        "language": "go",
+        "editable": true,
+        "code": "package solution\n\ntype OutboxRow struct {\n\tID      int\n\tTopic   string\n\tPayload string\n\tSent    bool\n}\n\n// Relay publishes unsent rows, marking each sent only after a confirmed publish.\nfunc Relay(rows []*OutboxRow, publish func(OutboxRow) error) error {\n\t// TODO: skip sent rows; publish unsent ones; mark sent on success; stop on error.\n\treturn nil\n}"
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\ntype OutboxRow struct {\n\tID      int\n\tTopic   string\n\tPayload string\n\tSent    bool\n}\n\n// Relay publishes unsent rows, marking each sent only after a confirmed publish.\n// On a publish error it stops so the failed and remaining rows retry next pass.\nfunc Relay(rows []*OutboxRow, publish func(OutboxRow) error) error {\n\tfor _, row := range rows {\n\t\tif row.Sent {\n\t\t\tcontinue // already delivered; never publish twice\n\t\t}\n\t\tif err := publish(*row); err != nil {\n\t\t\treturn err // leave unsent; next pass retries (at-least-once)\n\t\t}\n\t\trow.Sent = true // marked sent ONLY after a confirmed publish\n\t}\n\treturn nil\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"errors\"\n\t\"testing\"\n)\n\nfunc TestRelaySkipsSentAndStopsOnError(t *testing.T) {\n\trows := []*OutboxRow{\n\t\t{ID: 1, Sent: true},           // already sent -> skip\n\t\t{ID: 2},                       // publish ok\n\t\t{ID: 3},                       // publish fails -> stop\n\t\t{ID: 4},                       // never reached this pass\n\t}\n\tvar published []int\n\terr := Relay(rows, func(r OutboxRow) error {\n\t\tif r.ID == 3 {\n\t\t\treturn errors.New(\"broker down\")\n\t\t}\n\t\tpublished = append(published, r.ID)\n\t\treturn nil\n\t})\n\tif err == nil {\n\t\tt.Fatal(\"expected error from failing publish\")\n\t}\n\tif len(published) != 1 || published[0] != 2 {\n\t\tt.Fatalf(\"published=%v want [2]\", published)\n\t}\n\tif !rows[1].Sent {\n\t\tt.Fatal(\"row 2 should be marked sent\")\n\t}\n\tif rows[2].Sent || rows[3].Sent {\n\t\tt.Fatal(\"rows 3 and 4 must remain unsent for retry\")\n\t}\n}\n\nfunc TestRelayAllSucceed(t *testing.T) {\n\trows := []*OutboxRow{{ID: 1}, {ID: 2}}\n\tif err := Relay(rows, func(r OutboxRow) error { return nil }); err != nil {\n\t\tt.Fatalf(\"unexpected error: %v\", err)\n\t}\n\tif !rows[0].Sent || !rows[1].Sent {\n\t\tt.Fatal(\"all rows should be marked sent\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Skip rows where row.Sent is already true with continue.",
+        "Set row.Sent = true only AFTER publish returns nil — never before.",
+        "On a publish error, return immediately so the failed and later rows stay unsent for the next relay pass."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-dual-write",
+      "difficulty": "advanced",
+      "title": "Orders exist but downstream never got the event (dual-write)",
+      "symptom": "Under normal load everything works, but during broker blips or deploys some orders are saved in the database yet the shipping/analytics services never receive an 'order.created' event. Data is silently inconsistent between services and there is no error the client ever sees.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func CreateOrder(ctx context.Context, db *sql.DB, broker Broker, o Order) error {\n\t// (1) commit the business state\n\tif _, err := db.ExecContext(ctx,\n\t\t`INSERT INTO orders(id, total) VALUES($1, $2)`, o.ID, o.Total); err != nil {\n\t\treturn err\n\t}\n\t// (2) then publish the event — SEPARATE, non-atomic write\n\tif err := broker.Publish(ctx, \"order.created\", o.JSON()); err != nil {\n\t\t// order is already committed; the event is lost forever\n\t\treturn err\n\t}\n\treturn nil\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "This is the classic dual-write problem. The database commit at (1) and the broker publish at (2) are two independent writes with no transaction spanning them. If Publish fails — or the process crashes between (1) and (2) — the order row exists but its event is never emitted, so downstream services diverge permanently. Returning the error doesn't help: the order is already durably committed, and retrying the whole function would double-insert the order. You cannot make a database and a message broker commit atomically together, so ordering the two writes will never be safe.",
+      "commonMistakes": [
+        "Assuming 'commit then publish' is atomic because the two lines are adjacent.",
+        "Trying to fix it by publishing BEFORE the commit — that just flips the failure to 'event emitted but state never saved'.",
+        "Retrying the whole handler on publish failure, which re-inserts the already-committed order."
+      ],
+      "fixChallenge": "Make the state change and the event commit atomically by writing the event into an outbox table inside the SAME transaction as the order, then deliver it with a separate relay loop.",
+      "solution": {
+        "language": "go",
+        "code": "// Write the order AND the event in ONE transaction (transactional outbox).\nfunc CreateOrder(ctx context.Context, db *sql.DB, o Order) error {\n\ttx, err := db.BeginTx(ctx, nil)\n\tif err != nil {\n\t\treturn err\n\t}\n\tdefer tx.Rollback() // no-op after Commit\n\n\tif _, err := tx.ExecContext(ctx,\n\t\t`INSERT INTO orders(id, total) VALUES($1, $2)`, o.ID, o.Total); err != nil {\n\t\treturn err\n\t}\n\t// Same tx: the event can never be lost relative to the state change.\n\tif _, err := tx.ExecContext(ctx,\n\t\t`INSERT INTO outbox(id, topic, payload, sent) VALUES($1, 'order.created', $2, false)`,\n\t\to.ID, o.JSON()); err != nil {\n\t\treturn err\n\t}\n\treturn tx.Commit() // order + event commit together, or neither does\n}\n\n// A separate background relay delivers unsent events at-least-once.\nfunc relayLoop(ctx context.Context, db *sql.DB, broker Broker) {\n\trows, _ := db.QueryContext(ctx,\n\t\t`SELECT id, topic, payload FROM outbox WHERE sent = false ORDER BY id`)\n\tdefer rows.Close()\n\tfor rows.Next() {\n\t\tvar id, topic, payload string\n\t\t_ = rows.Scan(&id, &topic, &payload)\n\t\tif err := broker.Publish(ctx, topic, payload); err != nil {\n\t\t\treturn // leave sent=false; next pass retries (idempotent consumers dedup)\n\t\t}\n\t\t_, _ = db.ExecContext(ctx, `UPDATE outbox SET sent = true WHERE id = $1`, id)\n\t}\n}",
+        "expectedOutput": "// Order and 'order.created' outbox row commit atomically;\n// the relay publishes the event (retrying on failure) so downstream always receives it."
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-micro-4-th-1",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Why doesn't two-phase commit (2PC) scale across microservices, and what do sagas trade to replace it?",
+        "directAnswer": "2PC uses a coordinator that runs a prepare phase (every participant locks rows and votes) then a commit phase. Between those phases participants hold locks and block, and if the coordinator crashes after prepare they are stuck 'in doubt' — unable to commit or abort on their own — with locks still held. This makes every service's availability depend on every other service and on the coordinator, so it doesn't scale and fails badly under partial failure. A saga replaces global atomicity with a sequence of independent local transactions, each with a compensating action; it trades ACID atomicity for availability and eventual consistency, since each step commits immediately and failures are handled by compensating completed steps rather than by a global rollback.",
+        "detailedExplanation": {
+          "whatItIs": "2PC is a blocking, coordinator-driven atomic-commit protocol; a saga is a lock-free sequence of local transactions with compensations.",
+          "whyItExists": "2PC exists to make multiple resources commit atomically; sagas exist because that atomicity is too costly and fragile across independent, network-separated services.",
+          "howItWorks": "2PC holds locks from prepare to commit; a saga commits each step's local transaction and, on failure, runs compensating transactions in reverse to semantically undo prior steps."
+        },
+        "whyImportant": "Choosing sagas over 2PC is a defining decision in microservice design and a very common senior-level interview question about consistency vs availability.",
+        "realWorldExample": "An order flow (charge, reserve inventory, ship) uses a saga: if inventory is out of stock after payment, the saga refunds instead of trying to hold locks across the payment and inventory databases with 2PC.",
+        "followUps": [
+          { "question": "When might 2PC still be acceptable?", "answer": "Within a single trust/latency domain with a reliable coordinator and few short-lived participants (e.g., an XA transaction across two databases in the same datacenter), where blocking windows are tiny and services aren't independently deployed." },
+          { "question": "What does 'eventual consistency' mean for a saga's observers?", "answer": "Between steps, different services see different states (e.g., paid but not yet reserved); the system converges to a consistent outcome once the saga completes or fully compensates, so readers must tolerate intermediate states." }
+        ]
+      },
+      {
+        "id": "go-micro-4-th-2",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Explain the transactional outbox pattern and the dual-write problem it solves.",
+        "directAnswer": "The dual-write problem occurs when a service must update its database AND publish an event, but those are two separate writes with no shared transaction: the DB commit can succeed while the publish fails (or the process crashes between them), leaving state and events divergent forever. The transactional outbox solves this by writing the event into an 'outbox' table in the SAME local transaction as the state change, so they commit atomically. A separate relay process then reads unsent outbox rows, publishes them to the broker, and marks them sent — delivering at-least-once. Because a row is only marked sent after a confirmed publish, a crash mid-relay just re-publishes, and idempotent consumers absorb the duplicate. This turns two unreliable writes into one atomic write plus a retryable relay.",
+        "detailedExplanation": {
+          "whatItIs": "A pattern that stages outbound events in a DB table within the state-changing transaction and relays them asynchronously to the broker.",
+          "whyItExists": "Because a database and a message broker cannot participate in one atomic transaction, so naive 'commit then publish' loses events.",
+          "howItWorks": "Business write + outbox insert share one tx and Commit together; a relay polls unsent rows (or uses change-data-capture), publishes, then marks them sent."
+        },
+        "whyImportant": "Reliable event publishing underpins every event-driven system; the outbox is the standard, framework-agnostic way to avoid silent cross-service drift.",
+        "realWorldExample": "An orders service inserts the order and an 'order.created' row into the outbox in one transaction; a Debezium/CDC or polling relay publishes it to Kafka so shipping and analytics never miss an order.",
+        "followUps": [
+          { "question": "Polling relay vs change-data-capture (CDC)?", "answer": "Polling is simple (SELECT unsent rows on an interval) but adds query load and latency; CDC (e.g., Debezium tailing the WAL) is lower-latency and lower-overhead but more infrastructure to operate." },
+          { "question": "Why must the relay tolerate publishing an already-sent event?", "answer": "A crash after publish but before marking sent will re-publish on the next pass, so delivery is at-least-once; consumers must be idempotent to make it effectively-once." }
+        ]
+      },
+      {
+        "id": "go-micro-4-th-3",
+        "tech": "golang",
+        "category": "advanced",
+        "difficulty": "advanced",
+        "question": "Why is exactly-once delivery impossible, and how do idempotency keys give you 'effectively-once'?",
+        "directAnswer": "Exactly-once DELIVERY over a network is impossible because acknowledgements can be lost: after a consumer processes a message, its ack can vanish, so the broker must redeliver to be safe — you cannot distinguish 'message lost' from 'ack lost'. Brokers therefore guarantee at-least-once (or at-most-once), never exactly-once delivery. The achievable goal is effectively-once PROCESSING: make consumers idempotent so handling a duplicate has no additional effect. You do this with an idempotency key — a unique id per operation/event — recorded in a dedup table that you check-and-insert inside the same transaction as the effect. If the key already exists, you skip the effect and ack; if not, you apply the effect and record the key atomically. The duplicate delivery still happens, but it collapses to a no-op.",
+        "detailedExplanation": {
+          "whatItIs": "Effectively-once is idempotent processing layered over at-least-once delivery using a per-operation idempotency key and a dedup store.",
+          "whyItExists": "Because lost acknowledgements make true exactly-once delivery unattainable, so correctness must be enforced at the consumer instead of the transport.",
+          "howItWorks": "The consumer atomically inserts the event id into a processed_events table (unique constraint) and applies the effect in the same transaction; a unique-violation means duplicate, so it no-ops and acks."
+        },
+        "whyImportant": "Every retry-based distributed system relies on idempotency; misunderstanding 'exactly-once' leads to double charges and corrupted state, and it's a frequent interview trap.",
+        "realWorldExample": "A payments consumer keys on the payment intent id: a redelivered 'capture' event finds the id already in the dedup table and acks without charging the card a second time.",
+        "followUps": [
+          { "question": "Where do idempotency keys come from?", "answer": "From the producer: a stable business id (order id, payment intent id) or a client-supplied Idempotency-Key header, carried on the event so retries reuse the same key." },
+          { "question": "How do you keep the dedup table from growing forever?", "answer": "Expire old keys with a TTL/retention window longer than the maximum possible redelivery/retry horizon, then delete or partition-drop older rows." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-micro-4-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "Your checkout charges the customer and then reserves inventory in a separate service. Sometimes the charge succeeds but inventory is out of stock, and customers are billed for orders that never ship. How do you fix the flow?",
+        "directAnswer": "Model checkout as a saga with explicit compensations instead of hoping both steps succeed. Order the steps and give each a compensation: charge (compensate: refund), reserve inventory (compensate: release), schedule shipping. Run them in sequence; if reserve fails after charge committed, run the charge's compensation (refund) — you cannot roll the charge back because it already committed in the payment service. Persist saga progress so it survives a crash and can resume or compensate on restart, make every compensation idempotent (a refund attempted twice must refund once), and put the irreversible/hard-to-undo step (shipping) last so most failures are cheaply compensable. Emit each step's transition via an outbox so the workflow is reliable and observable. The customer is either fully served or fully refunded — never billed for nothing.",
+        "detailedExplanation": {
+          "whatItIs": "An orchestrated saga replacing an unsafe 'charge then reserve' with commit-then-compensate steps.",
+          "whyItExists": "Because the charge and reservation live in different services/databases, there is no shared transaction, so partial failure must be handled by compensation.",
+          "howItWorks": "The orchestrator advances step by step, persists progress, and on any failure runs the completed steps' compensations in reverse (e.g., refund) to reach a consistent end state."
+        },
+        "whyImportant": "Billing customers for undelivered goods is a direct trust-and-revenue failure; sagas are the standard remedy and a classic system-design scenario.",
+        "realWorldExample": "After the fix, an out-of-stock SKU triggers an automatic refund within the saga; dashboards show 'compensated' orders instead of support tickets for phantom charges.",
+        "followUps": [
+          { "question": "Why put shipping (or emailing) last?", "answer": "Irreversible steps are hard or impossible to compensate; ordering them last (as the 'pivot') means most failures happen before them and can be cleanly undone." },
+          { "question": "How do you resume a saga after the orchestrator crashes mid-flow?", "answer": "Persist the saga state (current step, completed steps) durably; on restart, read it and either continue the next step or run compensations for completed steps, all idempotently." }
+        ]
+      },
+      {
+        "id": "go-micro-4-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "advanced",
+        "question": "After adding retries to your event producer, downstream consumers occasionally double-apply effects (a wallet gets credited twice). The broker is at-least-once. How do you make the system correct without removing retries?",
+        "directAnswer": "Keep at-least-once delivery and retries, but make consumers idempotent so duplicates are harmless — the goal is effectively-once processing, since exactly-once delivery is impossible. Attach a stable idempotency key to each event at the producer (a business id or a generated event id that survives retries, so a retried publish reuses the same key). In the consumer, wrap the effect and a dedup claim in ONE database transaction: insert the event id into a processed_events table with a unique constraint, and on a unique-violation skip the effect and ack (it's a duplicate). Only commit the effect together with the recorded key, so a crash can't apply the effect without recording the key or vice versa. Add a retention/TTL policy to bound the dedup table. Now a redelivered credit event finds its key already recorded and acks without crediting again.",
+        "detailedExplanation": {
+          "whatItIs": "Idempotent consumers using an idempotency key plus a transactional dedup table over an at-least-once broker.",
+          "whyItExists": "Retries and lost acks guarantee duplicates; correctness must be enforced at the consumer, not by demanding exactly-once from the transport.",
+          "howItWorks": "The consumer atomically claims the key (unique insert) and applies the effect in the same tx; duplicates hit the unique constraint and no-op."
+        },
+        "whyImportant": "Double-applied financial effects are severe, and the fix (idempotency) is the universal pattern behind safe retries in distributed systems.",
+        "realWorldExample": "Stripe-style APIs require an Idempotency-Key header so a retried charge request returns the original result instead of charging twice; the same principle applied to the internal consumer stops the double credit.",
+        "followUps": [
+          { "question": "Why must the dedup claim and the effect share a transaction?", "answer": "Otherwise a crash between them either applies the effect without recording the key (duplicate on redelivery) or records the key without applying the effect (lost update)." },
+          { "question": "What key do you use when there's no natural business id?", "answer": "Generate a UUID at the producer and stamp it on the event before the first send, so all retries of that send carry the identical key." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-micro-4-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design a reliable order-processing pipeline across Order, Payment, Inventory, and Shipping services in Go. It must never lose events, never double-charge, and stay available under partial failures. Walk through the design.",
+        "directAnswer": "Use an orchestrated saga plus the transactional outbox and idempotent consumers. The Order service owns the saga: on checkout it writes the order row and an 'order.created' event into an outbox table in ONE local transaction (killing the dual-write problem). A relay (polling or CDC/Debezium) publishes outbox events at-least-once to the broker. The orchestrator drives steps — Payment.Charge, Inventory.Reserve, Shipping.Schedule — persisting saga state after each so it can resume or compensate after a crash; each step has an idempotent compensation (Refund, Release) run in reverse on failure, with the irreversible shipping step last. Every service consumes events idempotently: it claims the event's idempotency key in a dedup table inside the same transaction as its effect, so at-least-once delivery becomes effectively-once (no double charge). Observability: propagate a correlation/saga id through events and logs, expose saga state and outbox lag as metrics, and alert on stuck sagas and unsent outbox rows. The result is an available, eventually consistent pipeline where any partial failure ends in a fully completed or fully compensated order.",
+        "detailedExplanation": {
+          "whatItIs": "An event-driven saga with per-service outboxes, a relay, and idempotent consumers coordinating four services.",
+          "whyItExists": "Multi-service operations can't use one ACID transaction, so reliability comes from atomic outbox writes, compensations, and idempotency.",
+          "howItWorks": "Outbox makes state+event atomic; relay delivers at-least-once; the orchestrator sequences steps and compensates on failure; consumers dedup to process each event once."
+        },
+        "whyImportant": "It integrates every core distributed-transaction concept into one system and is a canonical staff-level design interview.",
+        "realWorldExample": "Large e-commerce platforms run exactly this shape — outbox + Kafka + saga orchestrator + idempotent consumers — to guarantee orders are fulfilled-or-refunded without shared databases or 2PC.",
+        "followUps": [
+          { "question": "Orchestration or choreography here?", "answer": "Orchestration, because the flow is multi-step and must be observable and testable; a central orchestrator makes the sequence and compensation logic explicit, whereas choreography would scatter it across event handlers." },
+          { "question": "How do you detect and recover a stuck saga?", "answer": "Persist saga state with timestamps; a reaper scans for sagas past a step deadline and either retries the pending step or triggers compensation, alerting operators on repeated failures." },
+          { "question": "How do you monitor the outbox relay's health?", "answer": "Emit the count and age of unsent outbox rows as metrics; alert when the oldest unsent row exceeds a threshold, which signals the relay or broker is down." }
+        ]
+      },
+      {
+        "id": "go-micro-4-sd-2",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design the transactional-outbox subsystem itself: schema, the relay's delivery guarantees, ordering, and how you'd scale it and avoid duplicate publishes across relay replicas.",
+        "directAnswer": "Schema: an outbox table with (id PK, aggregate_id, topic, payload, created_at, sent_at NULL, and optionally a sequence/version for ordering). Producers insert into it in the same transaction as the business write. Delivery: the relay selects unsent rows (sent_at IS NULL) ordered by id, publishes each to the broker, then sets sent_at — marking sent ONLY after a confirmed publish, giving at-least-once (a crash after publish re-publishes). Ordering: to preserve per-aggregate order, publish rows for the same aggregate_id in id order and use the aggregate_id as the broker partition key. Scaling & avoiding duplicate concurrent publishes: either run a single relay leader (leader election) or shard the outbox by aggregate_id across relay replicas so each row is owned by one relay; when polling, claim a batch with SELECT ... FOR UPDATE SKIP LOCKED so two replicas never grab the same rows. Prefer CDC (Debezium tailing the WAL) at high volume to cut polling load and latency. Consumers remain idempotent, so any residual duplicates are absorbed. Add retention to purge old sent rows.",
+        "detailedExplanation": {
+          "whatItIs": "The storage, delivery loop, ordering strategy, and horizontal-scaling design for a transactional outbox relay.",
+          "whyItExists": "To deliver events reliably and in order without the relay itself becoming a bottleneck, a source of duplicates, or a single point of failure.",
+          "howItWorks": "Atomic outbox inserts + a relay that claims rows with SKIP LOCKED (or CDC), publishes, then marks sent; partition by aggregate_id for ordering and sharding."
+        },
+        "whyImportant": "The relay is where naive outbox implementations break (double publishes, ordering violations, poll storms); designing it well is a deep systems question.",
+        "realWorldExample": "A payments platform shards the outbox by account id with SKIP LOCKED across relay pods, uses account id as the Kafka partition key for ordering, and later migrates to Debezium CDC to remove polling load.",
+        "followUps": [
+          { "question": "Why SELECT ... FOR UPDATE SKIP LOCKED?", "answer": "It lets multiple relay workers claim disjoint batches concurrently without blocking each other, so no two workers publish the same outbox row." },
+          { "question": "Polling relay vs CDC — when to switch?", "answer": "Start with polling for simplicity; switch to CDC when poll frequency/query load or delivery latency becomes a problem at scale, accepting the added operational complexity." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-micro-4-cd-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "advanced",
+        "question": "Implement an idempotent event processor. Signature: `func Process(store IdempotencyStore, e Event, effect func(Event) error) error` where store has `Seen(id string) (bool, error)` and `Mark(id string) error`. Apply effect at most once per event id, treat a duplicate as success, and don't mark the id if the effect fails.",
+        "thoughtProcess": "At-least-once delivery means the same event id can arrive twice, so I dedup on e.ID. First check Seen: if already seen, it's a duplicate — return nil (ack, no re-apply). Otherwise run the effect; only if the effect succeeds do I Mark the id as processed, so a failed effect can be safely retried later. In production the Seen-check, effect, and Mark would live in one DB transaction (e.g., an INSERT with a unique constraint) to be atomic; here I model the ordering that gives effectively-once semantics: never mark before the effect commits, and never re-apply a marked id.",
+        "solution": {
+          "code": "type Event struct {\n\tID     string\n\tAmount int\n}\n\ntype IdempotencyStore interface {\n\tSeen(id string) (bool, error) // has this id already been processed?\n\tMark(id string) error         // record id as processed\n}\n\n// Process applies effect at most once per event id (effectively-once).\nfunc Process(store IdempotencyStore, e Event, effect func(Event) error) error {\n\tseen, err := store.Seen(e.ID)\n\tif err != nil {\n\t\treturn err\n\t}\n\tif seen {\n\t\treturn nil // duplicate delivery: already applied, safe to ack\n\t}\n\tif err := effect(e); err != nil {\n\t\treturn err // effect failed: DON'T mark, so a retry can re-run it\n\t}\n\treturn store.Mark(e.ID) // record only AFTER the effect succeeded\n}",
+          "language": "go"
+        },
+        "lineByLine": "Seen(e.ID) checks the dedup store; on a real duplicate we return nil immediately so the caller acks without re-applying. If unseen, we run effect(e); if it errors we return WITHOUT marking, leaving the id unrecorded so a later redelivery retries the effect. Only when the effect succeeds do we call Mark(e.ID), recording the id so future duplicates short-circuit. The critical invariant is the ordering: mark strictly after a successful effect, and in production wrap the check+effect+mark in one transaction (or use a unique-constraint insert) so the two can't diverge across a crash.",
+        "timeComplexity": "O(1) plus the cost of the store's Seen/Mark and the effect.",
+        "spaceComplexity": "O(1) per event (one dedup record persisted per unique id).",
+        "followUps": [
+          { "question": "Why is check-then-mark racy across two goroutines, and how do you fix it?", "answer": "Two workers can both Seen==false and both apply the effect. Fix it by making Mark an atomic INSERT with a unique constraint and treating a unique-violation as 'already processed', or by doing check+mark in one transaction with a row lock." },
+          { "question": "How would you bound the dedup store's growth?", "answer": "Attach a TTL/retention longer than the max redelivery window and periodically purge or partition-drop expired ids." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Give each service its own database (no shared DB, no cross-service 2PC) and coordinate multi-step operations with an orchestrated saga owned by the initiating service. Every service that emits events uses a transactional outbox so state and events commit atomically, and a relay (polling with SELECT ... FOR UPDATE SKIP LOCKED, or CDC/Debezium at scale) delivers them. Persist saga state as a durable state machine so it can resume or compensate after a crash. Keep compensations as first-class, tested code paths, and order irreversible steps last (pivot transactions).",
+    "performance": "Sagas are asynchronous and lock-free per service, so they scale far better than blocking 2PC, at the cost of end-to-end latency (sequential steps + broker hops) and write amplification (outbox and dedup rows). Tune the relay's poll interval and batch size, index the outbox on (sent, id), and move to CDC when polling load or latency hurts. Partition the broker by aggregate id for ordered, parallel consumption. Bound and reap the dedup/outbox tables so they don't bloat and slow queries.",
+    "concurrency": "The outbox relay may run as multiple replicas: use leader election or SELECT ... FOR UPDATE SKIP LOCKED so no two workers publish the same row. Consumers run many handlers concurrently, so the dedup claim must be atomic (unique-constraint insert inside the effect's transaction) to avoid a check-then-act race that double-applies. Propagate context for cancellation, and make every compensation and effect safe to run concurrently and to be retried.",
+    "reliability": "Delivery is at-least-once by design (mark sent only after a confirmed publish), so consumers MUST be idempotent to reach effectively-once. Make compensations idempotent and retryable, persist saga progress so partial work is never lost, and add a reaper that detects stuck sagas (past a step deadline) to retry or compensate. Never delete original rows in a compensation — append offsetting records (refunds, cancellations) for auditability.",
+    "observability": "Propagate a correlation/saga id through every event, log, and span so a whole distributed transaction is traceable end to end (OpenTelemetry). Emit metrics for saga step durations and outcomes (completed/compensated/stuck), outbox lag (count and age of unsent rows), relay publish rate/errors, and consumer duplicate-hit rate. Alert when the oldest unsent outbox row or a saga exceeds its deadline, both early signals of a broker or relay failure.",
+    "security": "Treat outbox payloads as data at rest: don't store raw secrets or full PANs in events; store references or tokenized values. Authenticate and authorize the relay's broker connection, and validate/size-limit event payloads on the consumer side. Ensure idempotency keys are unforgeable where they gate financial effects (derive from server-side ids, not solely client input), and audit compensations since they move money.",
+    "caseStudies": [
+      { "company": "Global e-commerce checkout platform", "problem": "Customers were occasionally charged for orders that couldn't be fulfilled because payment and inventory lived in separate services with no shared transaction.", "solution": "Introduced an orchestrated checkout saga (charge -> reserve -> ship) with idempotent compensations (refund, release) and a transactional outbox for reliable event emission.", "tradeoffs": "Added latency and operational surface (relay, dedup tables, compensation code) versus the previous naive flow, and engineers had to design for eventual consistency.", "lessons": "Commit-then-compensate with idempotent compensations eliminates phantom charges; ordering irreversible steps last keeps most failures cheaply reversible." },
+      { "company": "Payments / ledger service", "problem": "A 'commit then publish' design silently lost events during broker blips, and producer retries occasionally double-credited wallets under at-least-once delivery.", "solution": "Adopted the transactional outbox (atomic state+event write) with a SKIP LOCKED relay, later migrated to Debezium CDC, and made all consumers idempotent via a keyed dedup table inside the effect transaction.", "tradeoffs": "CDC removed polling load but added infrastructure to operate, and dedup tables required retention management to control growth.", "lessons": "You can't get exactly-once delivery, so pair at-least-once with idempotent consumers; the outbox is the reliable bridge between a database and a broker." }
+    ]
+  },
+  "keyTakeaways": [
+    "Two-phase commit blocks and holds locks between prepare and commit and strands participants if the coordinator dies, so it doesn't scale across independently deployed services.",
+    "A saga replaces global atomicity with a sequence of local transactions plus compensating actions run in reverse on failure — trading ATOMICITY for availability and eventual consistency.",
+    "A compensation is not a rollback: the original already committed, so you write a NEW idempotent offsetting action (refund, release), and you order irreversible steps last.",
+    "The dual-write problem (DB commit succeeds, broker publish fails) is solved by the transactional outbox: write state and event in one transaction, then relay the event asynchronously.",
+    "Exactly-once delivery is impossible; brokers are at-least-once, so make consumers idempotent with an idempotency key + dedup table to achieve effectively-once processing.",
+    "Choose orchestration for complex, observable workflows and choreography for simple event chains; either way, persist progress and propagate a correlation id for recovery and tracing."
+  ]
+}

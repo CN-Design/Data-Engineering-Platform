@@ -1,0 +1,364 @@
+{
+  "schema": "backend.v1",
+  "id": "golang-web-10",
+  "tech": "golang",
+  "domain": "backend-engineering",
+  "title": "Structured Logging (slog, zap & zerolog)",
+  "difficulty": "intermediate",
+  "summary": "Production logs are read by machines, not humans: they are shipped to Loki, Elasticsearch, or Datadog and queried by field. `fmt.Println` and free-form `log.Printf` strings force fragile regex parsing and lose context. **Structured logging** emits each event as a set of typed key/value attributes (usually JSON), so `level=error user_id=42 latency_ms=87` is queryable, aggregatable, and stable. Go's standard `log/slog` gives you leveled, attribute-based, context-aware logging with pluggable handlers; Uber's `zap` and `zerolog` push the same idea to near-zero-allocation speed for high-volume services.",
+  "prerequisites": ["golang-web-1"],
+  "relatedConcepts": ["golang-web-1", "golang-master-8"],
+  "nestedConcepts": ["slog.Logger & handlers", "attributes & With", "log levels", "slog + context", "zap Logger vs Sugared", "zerolog fluent API"],
+  "subtopics": [
+    { "title": "Why structured over fmt.Println", "explanation": "Free-form log lines like `log.Printf(\"user %s failed with %v\", u, err)` are cheap to write but expensive to operate: your log backend must regex-parse them, fields drift between call sites, and you cannot filter `level=error AND user_id=42`. Structured logging emits typed key/value pairs (rendered as JSON in production) so every field is indexed and queryable. This is the whole reason the rest of this topic exists: once logs are structured attributes instead of sentences, everything else — levels, context, correlation IDs — becomes a first-class, machine-readable field.", "example": "package main\n\nimport (\n\t\"log\"\n\t\"log/slog\"\n\t\"os\"\n)\n\nfunc main() {\n\tuser, code := \"alice\", 500\n\n\t// Unstructured: one opaque string, must be regex-parsed downstream.\n\tlog.Printf(\"user %s failed with status %d\", user, code)\n\t// Output: 2009/11/10 23:00:00 user alice failed with status 500\n\n\t// Structured: typed fields a log backend can index and query.\n\tlogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))\n\tlogger.Error(\"request failed\", \"user\", user, \"status\", code)\n\t// Output: {\"time\":\"...\",\"level\":\"ERROR\",\"msg\":\"request failed\",\"user\":\"alice\",\"status\":500}\n}" },
+    { "title": "log/slog: Logger and Handlers", "explanation": "slog splits the front end (Logger, which you call) from the back end (Handler, which formats and writes). The stdlib ships TextHandler (key=value, human-friendly) and JSONHandler (machine-friendly); you pick per environment. slog.Default() is a package-level logger, and slog.SetDefault redirects the old log package through slog too. Understanding the Logger/Handler split is what lets you swap output formats or destinations without touching a single call site.", "example": "package main\n\nimport (\n\t\"log/slog\"\n\t\"os\"\n)\n\nfunc main() {\n\t// Text handler: readable in a terminal during development.\n\ttext := slog.New(slog.NewTextHandler(os.Stdout, nil))\n\ttext.Info(\"server started\", \"port\", 8080)\n\t// Output: time=... level=INFO msg=\"server started\" port=8080\n\n\t// JSON handler: same call site, machine-readable output for prod.\n\tjson := slog.New(slog.NewJSONHandler(os.Stdout, nil))\n\tslog.SetDefault(json)         // route slog.Info / the log pkg here\n\tslog.Info(\"server started\", \"port\", 8080)\n\t// Output: {\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"server started\",\"port\":8080}\n}" },
+    { "title": "Attributes and With", "explanation": "You attach data as key/value attributes, either inline (`logger.Info(\"msg\", \"key\", val)`) or as strongly typed `slog.Attr` values via helpers like slog.Int and slog.String, which avoid the any-boxing of the loose form. logger.With(attrs...) returns a child logger that stamps those attributes onto every subsequent line — perfect for binding a component name or user ID once. With is the mechanism that lets a correlation ID, added once per request, appear automatically on every log line in that request.", "example": "package main\n\nimport (\n\t\"log/slog\"\n\t\"os\"\n)\n\nfunc main() {\n\tbase := slog.New(slog.NewJSONHandler(os.Stdout, nil))\n\n\t// With returns a child logger carrying these attrs on every line.\n\treqLog := base.With(slog.String(\"component\", \"api\"), slog.Int(\"user\", 42))\n\treqLog.Info(\"handling request\")\n\t// Output: {...,\"msg\":\"handling request\",\"component\":\"api\",\"user\":42}\n\treqLog.Warn(\"slow query\", slog.Duration(\"took\", 0))\n\t// Output: {...,\"msg\":\"slow query\",\"component\":\"api\",\"user\":42,\"took\":0}\n}" },
+    { "title": "Log levels and when to use each", "explanation": "slog defines Debug, Info, Warn, and Error, and the Handler filters by a configurable minimum Level so you can raise verbosity in prod without a redeploy (via a LevelVar). Use Debug for developer detail, Info for normal lifecycle events, Warn for recoverable anomalies, and Error for failures that need attention — reserve Error for things a human should actually look at, or alerts lose meaning. Choosing levels deliberately is what keeps high-volume logs affordable and keeps Error meaningful for the sampling and alerting decisions later in this topic.", "example": "package main\n\nimport (\n\t\"log/slog\"\n\t\"os\"\n)\n\nfunc main() {\n\t// LevelVar lets you change the threshold at runtime.\n\tlvl := new(slog.LevelVar)\n\tlvl.Set(slog.LevelInfo)\n\tlogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))\n\n\tlogger.Debug(\"cache lookup\", \"key\", \"u:42\") // dropped: below Info\n\tlogger.Info(\"user logged in\", \"user\", 42)\n\tlogger.Error(\"db unreachable\", \"attempt\", 3)\n\t// Output: {...\"level\":\"INFO\",\"msg\":\"user logged in\",\"user\":42}\n\t// Output: {...\"level\":\"ERROR\",\"msg\":\"db unreachable\",\"attempt\":3}\n}" },
+    { "title": "slog and context: request/correlation IDs", "explanation": "slog is context-aware: the context-taking methods (InfoContext, ErrorContext, and Logger.Log) hand the ctx to the Handler, so a custom Handler can pull a correlation ID out of the context and stamp it on every line automatically. The idiomatic pattern is to store a request-scoped logger (or just the request ID) in the context in middleware, then have every handler log via that context. This is how one correlation ID, injected once per request, threads through every log line across every function the request touches — without passing a logger to each call.", "example": "package main\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n\t\"os\"\n)\n\ntype ctxKey string\n\nconst ridKey ctxKey = \"reqID\"\n\n// ridHandler wraps a Handler and injects the request ID from context.\ntype ridHandler struct{ slog.Handler }\n\nfunc (h ridHandler) Handle(ctx context.Context, r slog.Record) error {\n\tif id, ok := ctx.Value(ridKey).(string); ok {\n\t\tr.AddAttrs(slog.String(\"request_id\", id))\n\t}\n\treturn h.Handler.Handle(ctx, r)\n}\n\nfunc main() {\n\tlogger := slog.New(ridHandler{slog.NewJSONHandler(os.Stdout, nil)})\n\tctx := context.WithValue(context.Background(), ridKey, \"abc-123\")\n\tlogger.InfoContext(ctx, \"processing\") // ctx carries the ID\n\t// Output: {...,\"msg\":\"processing\",\"request_id\":\"abc-123\"}\n}" },
+    { "title": "zap and zerolog: the fast alternatives", "explanation": "For very high log volumes the stdlib's any-boxing can allocate; zap and zerolog avoid it. zap's core zap.Logger takes strongly typed fields (zap.String, zap.Int) and is essentially zero-allocation, while its SugaredLogger trades a little speed for a printf/loosely-typed API. zerolog uses a chained fluent builder (Str().Int().Msg()) that writes JSON directly into a byte buffer. When throughput matters, these libraries give you the same structured-field discipline as slog with dramatically lower per-line cost.", "example": "package main\n\nimport (\n\t\"github.com/rs/zerolog\"\n\t\"go.uber.org/zap\"\n\t\"os\"\n)\n\nfunc main() {\n\t// zap: strongly typed fields, zero-alloc core logger.\n\tz, _ := zap.NewProduction()\n\tdefer z.Sync()\n\tz.Info(\"user login\", zap.String(\"user\", \"alice\"), zap.Int(\"attempts\", 1))\n\t// Output: {\"level\":\"info\",\"msg\":\"user login\",\"user\":\"alice\",\"attempts\":1}\n\n\t// zerolog: chained fluent builder, JSON straight to the buffer.\n\tzl := zerolog.New(os.Stdout).With().Timestamp().Logger()\n\tzl.Info().Str(\"user\", \"alice\").Int(\"attempts\", 1).Msg(\"user login\")\n\t// Output: {\"level\":\"info\",\"user\":\"alice\",\"attempts\":1,\"time\":\"...\",\"message\":\"user login\"}\n}" }
+  ],
+  "foundations": {
+    "overview": "Structured logging turns each log event into a set of typed key/value attributes rather than a formatted sentence. In Go the standard log/slog gives you a Logger you call and a pluggable Handler (Text or JSON) that formats and writes; attributes attach data, levels filter it, and context carries request-scoped identity like a correlation ID. When per-line cost dominates, zap and zerolog offer the same discipline with near-zero allocations. The unifying idea: logs are data for machines first, and structure is what makes them queryable, aggregatable, and cheap to operate at scale.",
+    "formalDefinition": "A structured logger emits records consisting of a timestamp, a severity level, a message, and an ordered set of key/value attributes, serialized by a handler into a machine-parseable format (typically line-delimited JSON). In slog: a Logger dispatches Records to a Handler whose Enabled(level) gate filters and whose Handle(ctx, Record) serializes; With(attrs) yields a child Logger that prepends those attributes to every record.",
+    "whyItMatters": "Modern services emit millions of log lines that are ingested, indexed, and queried by log platforms. Structured fields make incidents debuggable (filter by user_id, trace by request_id), make dashboards and alerts possible, and keep ingestion costs predictable via levels and sampling. Unstructured logs, by contrast, are slow to parse, brittle across code changes, and nearly impossible to query at scale.",
+    "mentalModel": "Think of a log line as a row in a database table, not a sentence in a diary. Each attribute is a typed column (user_id, latency_ms, status); the message is just a label. Once you see logs as append-only rows of typed columns, you naturally add the columns you'll want to query on and stop cramming values into a prose string that no query can reach.",
+    "runtimePerspective": "slog checks Handler.Enabled(level) before building a Record, so a disabled Debug call is cheap. The loose Info(\"msg\", \"k\", v) form boxes values into any, which allocates; strongly typed slog.Attr helpers and zap/zerolog's typed fields avoid that boxing, writing directly into a reused byte buffer. Handlers are expected to be safe for concurrent use, so one Logger is shared across all request goroutines.",
+    "realWorldUsage": "Every production Go service: JSON logs shipped to Loki/Elasticsearch/Datadog/Cloud Logging, correlation IDs threaded through microservice calls, per-request loggers created in HTTP middleware, and level/sampling knobs tuned to control ingestion cost.",
+    "businessImpact": "Structured logs cut mean-time-to-resolution during incidents (query instead of grep), enable alerting on real error rates, and control observability spend — log ingestion is billed by volume, so levels and sampling directly affect the bill.",
+    "engineeringImpact": "A Logger/Handler split decouples call sites from output format, so switching from Text to JSON or adding a correlation-ID attribute is a one-line change. Per-request child loggers via With keep handlers clean while guaranteeing consistent context on every line.",
+    "performanceImpact": "The stdlib slog is fast but its loose API allocates via any-boxing on hot paths; typed slog.Attr helps. zap's core logger and zerolog are effectively zero-allocation, making them the choice for very high-throughput services. Level gating and sampling are the biggest levers: dropping Debug in prod and sampling repetitive lines slashes CPU and ingestion cost.",
+    "commonUseCases": [
+      "JSON logs shipped to Loki/Elasticsearch/Datadog and queried by field",
+      "Per-request child logger (With) carrying request_id, user, route",
+      "Correlation IDs threaded through context and logged on every line",
+      "Runtime level control (LevelVar) and sampling to cap log volume/cost"
+    ],
+    "commonMisconceptions": [
+      { "myth": "Structured logging just means logging in JSON.", "reality": "Format is secondary; the point is typed key/value attributes. A TextHandler emitting key=value pairs is still structured, and JSON prose crammed into a single message field is not." },
+      { "myth": "slog.Info(\"user\", user, \"count\") is a message plus fields.", "reality": "slog treats args after the message as alternating key/value pairs. A dangling value with no key (or a non-string key) is a bug slog reports as a !BADKEY attribute — always pass complete key/value pairs." },
+      { "myth": "zap and zerolog are always faster, so use them everywhere.", "reality": "For most services stdlib slog is more than fast enough and dependency-free. Reach for zap/zerolog only when profiling shows logging allocations matter; premature adoption adds dependencies for no gain." },
+      { "myth": "You must call log.Fatal / os.Exit to stop on a bad error.", "reality": "log.Fatal skips deferred calls (including buffered-logger Sync/Close), so buffered logs can be lost. Return the error up the stack; reserve Fatal for startup-only failures before any deferred cleanup matters." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "A request-scoped slog logger threaded through context",
+      "explanation": "Middleware mints a request ID, builds a child logger with slog.With, stores it in the context, and every handler logs via that logger — so request_id appears on every line automatically without passing a logger to each function.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os\"\n)\n\ntype ctxKey string\n\nconst logKey ctxKey = \"logger\"\n\n// fromCtx returns the request-scoped logger (or the default).\nfunc fromCtx(ctx context.Context) *slog.Logger {\n\tif l, ok := ctx.Value(logKey).(*slog.Logger); ok {\n\t\treturn l\n\t}\n\treturn slog.Default()\n}\n\n// RequestLogger stamps a request_id onto a child logger in the context.\nfunc RequestLogger(base *slog.Logger, next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\tl := base.With(slog.String(\"request_id\", \"abc-123\"), slog.String(\"path\", r.URL.Path))\n\t\tctx := context.WithValue(r.Context(), logKey, l)\n\t\tl.Info(\"request received\")\n\t\tnext.ServeHTTP(w, r.WithContext(ctx))\n\t})\n}\n\nfunc handler(w http.ResponseWriter, r *http.Request) {\n\tfromCtx(r.Context()).Info(\"work done\", \"items\", 3) // same request_id\n}\n\nfunc main() {\n\tbase := slog.New(slog.NewJSONHandler(os.Stdout, nil))\n\th := RequestLogger(base, http.HandlerFunc(handler))\n\th.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(\"GET\", \"/orders\", nil))\n}",
+        "caption": "One request ID, added once in middleware, appears on every line the request produces.",
+        "expectedOutput": "{\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"request received\",\"request_id\":\"abc-123\",\"path\":\"/orders\"}\n{\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"work done\",\"request_id\":\"abc-123\",\"path\":\"/orders\",\"items\":3}"
+      }
+    },
+    {
+      "level": "intermediate",
+      "title": "slog vs zap vs zerolog: same event, three APIs",
+      "explanation": "The same structured event expressed in each library. slog uses loose or typed attrs; zap uses strongly typed fields on a zero-alloc core; zerolog uses a chained fluent builder terminated by Msg. All three produce equivalent JSON.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"log/slog\"\n\t\"os\"\n\n\t\"github.com/rs/zerolog\"\n\t\"go.uber.org/zap\"\n)\n\nfunc main() {\n\tuser, ms := \"alice\", 87\n\n\t// 1) stdlib slog: typed attrs avoid any-boxing.\n\ts := slog.New(slog.NewJSONHandler(os.Stdout, nil))\n\ts.Info(\"request done\", slog.String(\"user\", user), slog.Int(\"latency_ms\", ms))\n\n\t// 2) zap: strongly typed fields on the zero-alloc core Logger.\n\tz, _ := zap.NewProduction()\n\tdefer z.Sync() // flush buffered entries before exit\n\tz.Info(\"request done\", zap.String(\"user\", user), zap.Int(\"latency_ms\", ms))\n\n\t// 3) zerolog: chained fluent builder, JSON straight to the buffer.\n\tzl := zerolog.New(os.Stdout)\n\tzl.Info().Str(\"user\", user).Int(\"latency_ms\", ms).Msg(\"request done\")\n}",
+        "caption": "Three libraries, one structured event: pick slog for zero deps, zap/zerolog for max throughput.",
+        "expectedOutput": "{\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"request done\",\"user\":\"alice\",\"latency_ms\":87}\n{\"level\":\"info\",\"ts\":...,\"msg\":\"request done\",\"user\":\"alice\",\"latency_ms\":87}\n{\"level\":\"info\",\"user\":\"alice\",\"latency_ms\":87,\"message\":\"request done\"}"
+      }
+    },
+    {
+      "level": "production",
+      "title": "Sampling high-volume logs with zap to cap cost",
+      "explanation": "A chatty endpoint can emit the same line thousands of times per second. zap's sampling core keeps the first N identical entries per second then logs only every Mth after, dramatically cutting volume and ingestion cost while preserving a representative sample.",
+      "code": {
+        "language": "go",
+        "code": "package main\n\nimport (\n\t\"time\"\n\n\t\"go.uber.org/zap\"\n\t\"go.uber.org/zap/zapcore\"\n)\n\nfunc main() {\n\tcfg := zap.NewProductionConfig()\n\t// Keep first 100 identical entries per second, then 1 of every 100.\n\tcfg.Sampling = &zap.SamplingConfig{Initial: 100, Thereafter: 100}\n\tlogger, _ := cfg.Build()\n\tdefer logger.Sync()\n\n\t_ = zapcore.InfoLevel\n\tfor i := 0; i < 10_000; i++ {\n\t\t// Only a fraction of these identical lines are actually emitted.\n\t\tlogger.Info(\"cache miss\", zap.String(\"key\", \"u:42\"))\n\t}\n\ttime.Sleep(10 * time.Millisecond)\n}",
+        "caption": "Sampling caps repetitive log volume: cost stays bounded even under 10k identical events.",
+        "expectedOutput": "// ~199 lines emitted instead of 10000 (100 initial + ~99 sampled), all identical:\n{\"level\":\"info\",\"ts\":...,\"msg\":\"cache miss\",\"key\":\"u:42\"}"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "In slog, what is the correct interpretation of the arguments after the message in `logger.Info(\"login\", \"user\", \"alice\", \"attempts\", 3)`?",
+      "options": ["Positional printf-style arguments", "Alternating key/value attribute pairs (user=alice, attempts=3)", "A single map literal", "The first is a key, the rest are all values for it"],
+      "answerIndex": 1,
+      "explanation": "slog treats the variadic args after the message as alternating key/value pairs: user=\"alice\", attempts=3. A dangling value with no matching key becomes a !BADKEY attribute, which is why passing complete pairs (or typed slog.Attr) matters."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This zap program logs during the run but loses the last entries when the process exits quickly. What's the root issue?",
+      "code": "logger, _ := zap.NewProduction()\nlogger.Info(\"starting\")\ndoWork(logger)\nlogger.Info(\"done\")\n// program returns from main here",
+      "options": ["NewProduction returns an error that must be checked", "logger.Sync() is never called, so buffered entries are not flushed", "Info cannot be called more than once", "zap loggers must be created with zap.NewDevelopment"],
+      "answerIndex": 1,
+      "explanation": "zap buffers writes for speed. Without a `defer logger.Sync()` (which flushes the buffer) the last entries can be lost when the process exits. Always defer Sync on a zap logger you build."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Create a child logger that stamps request_id on every subsequent line, using the idiomatic slog helper.",
+      "codeBefore": "base := slog.New(slog.NewJSONHandler(os.Stdout, nil))\nreqLog := base.",
+      "codeAfter": "reqLog.Info(\"handling\")",
+      "options": ["With(slog.String(\"request_id\", id))", "Set(\"request_id\", id)", "Attr(\"request_id\", id)", "Context(\"request_id\", id)"],
+      "answerIndex": 0,
+      "explanation": "logger.With(attrs...) returns a child logger that prepends those attributes to every record it emits. It is the standard way to bind request-scoped context like a request_id once and have it appear on every line."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "The handler's minimum level is Info. What is logged by these two calls?",
+      "code": "lvl := new(slog.LevelVar)\nlvl.Set(slog.LevelInfo)\nlog := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))\nlog.Debug(\"cache lookup\", \"key\", \"u:42\")\nlog.Warn(\"slow\", \"ms\", 900)",
+      "options": ["Both the Debug and the Warn line", "Only the Warn line (Debug is below the Info threshold)", "Only the Debug line", "Neither, because LevelVar disables output"],
+      "answerIndex": 1,
+      "explanation": "The handler's minimum level is Info, so Debug (which is lower) is filtered out by Handler.Enabled and never emitted. Warn is at or above the threshold, so only the Warn line is logged."
+    }
+  ],
+  "codeLab": [
+    {
+      "id": "go-lab-slog-context-logger",
+      "title": "Build a context-carried request logger",
+      "instructions": "Implement `WithLogger(ctx, l)` to store a *slog.Logger in a context and `LoggerFrom(ctx)` to retrieve it, falling back to slog.Default() when none is present. These are the two primitives that let middleware attach a request-scoped logger that handlers pull out via the context.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n)\n\ntype ctxKey struct{}\n\n// WithLogger stores l in ctx.\nfunc WithLogger(ctx context.Context, l *slog.Logger) context.Context {\n\t// TODO: return a context carrying l.\n\treturn ctx\n}\n\n// LoggerFrom returns the logger in ctx, or slog.Default() if absent.\nfunc LoggerFrom(ctx context.Context) *slog.Logger {\n\t// TODO: extract the logger; fall back to the default.\n\treturn nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n)\n\n// unexported key type prevents collisions with other packages' context keys.\ntype ctxKey struct{}\n\n// WithLogger stores l in ctx under a private key.\nfunc WithLogger(ctx context.Context, l *slog.Logger) context.Context {\n\treturn context.WithValue(ctx, ctxKey{}, l)\n}\n\n// LoggerFrom returns the request-scoped logger, or the default if none.\nfunc LoggerFrom(ctx context.Context) *slog.Logger {\n\tif l, ok := ctx.Value(ctxKey{}).(*slog.Logger); ok && l != nil {\n\t\treturn l\n\t}\n\treturn slog.Default()\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"context\"\n\t\"log/slog\"\n\t\"testing\"\n)\n\nfunc TestRoundTrip(t *testing.T) {\n\tl := slog.New(slog.NewTextHandler(nil, nil))\n\tctx := WithLogger(context.Background(), l)\n\tif LoggerFrom(ctx) != l {\n\t\tt.Fatal(\"expected the stored logger back\")\n\t}\n}\n\nfunc TestFallback(t *testing.T) {\n\tif LoggerFrom(context.Background()) != slog.Default() {\n\t\tt.Fatal(\"expected slog.Default() when no logger stored\")\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "Use context.WithValue with an unexported key type so other packages can't collide with your key.",
+        "In LoggerFrom, type-assert ctx.Value(ctxKey{}) to *slog.Logger with the comma-ok form.",
+        "When the assertion fails (no logger set), return slog.Default() rather than nil."
+      ]
+    },
+    {
+      "id": "go-lab-slog-level-handler",
+      "title": "A runtime-adjustable log level",
+      "instructions": "Implement `NewLeveledLogger(w, min)` that returns a JSON *slog.Logger plus a *slog.LevelVar you can call Set on to change the threshold at runtime. Verify that raising the level to Error suppresses Info lines. This mirrors the production pattern of turning up log verbosity without a redeploy.",
+      "starter": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"io\"\n\t\"log/slog\"\n)\n\n// NewLeveledLogger returns a JSON logger and the LevelVar controlling it.\nfunc NewLeveledLogger(w io.Writer, min slog.Level) (*slog.Logger, *slog.LevelVar) {\n\t// TODO: build a LevelVar set to min, wire it into JSONHandler options.\n\treturn nil, nil\n}",
+        "editable": true
+      },
+      "solution": {
+        "language": "go",
+        "code": "package solution\n\nimport (\n\t\"io\"\n\t\"log/slog\"\n)\n\n// NewLeveledLogger returns a JSON logger and the LevelVar controlling it.\n// Calling lvl.Set(...) later changes the threshold with no re-creation.\nfunc NewLeveledLogger(w io.Writer, min slog.Level) (*slog.Logger, *slog.LevelVar) {\n\tlvl := new(slog.LevelVar)\n\tlvl.Set(min)\n\th := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})\n\treturn slog.New(h), lvl\n}"
+      },
+      "testHarness": "package solution\n\nimport (\n\t\"bytes\"\n\t\"log/slog\"\n\t\"strings\"\n\t\"testing\"\n)\n\nfunc TestRuntimeLevel(t *testing.T) {\n\tvar buf bytes.Buffer\n\tlog, lvl := NewLeveledLogger(&buf, slog.LevelInfo)\n\tlog.Info(\"one\")\n\tif !strings.Contains(buf.String(), \"one\") {\n\t\tt.Fatal(\"Info should be emitted at Info level\")\n\t}\n\tbuf.Reset()\n\tlvl.Set(slog.LevelError) // raise threshold at runtime\n\tlog.Info(\"two\")\n\tif buf.Len() != 0 {\n\t\tt.Fatalf(\"Info should be suppressed at Error level, got %q\", buf.String())\n\t}\n}",
+      "expectedOutput": "PASS  (ok  solution  0.01s)",
+      "hints": [
+        "slog.LevelVar is a pointer type; allocate it with new(slog.LevelVar) and Set the initial level.",
+        "Pass the same *slog.LevelVar as HandlerOptions.Level so the handler consults it on every call.",
+        "Return both the *slog.Logger and the *slog.LevelVar so callers can adjust the level later."
+      ]
+    }
+  ],
+  "debuggingLab": [
+    {
+      "id": "go-debug-badkey-concat",
+      "difficulty": "intermediate",
+      "title": "Lost fields: string concatenation and a dangling slog key",
+      "symptom": "Logs are supposedly 'structured' but the log platform can't filter by user or status: the data is buried inside the message string, and one call emits a weird !BADKEY field.",
+      "brokenCode": {
+        "language": "go",
+        "code": "func handle(logger *slog.Logger, user string, status int) {\n\t// Anti-pattern 1: values concatenated into the message, not fields.\n\tlogger.Info(\"request for user \" + user + \" returned \" + fmt.Sprint(status))\n\n\t// Anti-pattern 2: a dangling value with no key.\n\tlogger.Info(\"request done\", \"user\", user, status) // status has no key\n}",
+        "expectedOutput": ""
+      },
+      "errorAnalysis": "The first call jams user and status into the message string, so downstream you cannot filter user=... or status>=500 — the whole point of structured logging is lost. The second call passes an odd number of trailing args: slog expects alternating key/value pairs, so the lone `status` has no key and slog emits it as `!BADKEY=500`. Both defeat machine queryability.",
+      "commonMistakes": [
+        "Concatenating variable data into the message instead of passing key/value attributes.",
+        "Passing an odd number of args so a value has no key (produces !BADKEY).",
+        "Using a non-string as a key, which slog also flags."
+      ],
+      "fixChallenge": "Keep the message a stable constant and pass user and status as proper key/value attributes (ideally typed slog.Attr).",
+      "solution": {
+        "language": "go",
+        "code": "func handle(logger *slog.Logger, user string, status int) {\n\t// Stable message + typed attributes: queryable and allocation-friendly.\n\tlogger.Info(\"request done\",\n\t\tslog.String(\"user\", user),\n\t\tslog.Int(\"status\", status),\n\t)\n\t// Output: {...,\"msg\":\"request done\",\"user\":\"alice\",\"status\":200}\n}",
+        "expectedOutput": "{\"time\":\"...\",\"level\":\"INFO\",\"msg\":\"request done\",\"user\":\"alice\",\"status\":200}"
+      }
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "go-web-10-th-1",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "What is structured logging and why is it preferable to fmt.Println / log.Printf in production?",
+        "directAnswer": "Structured logging emits each event as typed key/value attributes (usually JSON) instead of a formatted sentence, so fields like user_id and status are indexed and queryable by a log platform. fmt.Println/log.Printf produce opaque strings that must be regex-parsed, drift between call sites, and can't be filtered or aggregated. Structure makes logs machine-first: queryable during incidents, aggregatable into dashboards/alerts, and stable across code changes.",
+        "detailedExplanation": {
+          "whatItIs": "Logging as records of typed key/value attributes with a level and message, serialized by a handler.",
+          "whyItExists": "Logs are consumed by machines (Loki, Elasticsearch, Datadog); prose strings are hostile to querying at scale.",
+          "howItWorks": "A logger builds a record; a handler filters by level and serializes attributes to JSON/text; fields become indexed columns downstream."
+        },
+        "whyImportant": "It's the baseline expectation for any production Go service and a common interview opener on observability.",
+        "realWorldExample": "During an incident you query `level=error AND route=/checkout AND status>=500` across millions of lines — impossible with free-form log strings.",
+        "followUps": [
+          { "question": "Is structured logging the same as JSON logging?", "answer": "No — structure means typed key/value attributes. A TextHandler emitting key=value is structured; JSON with all the data crammed into one message field is not." },
+          { "question": "What's the cost of structured logging?", "answer": "Slightly more verbose call sites and some serialization/allocation overhead, mitigated by typed fields, level gating, and sampling." }
+        ]
+      },
+      {
+        "id": "go-web-10-th-2",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Explain the Logger/Handler split in log/slog and the role of With and context-aware methods.",
+        "directAnswer": "slog separates the Logger (the API you call) from the Handler (which filters by level, formats, and writes). The stdlib ships TextHandler and JSONHandler, so you can change output format or destination without touching call sites. logger.With(attrs...) returns a child logger that stamps those attributes on every line — ideal for per-request context. The context-taking methods (InfoContext, etc.) pass the ctx to the Handler, so a custom handler can pull a correlation ID out of the context and add it automatically.",
+        "detailedExplanation": {
+          "whatItIs": "A front-end/back-end split: Logger dispatches Records; Handler gates on level and serializes.",
+          "whyItExists": "Decoupling call sites from formatting lets you swap Text↔JSON, add attributes, or redirect output centrally.",
+          "howItWorks": "Logger.With clones the handler with extra attrs; InfoContext hands ctx to Handle so context-derived fields can be injected."
+        },
+        "whyImportant": "It shows you understand how to structure logging so it's configurable and context-aware, not hard-coded at every call.",
+        "realWorldExample": "Dev uses TextHandler for readable output; prod swaps to JSONHandler; a custom handler injects request_id from context on every line.",
+        "followUps": [
+          { "question": "How do you make the old log package use slog?", "answer": "slog.SetDefault(logger) routes the standard log package through slog's default handler." },
+          { "question": "Why prefer typed slog.Attr over loose key/value args?", "answer": "Typed attrs avoid boxing values into any (fewer allocations) and prevent !BADKEY mistakes from mismatched pairs." }
+        ]
+      },
+      {
+        "id": "go-web-10-th-3",
+        "tech": "golang",
+        "category": "intermediate",
+        "difficulty": "intermediate",
+        "question": "Compare zap and zerolog with slog: when would you reach for each, and why are zap/zerolog faster?",
+        "directAnswer": "slog is the standard, dependency-free choice with a Logger/Handler design and good-enough performance for most services. zap and zerolog are third-party libraries optimized for near-zero allocations at very high throughput: zap's core Logger takes strongly typed fields and writes into reflection-free encoders (with a slower SugaredLogger for ergonomics), and zerolog uses a chained fluent builder that appends JSON directly to a byte buffer. They're faster mainly because they avoid the any-boxing and reflection the loose slog API incurs. Reach for zap/zerolog only when profiling shows logging allocations matter; otherwise slog keeps you dependency-free.",
+        "detailedExplanation": {
+          "whatItIs": "Three structured loggers: stdlib slog vs Uber's zap vs rs/zerolog.",
+          "whyItExists": "High-volume services need logging that doesn't allocate on the hot path; zap/zerolog were built for that.",
+          "howItWorks": "Typed fields and preallocated byte buffers avoid boxing/reflection; zerolog chains builder calls, zap uses typed Field structs and a zapcore encoder."
+        },
+        "whyImportant": "It shows judgment: choosing the simplest tool that meets the performance bar rather than adopting a fast library reflexively.",
+        "realWorldExample": "A metrics-ingestion service logging millions of lines/sec uses zap with sampling; a typical CRUD API uses stdlib slog.",
+        "followUps": [
+          { "question": "What's the difference between zap.Logger and SugaredLogger?", "answer": "zap.Logger takes strongly typed fields (fastest, zero-alloc); SugaredLogger offers a printf/loosely-typed API that's more ergonomic but slower." },
+          { "question": "Can you get slog's API but zap's speed?", "answer": "Yes — zap and zerolog both ship slog.Handler adapters, so you can call slog everywhere while a zap/zerolog core does the writing." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "go-web-10-scn-1",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Your microservices emit logs but on-call can't trace a single user request across service hops — each service logs independently with no shared identifier. How do you fix this with structured logging?",
+        "directAnswer": "Introduce a correlation/request ID that's generated at the edge (or extracted from an incoming header like X-Request-ID / trace context), carried through the request's context.Context, and stamped onto every log line. In each service, middleware reads or mints the ID, builds a child logger with logger.With(slog.String(\"request_id\", id)), stores it in the context, and propagates the ID on outbound calls via a header. Every handler logs through the context logger, so all lines for that request across all services share request_id and can be joined in the log platform.",
+        "detailedExplanation": {
+          "whatItIs": "End-to-end request correlation via a shared ID threaded through context and logs.",
+          "whyItExists": "Distributed requests span many services; without a shared key their logs can't be joined.",
+          "howItWorks": "Edge mints/extracts an ID; middleware puts a With(request_id) logger in the context; outbound calls forward the ID header so the next hop reuses it."
+        },
+        "whyImportant": "Correlation IDs are the difference between debuggable and undebuggable distributed systems, a frequent design/scenario question.",
+        "realWorldExample": "An order request flows API → payments → inventory; filtering the log platform on request_id=abc-123 returns the full cross-service story.",
+        "followUps": [
+          { "question": "How is this related to distributed tracing?", "answer": "Tracing (OpenTelemetry) generalizes it with trace/span IDs; you typically log the trace_id so logs and traces cross-link." },
+          { "question": "How do you avoid passing the logger to every function?", "answer": "Store the child logger (or just the ID) in context and pull it out with a LoggerFrom(ctx) helper." }
+        ]
+      },
+      {
+        "id": "go-web-10-scn-2",
+        "tech": "golang",
+        "category": "scenario",
+        "difficulty": "intermediate",
+        "question": "Your log ingestion bill tripled after launch; a few hot endpoints emit huge volumes of nearly identical Info lines. How do you cut cost without going blind?",
+        "directAnswer": "Attack volume on three fronts: (1) set the production level to Info (or higher) so Debug is dropped, ideally via a runtime LevelVar so you can turn verbosity up temporarily during an incident; (2) enable sampling for repetitive lines — zap's sampler keeps the first N identical entries per second then 1-in-M thereafter, so you keep a representative sample at a fraction of the volume; (3) demote chatty lines to Debug and reserve Info/Error for meaningful events. Together these bound volume while preserving enough signal to debug.",
+        "detailedExplanation": {
+          "whatItIs": "Cost control for high-volume logs via level gating, sampling, and disciplined severity.",
+          "whyItExists": "Log platforms bill by ingested volume; a single hot path can dominate the bill.",
+          "howItWorks": "Level gating drops low-severity lines before serialization; sampling caps duplicates per second; severity discipline keeps only meaningful events at Info+."
+        },
+        "whyImportant": "Observability spend is a real operational concern; showing you can bound it without losing debuggability is valuable.",
+        "realWorldExample": "A cache-miss line logged 10k/sec is sampled to ~200/sec and demoted to Debug, cutting ingestion for that path by ~99%.",
+        "followUps": [
+          { "question": "What's the risk of sampling?", "answer": "You may drop the one line you needed; mitigate by never sampling Error, and by sampling on identical message+level so you retain a representative example." },
+          { "question": "How do you raise verbosity during an incident safely?", "answer": "Use a LevelVar (or a config/feature flag) to lower the threshold at runtime, then restore it — no redeploy required." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "go-web-10-sd-1",
+        "tech": "golang",
+        "category": "system-design",
+        "difficulty": "intermediate",
+        "question": "Design the logging layer for a fleet of Go microservices: it must be structured, correlated across services, cost-controlled, and swappable between environments. Walk through the design.",
+        "directAnswer": "Standardize on a single Logger interface backed by slog (or a zap/zerolog slog.Handler adapter). Configure per environment: TextHandler at Debug locally, JSONHandler at Info in prod, level controlled by a LevelVar so verbosity is tunable at runtime. In HTTP/gRPC middleware, extract or mint a request_id (and trace context), build a child logger via With(request_id, route, service), store it in context, and have all code log through LoggerFrom(ctx); forward the ID on outbound calls so it propagates across services. Add a custom handler that injects trace_id from context for log↔trace correlation. Control cost with level gating plus sampling of repetitive lines (never sampling Error), and cap request body/PII by never logging secrets or full tokens. Ship JSON to a central platform (Loki/ELK/Datadog) via stdout + the container log agent. Because everything goes through the Logger/Handler abstraction, switching format, destination, or backend library is a config-level change, not a code sweep.",
+        "detailedExplanation": {
+          "whatItIs": "A uniform, context-aware, cost-controlled structured-logging layer across a service fleet.",
+          "whyItExists": "Consistent, correlated, affordable logs are required to operate distributed systems.",
+          "howItWorks": "slog Logger/Handler split for swappability; middleware injects a context logger with request_id/trace_id; level gating + sampling bound cost; JSON to stdout is collected by the platform agent."
+        },
+        "whyImportant": "It ties structured logging to real operational concerns — correlation, cost, environment parity — that senior interviews probe.",
+        "realWorldExample": "Every pod logs JSON to stdout; the node agent ships to Loki; on-call filters by request_id/trace_id and joins logs to traces.",
+        "followUps": [
+          { "question": "Why log to stdout instead of files?", "answer": "In containers the platform expects stdout/stderr; the runtime/agent handles rotation and shipping, keeping the app stateless." },
+          { "question": "How do you keep PII out of logs?", "answer": "Redact at the logging boundary — never log full tokens/secrets, hash or truncate identifiers, and centralize field allow-lists in a custom handler." },
+          { "question": "How do logs and traces stay linked?", "answer": "Inject the OpenTelemetry trace_id/span_id into every log record (via a context-aware handler) so a trace links directly to its logs." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "go-web-10-code-1",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement a slog.Handler wrapper that injects a request_id attribute pulled from the context onto every record. Signature: a type embedding slog.Handler with a Handle method.",
+        "thoughtProcess": "slog's context-aware methods pass ctx to Handle, so a wrapping handler can read a value from ctx and add it as an attribute before delegating. Embed the inner Handler to inherit Enabled/WithAttrs/WithGroup, override only Handle: if the context carries a request ID, call Record.AddAttrs, then delegate to the embedded handler.",
+        "solution": {
+          "code": "type ctxKey string\n\nconst ridKey ctxKey = \"request_id\"\n\n// ContextHandler injects request_id from ctx onto every record.\ntype ContextHandler struct {\n\tslog.Handler // embed to inherit Enabled/WithAttrs/WithGroup\n}\n\nfunc (h ContextHandler) Handle(ctx context.Context, r slog.Record) error {\n\tif id, ok := ctx.Value(ridKey).(string); ok {\n\t\tr.AddAttrs(slog.String(\"request_id\", id)) // add before delegating\n\t}\n\treturn h.Handler.Handle(ctx, r)\n}\n\n// Usage: logger := slog.New(ContextHandler{slog.NewJSONHandler(os.Stdout, nil)})",
+          "language": "go"
+        },
+        "lineByLine": "We embed slog.Handler so ContextHandler automatically satisfies the interface via the inner handler's Enabled, WithAttrs, and WithGroup. We override only Handle: it receives the ctx that InfoContext/ErrorContext pass through, pulls request_id via a comma-ok type assertion, and if present calls r.AddAttrs to append it. Finally it delegates to h.Handler.Handle so the wrapped JSON/Text handler does the real serialization — every line now carries request_id automatically.",
+        "timeComplexity": "O(1) per log record (one map lookup + one attribute append).",
+        "spaceComplexity": "O(1) additional per record (a single appended attribute).",
+        "followUps": [
+          { "question": "Why embed the Handler instead of storing it in a field?", "answer": "Embedding promotes Enabled/WithAttrs/WithGroup for free, so you only implement the one method (Handle) you want to customize." },
+          { "question": "Why use InfoContext rather than Info?", "answer": "Only the *Context methods pass the ctx to Handle; plain Info passes context.Background(), so your handler wouldn't see the request_id." }
+        ]
+      },
+      {
+        "id": "go-web-10-code-2",
+        "tech": "golang",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Write an HTTP logging middleware using slog that logs method, path, status code, and latency as structured fields. Capture the status via a ResponseWriter wrapper. Signature: `func Logging(l *slog.Logger, next http.Handler) http.Handler`.",
+        "thoughtProcess": "http.ResponseWriter doesn't expose the status, so wrap it to record the code on WriteHeader (defaulting to 200). Record a start time, call next through the wrapper, then emit one structured line with method, path, status, and latency in milliseconds — all as typed attributes so they're queryable.",
+        "solution": {
+          "code": "type statusRecorder struct {\n\thttp.ResponseWriter\n\tstatus int\n}\n\nfunc (s *statusRecorder) WriteHeader(code int) {\n\ts.status = code\n\ts.ResponseWriter.WriteHeader(code)\n}\n\nfunc Logging(l *slog.Logger, next http.Handler) http.Handler {\n\treturn http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {\n\t\trec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}\n\t\tstart := time.Now()\n\t\tnext.ServeHTTP(rec, r)\n\t\tl.Info(\"request\",\n\t\t\tslog.String(\"method\", r.Method),\n\t\t\tslog.String(\"path\", r.URL.Path),\n\t\t\tslog.Int(\"status\", rec.status),\n\t\t\tslog.Duration(\"latency\", time.Since(start)),\n\t\t)\n\t})\n}",
+          "language": "go"
+        },
+        "lineByLine": "statusRecorder embeds ResponseWriter (inheriting Write/Header) and overrides WriteHeader to capture the status, defaulting to 200 for handlers that only Write. Logging records start, passes the recorder into next so it observes the real status, then logs one structured event with method/path/status/latency as typed slog attributes — stable message, queryable fields.",
+        "timeComplexity": "O(1) overhead per request beyond the handler's own work.",
+        "spaceComplexity": "O(1) — one small wrapper allocated per request.",
+        "followUps": [
+          { "question": "Why default status to 200?", "answer": "A handler that calls only Write never calls WriteHeader explicitly, yet net/http sends 200 implicitly — so the recorder must default to 200 to log the truth." },
+          { "question": "How would you also log the request_id?", "answer": "Pull it from r.Context() (or use a context-aware logger) and add slog.String(\"request_id\", id) to the same line." }
+        ]
+      }
+    ]
+  },
+  "productionDeepDive": {
+    "architecture": "Standardize on one logging abstraction (slog, optionally backed by a zap/zerolog slog.Handler adapter) initialized once at startup and injected/available via context. Choose the handler per environment: TextHandler for local dev, JSONHandler for prod. Build per-request child loggers in middleware with With(request_id, route, service) and pull them from context in handlers. Keep the message a stable constant and put all variable data in typed attributes so fields stay queryable.",
+    "performance": "The loose slog API boxes values into any and allocates on hot paths; prefer typed slog.Attr helpers, and reach for zap's core Logger or zerolog when profiling shows logging dominates. Guard expensive attribute computation behind Enabled(level) or a lazy slog.LogValuer. Reuse a single Logger across goroutines (handlers are concurrency-safe) instead of constructing loggers per call.",
+    "concurrency": "A slog Logger and its Handler are safe for concurrent use by many request goroutines, so create one base logger and derive per-request children with With. Never share a *statusRecorder or per-request logger across requests. Buffered loggers (zap) flush from a background goroutine, which is why Sync must run before exit.",
+    "reliability": "Logging must never crash the app: handlers should not panic, and a failed log write is dropped, not fatal. Avoid log.Fatal/os.Exit in library code because it skips deferred Sync/Close and can lose buffered logs. Always `defer logger.Sync()` on zap; flush on graceful shutdown. Reserve the Error level for actionable failures so alerts stay meaningful.",
+    "observability": "Structured logs are one pillar of observability alongside metrics and traces. Emit JSON to stdout for the platform agent to ship; include request_id and OpenTelemetry trace_id/span_id so logs cross-link to traces; standardize field names (level, msg, service, route, status, latency) across services so dashboards and queries are uniform. Record RED-style fields (status, latency) on request lines.",
+    "security": "Never log secrets, full tokens, passwords, or raw PII; redact or hash identifiers at the logging boundary and centralize an allow-list in a custom handler. Be wary of logging entire request/response bodies (size and PII). Ensure log destinations have access controls, and avoid log-injection by relying on JSON encoding (which escapes) rather than concatenating untrusted input into messages.",
+    "caseStudies": [
+      { "company": "Uber (zap)", "problem": "Existing structured loggers allocated heavily, making logging a measurable cost at Uber's request volumes.", "solution": "Built zap with a zero-allocation core Logger using strongly typed fields and a reflection-free encoder, plus a SugaredLogger for ergonomics and built-in sampling.", "tradeoffs": "Faster and leaner but more verbose call sites (typed fields) than a printf logger; an extra dependency versus the stdlib.", "lessons": "At high volume, logger allocations matter; typed fields and sampling turn logging from a bottleneck into a bounded cost." },
+      { "company": "Cloud-native Go services (slog adoption)", "problem": "Fragmented logging libraries across services made log formats and configuration inconsistent.", "solution": "Adopted the Go 1.21 stdlib log/slog with JSONHandler and a shared context-injecting handler for request/trace IDs, keeping a zap/zerolog core only where throughput demanded it.", "tradeoffs": "stdlib slog is slightly slower than zap/zerolog on the loose API, but dependency-free and uniform via the Handler interface.", "lessons": "A common Logger/Handler abstraction lets most services use the stdlib while high-volume ones swap in a fast core without changing call sites." }
+    ]
+  },
+  "keyTakeaways": [
+    "Structured logging emits typed key/value attributes (usually JSON), not prose — that's what makes logs queryable, aggregatable, and stable, unlike fmt.Println/log.Printf.",
+    "log/slog splits the Logger you call from the Handler that filters and formats; TextHandler for dev, JSONHandler for prod, swappable without touching call sites.",
+    "Attach data as attributes (prefer typed slog.Attr over loose pairs to avoid !BADKEY and boxing); use logger.With to bind request-scoped context like a request_id once.",
+    "Thread a correlation/request ID through context and inject it via a context-aware handler (InfoContext) so every line across every function shares the same ID.",
+    "Choose levels deliberately and control cost with level gating (LevelVar at runtime) and sampling; reserve Error for actionable failures so alerts stay meaningful.",
+    "Reach for zap (typed fields, zero-alloc core; Sugared for ergonomics) or zerolog (fluent builder) only when profiling shows logging allocations matter — otherwise stdlib slog is enough; always defer Sync on buffered loggers."
+  ]
+}
