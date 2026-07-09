@@ -3,6 +3,7 @@ import { Database, Code, Zap, Layers, Network, Terminal, Cloud, Radio, Workflow,
 import type { Category, Domain, Topic } from '../../../core/types/types';
 import { FRONTEND_TECHS } from '../../frontend/loader';
 import { BACKEND_TECHS, loadBackendManifest, manifestToTopics as backendManifestToTopics } from '../../backend-engineering/loader';
+import { AI_AGENT_TECHS } from '../../ai-agents/loader';
 import { allTopics } from '../data';
 import { LearnJourneyPanel } from './LearnJourneyPanel';
 import { Diagnostic } from './Diagnostic';
@@ -57,10 +58,15 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
     id: t.id, title: t.title, description: t.description, icon: Code, color: t.color, bg: hexToBg(t.color), available: t.available, topicCount: t.topicCount || 0,
   }));
 
+  const aiAgentOptions: TechOption[] = AI_AGENT_TECHS.map(t => ({
+    id: t.id, title: t.title, description: t.description, icon: Code, color: t.color, bg: hexToBg(t.color), available: t.available, topicCount: t.topicCount || 0,
+  }));
+
   const isFrontend = domain === 'frontend';
   const isBackend = domain === 'backend-engineering';
-  const techOptions: TechOption[] = isFrontend ? frontendOptions : isBackend ? backendOptions : dataOptions;
-  const heading = isFrontend ? 'Frontend Engineering' : isBackend ? 'Backend Engineering' : 'Data Engineering Stack';
+  const isAiAgents = domain === 'ai-agents';
+  const techOptions: TechOption[] = isFrontend ? frontendOptions : isBackend ? backendOptions : isAiAgents ? aiAgentOptions : dataOptions;
+  const heading = isFrontend ? 'Frontend Engineering' : isBackend ? 'Backend Engineering' : isAiAgents ? 'AI Agents' : 'Data Engineering Stack';
 
   // Backend: load all available-tech topics so the engagement bar + "For You"
   // panel can surface resume/due/mastery (mirrors the DE journey layer).
@@ -85,7 +91,7 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
   // Guided roadmap (Data Engineering domain only): the techs above are ordered
   // as the recommended learning path; the first not-yet-finished step is the
   // "recommended next" stop.
-  const isData = !isFrontend && !isBackend;
+  const isData = !isFrontend && !isBackend && !isAiAgents;
   const stepIndex = (id: Category) => techOptions.findIndex(t => t.id === id);
   const nextStepId: Category | null = isData
     ? (dataOptions.find(t => t.available && completedFor(t.id) < t.topicCount)?.id ?? null)

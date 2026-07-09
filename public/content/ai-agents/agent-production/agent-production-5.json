@@ -1,0 +1,239 @@
+{
+  "schema": "agent.v1",
+  "id": "agent-production-5",
+  "tech": "agent-production",
+  "domain": "ai-agents",
+  "title": "Retries, Timeouts & Rate Limits",
+  "difficulty": "intermediate",
+  "archetype": "hands-on",
+  "summary": "Every model and tool call an agent makes can hang, fail transiently, or get throttled. A production agent wraps those calls in defenses: a hard timeout so nothing hangs forever, retry with exponential backoff plus jitter for transient errors, respect for 429 Retry-After headers so you don't hammer a throttled provider, and a circuit breaker that stops calling a dependency that is clearly down. Together these turn flaky network I/O into a resilient client wrapper the agent loop can depend on.",
+  "prerequisites": ["agent-foundations-5"],
+  "relatedConcepts": ["agent-production-6", "agent-foundations-5"],
+  "nestedConcepts": ["timeouts bound every call", "exponential backoff with jitter", "respecting 429 & Retry-After", "circuit breaking a bad dependency", "the resilient client wrapper"],
+  "subtopics": [
+    {
+      "title": "Bound every call with a timeout",
+      "explanation": "A model or tool call over the network can hang indefinitely if the server stalls or a connection is dropped silently, and a hung call freezes the whole agent loop. Setting an explicit request timeout converts an infinite hang into a catchable error you can retry or fail fast on. A timeout is the first defense because without it none of the other retry logic ever gets a chance to run.",
+      "example": "import requests\n\ndef call_model(payload: dict) -> dict:\n    # connect timeout 3s, read timeout 30s -- never hang forever\n    resp = requests.post(\n        \"https://api.provider.com/v1/chat\",\n        json=payload,\n        timeout=(3, 30),   # (connect, read) seconds\n    )\n    resp.raise_for_status()\n    return resp.json()\n\n# a stalled server now raises requests.Timeout instead of blocking the loop"
+    },
+    {
+      "title": "Retry transient errors with exponential backoff and jitter",
+      "explanation": "Transient failures (a dropped connection, a 503, a timeout) usually succeed on a second try, but retrying immediately just adds load. Exponential backoff waits longer after each failure (1s, 2s, 4s), and random jitter spreads retries out so many clients don't all retry in lockstep and cause a thundering herd. This backoff-with-jitter pattern is the standard way to recover from the flakiness that is normal at scale.",
+      "example": "import random, time\n\ndef backoff_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:\n    # exponential growth, capped, with full jitter\n    raw = min(cap, base * (2 ** attempt))\n    return random.uniform(0, raw)   # full jitter avoids synchronized retries\n\nfor attempt in range(5):\n    try:\n        result = call_model(payload)\n        break\n    except (requests.Timeout, requests.ConnectionError):\n        time.sleep(backoff_delay(attempt))   # 0-1s, 0-2s, 0-4s, ...\nelse:\n    raise RuntimeError(\"model call failed after retries\")"
+    },
+    {
+      "title": "Respect 429 and the Retry-After header",
+      "explanation": "A 429 Too Many Requests means the provider is throttling you, and it often includes a Retry-After header telling you exactly how long to wait. Blindly backing off on your own schedule wastes calls and can extend the throttle; honoring Retry-After is faster and keeps you in the provider's good graces. Treating rate-limit responses differently from generic errors is what lets an agent share a provider's quota politely instead of getting banned.",
+      "example": "def sleep_for_rate_limit(resp, attempt: int) -> None:\n    retry_after = resp.headers.get(\"Retry-After\")\n    if retry_after is not None:\n        # provider told us exactly how long to wait -- obey it\n        time.sleep(float(retry_after))\n    else:\n        # no header: fall back to our own backoff\n        time.sleep(backoff_delay(attempt))\n\n# 429 handling is distinct from a 500: one is 'slow down', the other is 'try again'"
+    },
+    {
+      "title": "Circuit-break a dependency that is down",
+      "explanation": "If a tool or provider is hard-down, retrying every call just burns time and money and slows every user. A circuit breaker counts recent failures and, past a threshold, 'opens' to fail fast for a cooldown window instead of calling the dead dependency; after the cooldown it lets one trial call through to test recovery. The breaker is what stops one broken dependency from cascading into a slow, expensive outage across the whole agent fleet.",
+      "example": "import time\n\nclass CircuitBreaker:\n    def __init__(self, threshold=5, cooldown=30.0):\n        self.threshold, self.cooldown = threshold, cooldown\n        self.failures, self.opened_at = 0, None\n    def allow(self) -> bool:\n        if self.opened_at is None:\n            return True                      # closed: calls flow\n        if time.time() - self.opened_at > self.cooldown:\n            return True                      # half-open: allow one trial\n        return False                         # open: fail fast\n    def record(self, ok: bool) -> None:\n        if ok:\n            self.failures, self.opened_at = 0, None   # reset on success\n        else:\n            self.failures += 1\n            if self.failures >= self.threshold:\n                self.opened_at = time.time()          # trip the breaker"
+    },
+    {
+      "title": "Compose it all into a resilient client wrapper",
+      "explanation": "Timeouts, backoff, 429 handling, and the circuit breaker are individually simple but error-prone when scattered across your codebase. Wrapping them in a single resilient client means every model and tool call automatically gets the same defenses and every failure mode is handled in one place. This single boundary is what makes the rest of the agent code able to assume calls either return a result or raise a clean, final error.",
+      "example": "class ResilientClient:\n    def __init__(self, breaker: CircuitBreaker, max_retries=4):\n        self.breaker, self.max_retries = breaker, max_retries\n    def call(self, payload: dict) -> dict:\n        if not self.breaker.allow():\n            raise RuntimeError(\"circuit open: dependency unavailable\")\n        for attempt in range(self.max_retries):\n            try:\n                result = call_model(payload)   # already has a timeout\n                self.breaker.record(ok=True)\n                return result\n            except requests.HTTPError as e:\n                if e.response.status_code == 429:\n                    sleep_for_rate_limit(e.response, attempt)\n                    continue\n                raise\n            except (requests.Timeout, requests.ConnectionError):\n                self.breaker.record(ok=False)\n                time.sleep(backoff_delay(attempt))\n        raise RuntimeError(\"exhausted retries\")"
+    }
+  ],
+  "foundations": {
+    "overview": "An agent is only as reliable as the calls it makes, and every call — to a model provider or an external tool — travels over a network that can hang, fail transiently, or throttle you. A production-grade agent never calls a dependency naively. It bounds each request with a timeout so a stalled server can't freeze the loop, retries transient errors with exponential backoff and jitter so recoverable blips self-heal without a thundering herd, treats HTTP 429 specially by honoring the provider's Retry-After header, and guards each dependency with a circuit breaker that fails fast when the dependency is clearly down. These four defenses are composed behind a single resilient client wrapper, so every call in the agent gets the same protection and the rest of the code can assume a call either returns a value or raises a clean, final error.",
+    "formalDefinition": "Resilience for agent I/O is the combination of: (1) a per-request timeout that converts a hang into an exception; (2) a bounded retry loop with exponentially increasing, jittered delays for idempotent transient failures; (3) rate-limit handling that distinguishes 429 responses and obeys Retry-After; and (4) a circuit breaker that trips open after a failure threshold to fail fast during a cooldown, then half-opens to test recovery.",
+    "whyItMatters": "At scale, transient failures and throttling are not edge cases — they are the steady state. Without these defenses an agent hangs on stalled calls, amplifies outages by retrying a dead dependency, and gets rate-limited into a spiral. With them, the same flaky infrastructure yields a service that degrades gracefully and recovers on its own, which is the difference between a demo and a system on call.",
+    "mentalModel": "Think of calling a busy restaurant. A timeout is hanging up if nobody answers in 30 seconds instead of holding the line forever. Backoff with jitter is waiting a bit longer before each redial and not calling at the exact same second as everyone else. Retry-After is the host saying 'call back in 5 minutes' and you actually waiting 5. The circuit breaker is realizing the line is dead, so you stop calling for a while instead of redialing a disconnected number all night.",
+    "realWorldUsage": "Wrapping LLM provider calls that intermittently return 429/503, retrying flaky third-party tool APIs (search, weather, payment), protecting a shared model gateway from cascading failure when one upstream is degraded, and keeping a fleet of concurrent agents from stampeding a throttled provider.",
+    "performanceImpact": "Timeouts cap tail latency so one stalled call can't dominate a request's p99. Backoff and jitter trade a little added latency on the rare failure for dramatically less load during an incident, and a circuit breaker turns slow timeouts on a dead dependency into instant fast-fails, protecting overall throughput.",
+    "commonUseCases": [
+      "Wrapping LLM provider calls that return 429/503 under load",
+      "Retrying flaky external tool APIs behind an agent",
+      "Sharing a throttled provider quota across many concurrent agents",
+      "Failing fast on a hard-down dependency instead of cascading"
+    ],
+    "commonMisconceptions": [
+      { "myth": "Retrying more times always improves reliability.", "reality": "Unbounded or non-backed-off retries amplify load during an outage and can turn a brief blip into a self-inflicted meltdown. Retries must be bounded, backed off, and paired with a circuit breaker." },
+      { "myth": "You should retry every failed call.", "reality": "Only idempotent, transient failures (timeouts, 5xx, 429) are safe to retry. Retrying a 400/422 validation error or a non-idempotent write can waste calls or duplicate side effects." },
+      { "myth": "A 429 is just another error to back off on.", "reality": "A 429 usually carries a Retry-After telling you exactly how long to wait. Honoring it recovers faster and avoids extending the throttle, so it needs distinct handling from a generic 5xx." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "beginner",
+      "title": "Full-jitter exponential backoff",
+      "explanation": "Compute the retry delay for each attempt using capped exponential growth plus full jitter. The delays grow but stay random, so many clients retrying at once don't synchronize into a thundering herd.",
+      "code": {
+        "language": "python",
+        "code": "import random\n\nrandom.seed(0)   # deterministic for the demo\n\ndef backoff_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:\n    raw = min(cap, base * (2 ** attempt))   # 1, 2, 4, 8, ... capped at 30\n    return round(random.uniform(0, raw), 3)  # full jitter in [0, raw]\n\nfor attempt in range(5):\n    ceiling = min(30.0, 1.0 * (2 ** attempt))\n    print(f\"attempt {attempt}: ceiling={ceiling:>4}s delay={backoff_delay(attempt)}s\")",
+        "caption": "The ceiling doubles each attempt while the actual delay is a random fraction of it, spreading retries across time.",
+        "expectedOutput": "attempt 0: ceiling= 1.0s delay=0.844s\nattempt 1: ceiling= 2.0s delay=1.516s\nattempt 2: ceiling= 4.0s delay=1.682s\nattempt 3: ceiling= 8.0s delay=2.071s\nattempt 4: ceiling=16.0s delay=8.18s"
+      }
+    },
+    {
+      "level": "intermediate",
+      "title": "A circuit breaker in action",
+      "explanation": "A breaker that trips open after a threshold of failures, fails fast during its cooldown, then half-opens to allow a trial call. A fake clock drives the demo so the state transitions are deterministic.",
+      "code": {
+        "language": "python",
+        "code": "class Clock:\n    def __init__(self): self.now = 0.0\n    def tick(self, s): self.now += s\n\nclass CircuitBreaker:\n    def __init__(self, clock, threshold=3, cooldown=10.0):\n        self.clock, self.threshold, self.cooldown = clock, threshold, cooldown\n        self.failures, self.opened_at = 0, None\n    def allow(self):\n        if self.opened_at is None:\n            return True\n        if self.clock.now - self.opened_at > self.cooldown:\n            return True                      # half-open trial\n        return False                         # open: fail fast\n    def record(self, ok):\n        if ok:\n            self.failures, self.opened_at = 0, None\n        else:\n            self.failures += 1\n            if self.failures >= self.threshold:\n                self.opened_at = self.clock.now\n\nclock = Clock()\ncb = CircuitBreaker(clock)\nfor _ in range(3):\n    cb.record(ok=False)                      # three failures trip it\nprint(\"after 3 fails, allow?\", cb.allow())\nclock.tick(5)\nprint(\"5s later (still cooling), allow?\", cb.allow())\nclock.tick(6)\nprint(\"11s later (cooldown passed), allow?\", cb.allow())\ncb.record(ok=True)                            # trial succeeds -> closed\nprint(\"after successful trial, allow?\", cb.allow())",
+        "caption": "The breaker opens after three failures, fails fast for the cooldown, allows one trial after it, and closes when the trial succeeds.",
+        "expectedOutput": "after 3 fails, allow? False\n5s later (still cooling), allow? False\n11s later (cooldown passed), allow? True\nafter successful trial, allow? True"
+      }
+    }
+  ],
+  "codeLab": {
+    "id": "ap5-lab-1",
+    "title": "Build a resilient call wrapper",
+    "instructions": "Implement resilient_call(fn, max_retries=4) that calls the zero-argument function fn and returns its result, adding resilience. It must: (1) retry on TransientError with the provided backoff_delay (call sleep(backoff_delay(attempt)) between attempts); (2) on RateLimited, sleep for exception.retry_after seconds instead of the backoff, and retry; (3) never retry a FatalError — re-raise it immediately; (4) after max_retries exhausted attempts, raise RuntimeError('exhausted retries'). Use the provided sleep and backoff_delay so the harness can track calls. Complete the function so the harness passes.",
+    "starter": {
+      "language": "python",
+      "code": "class TransientError(Exception):\n    pass\n\nclass RateLimited(Exception):\n    def __init__(self, retry_after: float):\n        self.retry_after = retry_after\n\nclass FatalError(Exception):\n    pass\n\ndef resilient_call(fn, sleep, backoff_delay, max_retries=4):\n    # TODO: retry TransientError with backoff; honor RateLimited.retry_after;\n    # never retry FatalError; raise RuntimeError('exhausted retries') when out of tries.\n    ...",
+      "editable": true
+    },
+    "solution": {
+      "language": "python",
+      "code": "class TransientError(Exception):\n    pass\n\nclass RateLimited(Exception):\n    def __init__(self, retry_after: float):\n        self.retry_after = retry_after\n\nclass FatalError(Exception):\n    pass\n\ndef resilient_call(fn, sleep, backoff_delay, max_retries=4):\n    for attempt in range(max_retries):\n        try:\n            return fn()                       # success path\n        except FatalError:\n            raise                             # never retry a fatal error\n        except RateLimited as e:\n            sleep(e.retry_after)              # obey the provider's wait\n        except TransientError:\n            sleep(backoff_delay(attempt))     # exponential backoff + jitter\n    raise RuntimeError(\"exhausted retries\")",
+      "language": "python"
+    },
+    "testHarness": "log = []\ndef sleep(s): log.append((\"sleep\", round(s, 2)))\ndef backoff_delay(attempt): return float(attempt)   # deterministic\n\n# 1) succeeds after two transient failures\nstate = {\"n\": 0}\ndef flaky():\n    state[\"n\"] += 1\n    if state[\"n\"] < 3:\n        raise TransientError()\n    return \"ok\"\nassert resilient_call(flaky, sleep, backoff_delay) == \"ok\"\nassert log == [(\"sleep\", 0.0), (\"sleep\", 1.0)], log\n\n# 2) rate limit uses retry_after, not backoff\nlog.clear(); state[\"n\"] = 0\ndef throttled():\n    state[\"n\"] += 1\n    if state[\"n\"] == 1:\n        raise RateLimited(retry_after=7.0)\n    return \"done\"\nassert resilient_call(throttled, sleep, backoff_delay) == \"done\"\nassert log == [(\"sleep\", 7.0)], log\n\n# 3) fatal error is never retried\ndef fatal():\n    raise FatalError()\ntry:\n    resilient_call(fatal, sleep, backoff_delay)\n    raise AssertionError(\"should have raised FatalError\")\nexcept FatalError:\n    pass\n\n# 4) exhausting retries raises RuntimeError\ndef always_transient():\n    raise TransientError()\ntry:\n    resilient_call(always_transient, sleep, backoff_delay, max_retries=2)\n    raise AssertionError(\"should have exhausted\")\nexcept RuntimeError as e:\n    assert str(e) == \"exhausted retries\"\nprint(\"all tests passed\")",
+    "expectedOutput": "all tests passed",
+    "hints": [
+      "Loop for attempt in range(max_retries); return fn() inside a try so a success exits immediately.",
+      "Order your except clauses: catch FatalError first and re-raise it, then RateLimited (sleep retry_after), then TransientError (sleep backoff_delay(attempt)).",
+      "If the loop finishes without returning, all attempts failed transiently — raise RuntimeError('exhausted retries')."
+    ]
+  },
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Why add random jitter to exponential backoff?",
+      "options": ["It makes retries faster on average", "It prevents many clients from retrying at the same instant (thundering herd)", "It is required by the HTTP spec", "It reduces the number of retries needed"],
+      "answerIndex": 1,
+      "explanation": "Without jitter, all clients that failed at the same time back off by the same amount and retry in lockstep, hammering a recovering server. Full jitter randomizes each delay so the load is spread across time."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This retry loop is dangerous in production. What's the flaw?",
+      "code": "while True:\n    try:\n        return call_model(payload)\n    except Exception:\n        time.sleep(1)   # retry forever, fixed delay",
+      "options": ["time.sleep is deprecated", "It retries forever with no cap and a fixed delay, so a hard-down provider is hammered indefinitely and every error (even a 400) is retried", "call_model needs a return type hint", "You cannot catch Exception"],
+      "answerIndex": 1,
+      "explanation": "There's no retry cap, no backoff, and it retries every error including non-retryable ones like a 400. Against a down provider this becomes an infinite fixed-rate hammer — bound the retries, back off, and only retry transient errors."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "A circuit breaker has threshold=2, cooldown=10s. After 2 failures at t=0, what does allow() return at t=5 and again at t=12?",
+      "code": "cb.record(False); cb.record(False)   # both at t=0, trips open\n# t=5:  cb.allow()\n# t=12: cb.allow()",
+      "options": ["True then True", "False then False", "False then True", "True then False"],
+      "answerIndex": 2,
+      "explanation": "Two failures trip the breaker open at t=0. At t=5 the 10s cooldown hasn't elapsed, so allow() is False (fail fast). At t=12 the cooldown has passed, so it half-opens and allow() returns True to let a trial call through."
+    },
+    {
+      "kind": "fill-blank",
+      "prompt": "Complete the 429 handler so it honors the provider's requested wait time.",
+      "codeBefore": "if resp.status_code == 429:\n    wait = resp.headers.get(\"",
+      "codeAfter": "\")\n    time.sleep(float(wait))",
+      "options": ["Retry-After", "Rate-Limit", "X-Backoff", "Retry-Delay"],
+      "answerIndex": 0,
+      "explanation": "The standard header on a 429 is Retry-After, giving the number of seconds (or a date) to wait. Honoring it recovers faster and avoids extending the throttle versus guessing your own delay."
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "ap5-th-1",
+        "tech": "agent-production",
+        "category": "reliability",
+        "difficulty": "intermediate",
+        "question": "Why is exponential backoff with jitter preferred over a fixed retry delay?",
+        "directAnswer": "A fixed delay makes every client that failed at the same moment retry in lockstep, hammering a recovering dependency and often re-triggering the failure. Exponential backoff spaces attempts out increasingly, and jitter randomizes each delay so the retries desynchronize, spreading load and giving the dependency room to recover.",
+        "detailedExplanation": {
+          "whatItIs": "A retry-timing strategy where the delay grows exponentially with the attempt number (1s, 2s, 4s, capped) and a random jitter is applied to each computed delay.",
+          "whyItExists": "At scale many clients fail simultaneously (e.g. a provider blip). Retrying all at once creates a thundering herd that keeps the dependency down; growing, randomized delays break that synchronization.",
+          "howItWorks": "delay = random.uniform(0, min(cap, base * 2**attempt)) for full jitter, applied between bounded retry attempts and only for transient/idempotent errors."
+        },
+        "whyImportant": "It's the difference between retries that help a system recover and retries that amplify an outage into a self-inflicted meltdown.",
+        "realWorldExample": "A fleet of agents all hit a provider 503 at once; with fixed 1s retries they synchronized and kept the provider pinned, but switching to full-jitter backoff spread the load and recovery happened in seconds.",
+        "followUps": [
+          { "question": "What's the difference between full jitter and equal jitter?", "answer": "Full jitter picks the delay uniformly in [0, ceiling]; equal jitter uses half the ceiling plus a random half, keeping a minimum wait while still desynchronizing. Full jitter usually spreads load best." },
+          { "question": "Which errors should you not back off and retry?", "answer": "Non-transient or non-idempotent ones — 4xx validation errors like 400/422, and writes that aren't safe to repeat. Retrying those wastes calls or duplicates side effects." }
+        ]
+      },
+      {
+        "id": "ap5-th-2",
+        "tech": "agent-production",
+        "category": "reliability",
+        "difficulty": "intermediate",
+        "question": "What problem does a circuit breaker solve that retries alone cannot?",
+        "directAnswer": "Retries handle brief, transient failures, but if a dependency is hard-down, every request still pays a full timeout and set of retries before failing — multiplying latency and cost across all users. A circuit breaker detects sustained failure, trips open to fail fast during a cooldown, and only lets a trial call through afterward to test recovery, preventing a dead dependency from cascading into a slow, expensive outage.",
+        "detailedExplanation": {
+          "whatItIs": "A stateful guard around a dependency with three states: closed (calls flow), open (fail fast, no calls) after a failure threshold, and half-open (one trial call) after a cooldown.",
+          "whyItExists": "Retries assume the dependency will recover soon; when it won't, retrying every request wastes time and money and slows every caller, and the piled-up in-flight requests can worsen the outage.",
+          "howItWorks": "Count consecutive (or windowed) failures; at the threshold record opened_at and reject calls until cooldown elapses, then allow one trial — success closes the breaker, failure re-opens it."
+        },
+        "whyImportant": "It bounds the blast radius of a downstream outage, keeping the agent responsive (even if degraded) instead of hanging on a dead service.",
+        "realWorldExample": "A tool API went down for 20 minutes; without a breaker every agent request spent 30s of timeouts and retries, but the breaker tripped after five failures and instantly fast-failed to a fallback, keeping latency low.",
+        "followUps": [
+          { "question": "How does a breaker interact with retries?", "answer": "Retries handle within-call transient blips; the breaker sits outside, tracking whether calls are succeeding at all and cutting them off when the dependency is clearly down." },
+          { "question": "What should a call do when the breaker is open?", "answer": "Fail fast — return a cached value, a degraded default, or a clear error routed to a fallback path, rather than waiting on a call that will almost certainly fail." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "ap5-sc-1",
+        "tech": "agent-production",
+        "category": "reliability",
+        "difficulty": "intermediate",
+        "question": "Your agent fleet started getting a wave of 429s from the model provider during a traffic spike, and your naive retries made it worse. How do you stabilize it?",
+        "directAnswer": "Stop treating 429 like a generic error: parse and honor Retry-After instead of your own backoff, add full jitter so the fleet desynchronizes, and put a shared client-side rate limiter (token bucket) in front of the provider so total outbound request rate stays under quota. Add a circuit breaker for sustained failure and cap retries so a spike can't self-amplify.",
+        "detailedExplanation": {
+          "whatItIs": "A throttling incident where the aggregate request rate from many agents exceeds the provider's quota, and undisciplined retries increase the rate further.",
+          "whyItExists": "Each agent retried on its own schedule with no jitter and ignored Retry-After, so retries synchronized and piled on during the throttle, keeping the fleet above quota.",
+          "howItWorks": "Introduce a shared token-bucket limiter sized to the provider quota so all agents draw from one budget; on 429 sleep for Retry-After; apply full jitter; bound retries; and trip a breaker if 429s persist so you shed load instead of amplifying it."
+        },
+        "whyImportant": "It shows the failure mode where retries make an incident worse and the discipline — honor signals, share the quota, add jitter, bound and break — that resolves it.",
+        "realWorldExample": "A team's agents each retried 429s immediately; adding a shared token bucket plus Retry-After honoring dropped their 429 rate from double digits to near zero without raising the provider quota.",
+        "followUps": [
+          { "question": "Why a shared limiter instead of a per-agent one?", "answer": "The provider quota is global, so per-agent limits still sum above quota under fan-out. A shared bucket enforces the true aggregate ceiling across the fleet." },
+          { "question": "How do you size the token bucket?", "answer": "To the provider's documented rate/quota minus a safety margin, and refill at that rate; monitor 429s and adjust so you use the quota without tripping it." }
+        ]
+      }
+    ],
+    "coding": [
+      {
+        "id": "ap5-co-1",
+        "tech": "agent-production",
+        "category": "coding",
+        "difficulty": "intermediate",
+        "question": "Implement a retry decorator that retries a function on a given set of exception types using capped exponential backoff with full jitter, up to max_retries, re-raising the last error if all attempts fail.",
+        "thoughtProcess": "I want a reusable decorator so any call can gain retries without duplicating logic. I loop over attempts, return on success, and on a listed exception compute a capped-exponential, fully-jittered delay and sleep. I track the last exception and re-raise it after the final attempt so the caller sees the real error, not a generic one. I inject sleep and a random source so it's testable and only retry the exception types I'm told are transient.",
+        "solution": {
+          "language": "python",
+          "code": "import functools\nimport random\nimport time\n\ndef with_retries(exceptions, max_retries=4, base=1.0, cap=30.0,\n                 sleep=time.sleep, rng=random.random):\n    def decorator(fn):\n        @functools.wraps(fn)\n        def wrapper(*args, **kwargs):\n            last = None\n            for attempt in range(max_retries):\n                try:\n                    return fn(*args, **kwargs)\n                except exceptions as e:\n                    last = e\n                    ceiling = min(cap, base * (2 ** attempt))\n                    sleep(rng() * ceiling)   # full jitter in [0, ceiling]\n            raise last                       # all attempts failed\n        return wrapper\n    return decorator\n\nif __name__ == \"__main__\":\n    calls = {\"n\": 0}\n\n    @with_retries((TimeoutError,), max_retries=5, sleep=lambda s: None)\n    def flaky():\n        calls[\"n\"] += 1\n        if calls[\"n\"] < 3:\n            raise TimeoutError(\"transient\")\n        return \"ok\"\n\n    print(flaky(), \"after\", calls[\"n\"], \"calls\")",
+          "language": "python"
+        },
+        "lineByLine": [
+          "with_retries takes the exception types to retry plus tunables, and injectable sleep/rng for testability.",
+          "The decorator wraps fn with functools.wraps so metadata is preserved.",
+          "We loop up to max_retries, returning immediately on success.",
+          "On a listed exception we save it as last and compute the capped exponential ceiling for this attempt.",
+          "sleep(rng() * ceiling) applies full jitter — a random fraction of the ceiling.",
+          "After the loop, raise last so the caller sees the actual final error rather than a generic one.",
+          "The __main__ demo retries a TimeoutError twice and succeeds on the third call."
+        ],
+        "timeComplexity": "O(max_retries) calls in the worst case; wall-clock is dominated by the sum of backoff delays.",
+        "spaceComplexity": "O(1) beyond the wrapped call's own usage.",
+        "followUps": [
+          { "question": "How would you special-case a 429 with Retry-After here?", "answer": "Catch the rate-limit exception separately before the generic branch and sleep for its retry_after value instead of the computed jittered backoff." },
+          { "question": "How do you make sure you only retry idempotent operations?", "answer": "Only decorate reads/idempotent calls, or pass an explicit idempotent flag; for writes, use an idempotency key so a retry can't duplicate the side effect." }
+        ]
+      }
+    ]
+  },
+  "keyTakeaways": [
+    "Bound every model/tool call with a timeout so a stalled server converts to a catchable error instead of freezing the loop.",
+    "Retry only transient/idempotent failures, using capped exponential backoff plus full jitter to avoid a thundering herd.",
+    "Treat 429 specially: honor the Retry-After header instead of guessing your own delay, and share provider quota with a client-side limiter.",
+    "Add a circuit breaker so a hard-down dependency fails fast during a cooldown instead of cascading into a slow, expensive outage.",
+    "Compose timeout + backoff + 429 handling + breaker behind one resilient client so every call gets the same defenses in one place."
+  ]
+}

@@ -20,6 +20,9 @@ import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loade
 import { BackendLearnTab } from './domains/backend-engineering/components/BackendLearnTab';
 import { BackendPracticeTab } from './domains/backend-engineering/components/BackendPracticeTab';
 import { loadBackendManifest, manifestToTopics as backendManifestToTopics } from './domains/backend-engineering/loader';
+import { AiAgentLearnTab } from './domains/ai-agents/components/AiAgentLearnTab';
+import { AiAgentPracticeTab } from './domains/ai-agents/components/AiAgentPracticeTab';
+import { loadAgentManifest, manifestToTopics as agentManifestToTopics } from './domains/ai-agents/loader';
 
 export default function App() {
   const [activeTopic, setActiveTopic] = useState<Topic | null>(allTopics[0] || null);
@@ -27,6 +30,7 @@ export default function App() {
   const [selectedTech, setSelectedTech] = useState<Category | null>(null);
   const [frontendTopics, setFrontendTopics] = useState<Topic[]>([]);
   const [backendTopics, setBackendTopics] = useState<Topic[]>([]);
+  const [aiTopics, setAiTopics] = useState<Topic[]>([]);
   const [activeTab, setActiveTab] = useState<'learn' | 'interview' | 'practice' | 'projects' | 'playground' | 'gemini'>('learn');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('theme') as 'light' | 'dark') || 'dark');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -104,8 +108,9 @@ export default function App() {
 
   const isFrontend = currentDomain === 'frontend';
   const isBackend = currentDomain === 'backend-engineering';
+  const isAiAgents = currentDomain === 'ai-agents';
 
-  if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering') && !selectedTech) {
+  if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering' || currentDomain === 'ai-agents') && !selectedTech) {
     return <PathSelection
       domain={currentDomain}
       onSelectTech={async (tech, topicId) => {
@@ -121,6 +126,11 @@ export default function App() {
           const topics = manifest ? backendManifestToTopics(manifest) : [];
           setBackendTopics(topics);
           // Deep-link to a specific topic (resume / due-for-revision) when requested.
+          setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
+        } else if (currentDomain === 'ai-agents') {
+          const manifest = await loadAgentManifest(tech);
+          const topics = manifest ? agentManifestToTopics(manifest) : [];
+          setAiTopics(topics);
           setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
         } else {
           const techTopics = allTopics.filter(t => t.category === tech);
@@ -138,7 +148,7 @@ export default function App() {
   }
 
   // Filter topics for the sidebar based on selected tech / domain.
-  const sidebarTopics = isFrontend ? frontendTopics : isBackend ? backendTopics : allTopics.filter(t => t.category === selectedTech);
+  const sidebarTopics = isFrontend ? frontendTopics : isBackend ? backendTopics : isAiAgents ? aiTopics : allTopics.filter(t => t.category === selectedTech);
   
   const currentTopicIndex = sidebarTopics.findIndex(t => t.id === activeTopic?.id);
   const previousTopic = currentTopicIndex > 0 ? sidebarTopics[currentTopicIndex - 1] : null;
@@ -544,6 +554,20 @@ export default function App() {
                 nextTitle={nextTopic?.title}
                 theme={theme}
               />
+            ) : isAiAgents && selectedTech ? (
+              <AiAgentLearnTab
+                tech={selectedTech}
+                topicId={activeTopic?.id || null}
+                topics={aiTopics.map(t => ({ id: t.id, title: t.title }))}
+                onNavigate={(id) => { const t = aiTopics.find(x => x.id === id); if (t) setActiveTopic(t); }}
+                isCompleted={!!completedTopics[activeTopic?.id || '']}
+                onToggleComplete={toggleTopicCompleted}
+                onPrev={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
+                onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+                prevTitle={previousTopic?.title}
+                nextTitle={nextTopic?.title}
+                theme={theme}
+              />
             ) : (
               <LearnTab
                 topic={activeTopic}
@@ -566,6 +590,8 @@ export default function App() {
               <FrontendPracticeTab tech={selectedTech} theme={theme} />
             ) : isBackend && selectedTech ? (
               <BackendPracticeTab tech={selectedTech} theme={theme} />
+            ) : isAiAgents ? (
+              <AiAgentPracticeTab theme={theme} />
             ) : deChallenges.length === 0 ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '60px', color: 'var(--text-secondary)' }}>
                 Loading coding challenges…
@@ -586,6 +612,13 @@ export default function App() {
                 heading="Go Build-Along Projects"
                 blurb={<>A portfolio-ready ladder of real Go services — from a JSON REST API to a resilient gRPC microservice. Each project builds on the last, with staged milestones, tasks, acceptance criteria, and hints. Work top to bottom, check off milestones as you go, and finish with builds you can put on your resume and defend in interviews.</>}
               />
+            ) : isAiAgents ? (
+              <ProjectsTab
+                dataUrl="/content/ai-agents/projects.json"
+                progressKey="de_project_progress"
+                heading="AI Agent Build-Along Projects"
+                blurb={<>A portfolio-ready ladder of real AI agents — from a tool-using agent built from scratch to a production, evaluated, guard-railed multi-agent system. Each project builds on the last, with staged milestones, tasks, acceptance criteria, and hints. Bring your own model API key to run them locally.</>}
+              />
             ) : (
               <ProjectsTab />
             )
@@ -594,6 +627,8 @@ export default function App() {
           {activeTab === 'playground' && (
             isBackend
               ? <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>Go runs locally — use the editable Code Lab inside each lesson, or the Practice tab, and verify with <code>go test ./...</code>.</div>
+              : isAiAgents
+              ? <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>Agents need an API key &amp; network — use the interactive playgrounds inside each lesson, and copy Code Lab snippets to run locally with your provider key.</div>
               : isFrontend ? <FrontendPlaygroundTab theme={theme} /> : <PlaygroundTab theme={theme} />
           )}
 

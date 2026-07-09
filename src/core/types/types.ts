@@ -26,11 +26,24 @@ export type FrontendCategory =
   | 'deployment'
   | 'internet-fundamentals';
 
+// AI Agents domain tracks.
+export type AiAgentCategory =
+  | 'agent-foundations'
+  | 'agent-tools'
+  | 'agent-rag'
+  | 'agent-memory'
+  | 'agent-orchestration'
+  | 'agent-multi'
+  | 'agent-mcp'
+  | 'agent-eval'
+  | 'agent-safety'
+  | 'agent-production';
+
 // Category is the union of every technology id across all domains.
-export type Category = BackendCategory | FrontendCategory;
+export type Category = BackendCategory | FrontendCategory | AiAgentCategory;
 
 // Top-level learning domains.
-export type Domain = 'data-engineering' | 'frontend' | 'backend-engineering';
+export type Domain = 'data-engineering' | 'frontend' | 'backend-engineering' | 'ai-agents';
 
 export type Difficulty = 'beginner' | 'intermediate' | 'advanced';
 export type ChallengeDifficulty = 'easy' | 'medium' | 'hard';

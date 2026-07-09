@@ -1,0 +1,199 @@
+{
+  "schema": "agent.v1",
+  "id": "agent-production-8",
+  "tech": "agent-production",
+  "domain": "ai-agents",
+  "title": "Serving & Scaling Agents",
+  "difficulty": "advanced",
+  "archetype": "system-design",
+  "summary": "A production agent service is not one long-running process per user — it's stateless workers that hold no session state between requests, backed by external stores for memory and conversation state, with a queue in front of long-running agent runs so requests never block. That shape lets you autoscale workers on load, share a single provider rate-limit budget across the whole fleet, and enforce cost controls per run. This topic ties the domain together: resilience, concurrency, and versioning all live inside this serving architecture.",
+  "prerequisites": ["agent-production-6", "agent-production-7"],
+  "relatedConcepts": ["agent-production-6", "agent-production-5"],
+  "nestedConcepts": ["stateless workers + external state", "queues for long runs", "autoscaling on load", "fleet-wide provider rate limits", "per-run cost controls"],
+  "subtopics": [
+    {
+      "title": "Stateless workers with external state",
+      "explanation": "If a worker keeps a user's conversation in local memory, that user is pinned to one machine and a crash or scale-down loses the session. Making workers stateless — every request reloads state from an external store (Redis, a database, a memory service) and writes it back — means any worker can handle any request and you can add or kill workers freely. Statelessness is the property that makes autoscaling and fault tolerance possible at all.",
+      "example": "def handle_turn(session_id: str, user_msg: str, store) -> str:\n    # load state fresh -- this worker holds nothing between requests\n    state = store.load(session_id)          # history, memory, release ref\n    state[\"history\"].append({\"role\": \"user\", \"content\": user_msg})\n    reply = run_agent_step(state)           # uses pinned release from state\n    state[\"history\"].append({\"role\": \"assistant\", \"content\": reply})\n    store.save(session_id, state)           # persist so the next request can be anywhere\n    return reply\n# any worker can serve any session; none is pinned to a machine"
+    },
+    {
+      "title": "Queue long-running agent runs",
+      "explanation": "A multi-step agent run can take minutes, and holding an HTTP request open that long ties up a worker, times out clients, and collapses under load. Instead you enqueue the run, return a job id immediately, and let background workers pull jobs and report progress, so the request path stays fast and the run survives worker restarts. A queue decouples request latency from run duration, which is essential once runs are long or bursty.",
+      "example": "def submit_run(goal: str, queue, store) -> str:\n    job_id = new_id()\n    store.save_job(job_id, status=\"queued\", goal=goal)\n    queue.enqueue({\"job_id\": job_id, \"goal\": goal})   # hand off to workers\n    return job_id                                       # return immediately\n\ndef worker_loop(queue, store):\n    while True:\n        job = queue.dequeue()                           # pull next run\n        store.save_job(job[\"job_id\"], status=\"running\")\n        result = run_agent(job[\"goal\"])                 # may take minutes\n        store.save_job(job[\"job_id\"], status=\"done\", result=result)"
+    },
+    {
+      "title": "Autoscale workers on load",
+      "explanation": "Agent traffic is spiky and each run is expensive, so a fixed worker count either wastes money at night or falls over at peak. Because workers are stateless and pull from a queue, you can scale their number on a signal like queue depth or CPU, adding capacity under load and removing it when idle. Autoscaling is how the service matches cost to demand instead of provisioning for the worst case permanently.",
+      "example": "def desired_workers(queue_depth: int, per_worker: int = 10,\n                    min_w: int = 2, max_w: int = 100) -> int:\n    # scale on backlog: enough workers to drain the queue, within bounds\n    needed = -(-queue_depth // per_worker)   # ceil division\n    return max(min_w, min(max_w, needed))\n\nfor depth in (0, 45, 500, 5000):\n    print(f\"queue={depth:>4} -> workers={desired_workers(depth)}\")\n# scales up with backlog, capped so it never runs away"
+    },
+    {
+      "title": "Share the provider rate limit across the fleet",
+      "explanation": "The model provider's rate limit is a single global budget, but a fleet of workers each throttling itself locally will still sum to well over quota under fan-out and get mass-429'd. A shared limiter — a token bucket in Redis that every worker draws from before calling the provider — enforces the true aggregate ceiling. A fleet-wide limiter is what lets you scale worker count without scaling your way into rate-limit failures.",
+      "example": "def try_acquire(redis, key: str, rate_per_sec: int) -> bool:\n    # shared token bucket: all workers draw from ONE budget\n    now = redis.time_seconds()\n    tokens = redis.refill(key, rate_per_sec, now)   # refill to cap\n    if tokens >= 1:\n        redis.consume(key, 1)                        # take a token\n        return True\n    return False                                     # over quota -> wait/backoff\n\n# before every provider call: if not try_acquire(...): backoff_and_retry()"
+    },
+    {
+      "title": "Enforce per-run cost controls",
+      "explanation": "Because an agent decides its own steps, a single run can loop, retry, and rack up tokens without bound, so each run needs a hard budget: max steps, max tokens, and a wall-clock deadline, checked every iteration. When a run hits its ceiling it stops with a clear 'budget exceeded' outcome instead of silently spending. Per-run budgets are the last line of cost defense, turning an unbounded autonomous loop into a bounded, predictable unit of spend.",
+      "example": "class RunBudget:\n    def __init__(self, max_steps=15, max_tokens=50_000, deadline_s=120):\n        self.max_steps, self.max_tokens, self.deadline_s = max_steps, max_tokens, deadline_s\n        self.steps, self.tokens, self.start = 0, 0, time.time()\n    def check(self) -> None:\n        self.steps += 1\n        if self.steps > self.max_steps:\n            raise BudgetExceeded(\"step cap\")\n        if self.tokens > self.max_tokens:\n            raise BudgetExceeded(\"token cap\")\n        if time.time() - self.start > self.deadline_s:\n            raise BudgetExceeded(\"deadline\")\n\n# call budget.check() at the top of every agent-loop iteration"
+    }
+  ],
+  "foundations": {
+    "overview": "Serving an agent at scale is an architecture problem, not a single script. The core move is to keep workers stateless: no session lives in a worker's memory, so state (conversation history, memory, and the pinned release reference) is loaded from and written back to an external store on every request. That lets any worker serve any request and lets you add or kill workers freely. Long agent runs — which can take minutes — go behind a queue: the request enqueues a job, returns a job id immediately, and background workers process runs and report progress, so request latency is decoupled from run duration and runs survive restarts. With stateless, queue-fed workers you can autoscale on backlog, but scaling worker count collides with the provider's single global rate limit unless you enforce it fleet-wide with a shared token bucket. Finally, because each autonomous run can spend unboundedly, every run carries a hard budget (steps, tokens, deadline). This is where the whole domain converges: resilient client wrappers, async concurrency, and versioned releases all operate inside this serving shape.",
+    "formalDefinition": "A scalable agent service is a set of stateless workers that externalize all session state, fed by a job queue that decouples request latency from run duration, autoscaled on a load signal (e.g. queue depth), constrained by a shared fleet-wide rate limiter enforcing the provider's global quota, and bounded per run by explicit step/token/time budgets.",
+    "whyItMatters": "Agent runs are long, expensive, and bursty, and the provider quota is a shared global limit. A stateless, queue-backed, autoscaled architecture with fleet-wide rate limiting and per-run budgets is what makes the service survive spikes, recover from crashes, stay inside quota, and keep spend predictable — the properties that separate a robust product from a demo that falls over.",
+    "mentalModel": "Picture a busy restaurant kitchen. Orders (runs) go on a ticket rail (the queue), not held at the host stand blocking the door. Any available cook (stateless worker) can grab any ticket because the recipe and table state live on the ticket, not in a cook's head. You call in more cooks when the rail is long (autoscaling) and send them home when it's short. There's one pantry with limited stock shared by all cooks (the fleet-wide provider quota), and every dish has a max prep time and ingredient budget so no single order can consume the whole kitchen (per-run budgets).",
+    "realWorldUsage": "A hosted coding or support agent serving many concurrent sessions from an autoscaled worker pool, a batch pipeline running thousands of long extraction agents through a queue, a research-agent product that returns a job id and streams progress, and any multi-tenant agent platform sharing one provider quota across all customers.",
+    "performanceImpact": "Statelessness plus a queue keeps the request path fast and bounded regardless of run length, and lets throughput scale nearly linearly with worker count. The shared limiter trades a little queuing delay for staying under quota (avoiding 429 storms), while per-run budgets cap tail latency and cost so one runaway run can't degrade the whole fleet.",
+    "commonUseCases": [
+      "Hosted agent serving many concurrent sessions from an autoscaled pool",
+      "Queued batch pipeline running thousands of long agent runs",
+      "Async job API that returns a job id and streams progress",
+      "Multi-tenant platform sharing one provider quota across customers"
+    ],
+    "commonMisconceptions": [
+      { "myth": "Each user session needs its own long-lived process.", "reality": "Pinning a session to a process breaks autoscaling and loses state on any restart. Workers are stateless; session state lives in an external store so any worker can serve any request." },
+      { "myth": "Long agent runs can just be a slow HTTP request.", "reality": "Holding a request open for minutes ties up a worker, times out clients, and dies on restart. Long runs belong on a queue with a job id and background workers." },
+      { "myth": "Per-worker rate limiting is enough to respect the provider quota.", "reality": "The quota is global; N workers each limiting locally still sum over quota under fan-out. You need one shared/distributed limiter enforcing the aggregate ceiling." },
+      { "myth": "A step cap alone controls cost.", "reality": "A run can blow the budget within a step via huge context or many tool calls. Bound steps, tokens, and wall-clock together, checked every iteration." }
+    ]
+  },
+  "interactiveWidget": {
+    "widgetId": "note",
+    "title": "The shape of a scalable agent service",
+    "caption": "How stateless workers, a queue, autoscaling, a shared limiter, and per-run budgets fit together — and where resilience, concurrency, and versioning plug in.",
+    "config": {
+      "note": "Start with STATELESS WORKERS. No session lives in a worker's memory; every request loads state (history, memory, the pinned release reference) from an external store and writes it back. Any worker can serve any request, so you can add or kill workers freely — this is what makes autoscaling and crash recovery possible at all.\n\nPut a QUEUE in front of long runs. A multi-step run can take minutes, so instead of holding an HTTP request open, enqueue a job, return a job id immediately, and let background workers process runs and report progress. Request latency is now decoupled from run duration, and runs survive worker restarts.\n\nAUTOSCALE on a load signal like queue depth: add workers when the backlog grows, remove them when idle, so cost tracks demand instead of provisioning for peak forever.\n\nEnforce the provider rate limit FLEET-WIDE. The quota is one global budget; N workers each throttling locally will still sum over quota and get mass-429'd. A shared token bucket (e.g. in Redis) that every worker draws from before a provider call enforces the true aggregate ceiling.\n\nGive every run a HARD BUDGET — max steps, max tokens, wall-clock deadline — checked each iteration, so an autonomous loop can't spend without bound.\n\nThis is where the domain converges: the resilient client wrapper (timeouts, backoff, breaker) guards each call, asyncio concurrency overlaps calls within a worker, and versioned releases are the pinned config each stateless worker loads from state."
+    }
+  },
+  "productionDeepDive": {
+    "architecture": "The canonical shape is a thin API/ingress layer, a job queue, and a pool of stateless workers, all backed by an external state store and a shared rate limiter. The API handles short synchronous turns directly and enqueues long runs, returning a job id; workers pull jobs, load session state (history, memory, and the pinned release reference from the versioning layer) from the store, run the agent loop, and write state back. Every provider/tool call goes through the resilient client wrapper (timeout + backoff + circuit breaker), and within a worker independent calls are issued concurrently via asyncio under a semaphore. Nothing durable lives in a worker, so workers are cattle: interchangeable and disposable.",
+    "performance": "Throughput scales with worker count because workers are stateless and I/O-bound concurrency (async + semaphore) lets each worker overlap many in-flight model/tool calls. Keep the request path fast by never doing long runs inline — enqueue them. Use provider prompt caching for the fixed release prefix (system prompt + tool schemas) to cut input token cost and latency, and colocate the state store to keep per-turn load/save cheap. The queue smooths bursts so peak load becomes backlog to drain rather than dropped requests.",
+    "reliability": "Statelessness plus durable queue and state store means a worker crash loses no session and no run — another worker resumes from persisted state, and at-least-once queue delivery plus idempotent run handling (keyed by job id) prevents lost or duplicated work. The circuit breaker isolates a down provider/tool so it fails fast instead of cascading, retries with backoff absorb transient blips, and per-run budgets stop a single run from monopolizing capacity. Health checks and graceful drain let autoscaling remove workers without dropping in-flight turns.",
+    "observability": "Track per-run metrics (steps, tokens, cost, latency, tool-call outcomes) tagged with the release fingerprint so a regression is attributable to a specific version. At the fleet level, watch queue depth and age (the autoscaling signal and a leading indicator of overload), provider 429 rate (is the shared limiter sized right?), circuit-breaker state per dependency, and budget-exceeded rate. Trace a request end to end across API, queue, and worker so a slow run can be pinned to a specific tool or model call.",
+    "security": "Isolate tenants so one customer's runs and state can't reach another's (namespaced state keys, per-tenant quotas). Treat all model output as untrusted before it becomes a tool argument (validate/allow-list), scope worker credentials to least privilege, and never let a run exceed its tenant's budget or rate share. Secrets (provider keys) live in a secret manager, not in worker images, and audit logs tie each run to a tenant and release for incident review.",
+    "cost": "Cost is dominated by model tokens, so the biggest levers are per-run budgets (cap steps/tokens/time), prompt caching of the pinned prefix, and choosing the smallest adequate model per release. Autoscaling to zero-ish at idle and scaling on backlog matches infra spend to demand, the shared limiter avoids paying for retries after 429 storms, and queue-based batching improves worker utilization. Attribute cost per tenant and per release fingerprint so expensive regressions are caught in observability, not the invoice.",
+    "caseStudies": [
+      {
+        "company": "A multi-tenant customer-support agent platform",
+        "problem": "Early on, each chat session ran in a sticky long-lived process holding history in memory. Deploys and scale-downs dropped active conversations, one busy tenant could starve others, and a traffic spike caused mass 429s from the shared model provider because every pod throttled only itself.",
+        "solution": "They moved to stateless workers loading session state from Redis on each turn, put long tool-heavy runs behind a job queue, autoscaled workers on queue depth, and added a shared Redis token bucket so the whole fleet drew from one provider budget. Per-run step/token/time budgets and per-tenant rate shares isolated noisy tenants, and every run was tagged with its release fingerprint.",
+        "tradeoffs": "Externalizing state added a Redis dependency and per-turn load/save latency, and the shared limiter introduces some queuing delay near quota; in exchange, deploys and scale-downs stopped dropping sessions, 429 storms disappeared, and cost became attributable and bounded per run and per tenant.",
+        "lessons": "Make workers stateless and runs queue-backed before trying to scale; enforce the provider quota fleet-wide, not per worker; and give every autonomous run a hard budget or one runaway session will eventually monopolize the fleet."
+      }
+    ]
+  },
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Why are stateless workers the foundation of a scalable agent service?",
+      "options": ["They use less code", "Because no session lives in a worker's memory, any worker can serve any request and workers can be added or killed freely, enabling autoscaling and crash recovery", "Because they are faster than stateful ones at computation", "Because the provider requires stateless clients"],
+      "answerIndex": 1,
+      "explanation": "If session state lived in a worker, that session would be pinned to one machine and lost on any crash or scale-down. Externalizing state so every request reloads and rewrites it makes workers interchangeable and disposable — the prerequisite for autoscaling and fault tolerance."
+    },
+    {
+      "kind": "mcq",
+      "prompt": "A fleet of 50 workers each rate-limits itself to stay under the provider quota, yet the service still gets mass-429'd. Why?",
+      "options": ["The workers are too slow", "The provider quota is a single global budget; 50 local limiters still sum well over quota under fan-out — you need one shared/distributed limiter enforcing the aggregate", "429 errors are unrelated to rate limits", "The queue is too deep"],
+      "answerIndex": 1,
+      "explanation": "Per-worker limiting can't see the fleet's aggregate rate. Fifty workers each 'under quota' locally add up to far over the one global quota. A shared token bucket every worker draws from before calling enforces the true aggregate ceiling."
+    },
+    {
+      "kind": "mcq",
+      "prompt": "Why put long-running agent runs behind a queue instead of a synchronous HTTP request?",
+      "options": ["Queues are cheaper than HTTP", "A minutes-long request ties up a worker, times out clients, and dies on restart; a queue returns a job id immediately, keeps the request path fast, and lets runs survive worker restarts", "HTTP cannot return JSON", "It's required for autoscaling to work at all"],
+      "answerIndex": 1,
+      "explanation": "Holding a request open for a long run blocks a worker, risks client timeouts, and loses the run if the worker restarts. Enqueuing decouples request latency from run duration and makes runs durable and resumable by background workers."
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "ap8-th-1",
+        "tech": "agent-production",
+        "category": "architecture",
+        "difficulty": "advanced",
+        "question": "Walk through the core components of a scalable agent-serving architecture and why each exists.",
+        "directAnswer": "Stateless workers (so any worker serves any request and you can autoscale and recover from crashes) externalize session state to a store; a job queue fronts long runs (so request latency is decoupled from run duration and runs survive restarts); autoscaling matches worker count to backlog; a shared fleet-wide rate limiter enforces the provider's single global quota; and per-run budgets cap steps, tokens, and time so an autonomous loop can't spend without bound. Resilient client wrappers, async concurrency, and versioned releases operate inside this shape.",
+        "detailedExplanation": {
+          "whatItIs": "A layered service — ingress/API, queue, stateless worker pool, external state store, shared limiter — designed for long, expensive, bursty runs against a shared provider quota.",
+          "whyItExists": "Agent runs are minutes-long, costly, and spiky, and the provider quota is global; a naive process-per-session, synchronous, per-worker-limited design drops sessions on deploy, times out on long runs, and 429-storms under load.",
+          "howItWorks": "Requests load/save state to the store so workers stay stateless; long runs enqueue and return a job id for background processing; workers autoscale on queue depth; every provider call passes the shared limiter and the resilient client wrapper; and each run carries a hard step/token/time budget."
+        },
+        "whyImportant": "It's the architecture that makes an agent survive spikes and crashes, stay within quota, and keep cost predictable — the difference between a product and a demo.",
+        "realWorldExample": "A support-agent platform moved from sticky in-memory sessions to stateless Redis-backed workers with a queue and a shared token bucket, ending both dropped-session deploys and 429 storms.",
+        "followUps": [
+          { "question": "Where do the earlier topics fit in this architecture?", "answer": "The resilient client wrapper (timeouts/backoff/breaker) guards every provider/tool call, asyncio + semaphore overlaps calls within a worker, and the versioned release is the pinned config each stateless worker loads from session state." },
+          { "question": "How does a worker crash not lose a run?", "answer": "State and jobs are durable (external store + queue with at-least-once delivery); another worker resumes from persisted state, and idempotent handling keyed by job id prevents duplicated work." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "ap8-sc-1",
+        "tech": "agent-production",
+        "category": "architecture",
+        "difficulty": "advanced",
+        "question": "Every deploy drops active user conversations and a busy tenant occasionally starves everyone else. How do you redesign the serving layer?",
+        "directAnswer": "The root cause is stateful, sticky workers with no isolation. Make workers stateless by moving session state to an external store loaded per turn, so a deploy or scale-down never loses a conversation; add graceful drain so in-flight turns finish. Then isolate tenants with per-tenant rate shares/budgets (and a shared fleet limiter for the global provider quota) so no single tenant can monopolize capacity, and put long runs on a queue so they're durable across restarts.",
+        "detailedExplanation": {
+          "whatItIs": "A reliability-and-fairness redesign: eliminating session affinity and adding tenant isolation.",
+          "whyItExists": "In-memory session state ties a conversation to one pod (lost on deploy/scale-down), and a single global limiter with no per-tenant share lets a noisy tenant consume the whole quota.",
+          "howItWorks": "Externalize state (Redis/DB) and reload each turn; drain workers gracefully on shutdown; enforce per-tenant rate/budget shares on top of the fleet-wide provider limiter; and enqueue long runs so they survive restarts and can be resumed."
+        },
+        "whyImportant": "It shows how statelessness and multi-tenant isolation together fix both the dropped-session and the noisy-neighbor failure modes with one coherent redesign.",
+        "realWorldExample": "After moving to stateless Redis-backed workers with graceful drain and per-tenant quotas, deploys stopped dropping chats and one tenant's burst no longer degraded others.",
+        "followUps": [
+          { "question": "How do you drain workers without dropping turns?", "answer": "Stop accepting new work, let in-flight turns finish (or checkpoint state), deregister from the load balancer, then terminate — orchestrators support this via preStop hooks and termination grace periods." },
+          { "question": "How do you enforce per-tenant fairness against a global quota?", "answer": "Give each tenant a share of the shared token bucket (or a weighted/priority scheme) so tenants draw from bounded sub-budgets that sum to the global quota." }
+        ]
+      }
+    ],
+    "systemDesign": [
+      {
+        "id": "ap8-sd-1",
+        "tech": "agent-production",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "Design a service that runs long, multi-step agent jobs (up to several minutes each) for many users, staying within a shared model-provider quota and keeping per-job cost predictable.",
+        "directAnswer": "Front the service with an API that enqueues each job and returns a job id, backed by a durable queue. A pool of stateless workers pulls jobs, loads state from an external store, runs the agent loop through a resilient client wrapper, and streams progress/status back via the store. Autoscale workers on queue depth, enforce the provider quota with a shared token bucket every worker consults before a call, and give each job a hard step/token/time budget. Tag every job with its release fingerprint for attribution.",
+        "detailedExplanation": {
+          "whatItIs": "An asynchronous job-processing architecture for long agent runs with global quota and per-job cost control.",
+          "whyItExists": "Long runs can't be synchronous HTTP; a shared provider quota can't be respected per worker; and autonomous loops must be budgeted or cost is unbounded.",
+          "howItWorks": "API enqueues -> durable queue -> autoscaled stateless workers -> external state store for progress; every model/tool call passes a shared limiter and the resilient wrapper; a RunBudget checked each iteration stops runaway spend; clients poll or subscribe to job status by id."
+        },
+        "whyImportant": "It integrates the whole production toolkit — queues, statelessness, autoscaling, fleet-wide limiting, resilience, and budgets — into one deployable design.",
+        "realWorldExample": "A research-agent product returns a job id, drains a queue with autoscaled workers, shares a Redis token bucket for the provider quota, and caps each run at 15 steps / 50k tokens / 2 minutes.",
+        "followUps": [
+          { "question": "How do clients get results from an async job?", "answer": "Return a job id and expose polling (GET status) or streaming (SSE/WebSocket) of progress and final result, with state persisted so any worker can report it." },
+          { "question": "How do you handle a job that exceeds its budget?", "answer": "Stop it with an explicit 'budget exceeded' terminal status, persist partial progress, and surface it to the client rather than silently continuing or crashing." }
+        ]
+      },
+      {
+        "id": "ap8-sd-2",
+        "tech": "agent-production",
+        "category": "system-design",
+        "difficulty": "advanced",
+        "question": "How would you design fleet-wide rate limiting so hundreds of autoscaled workers share one provider quota without 429 storms?",
+        "directAnswer": "Use a shared, distributed limiter — a token bucket stored in Redis, sized to the provider's rate/quota minus a safety margin — that every worker must acquire a token from before each provider call. Refill at the quota rate; if no token is available, the worker backs off with jitter (or queues) rather than calling. Optionally partition the bucket into per-tenant shares for fairness, and honor Retry-After when 429s still occur as a backstop.",
+        "detailedExplanation": {
+          "whatItIs": "A centralized rate-limiting layer enforcing the provider's global quota across a dynamic, autoscaled worker fleet.",
+          "whyItExists": "Per-worker limits can't see the aggregate, and worker count changes with autoscaling, so only a shared budget can track the true fleet-wide call rate against a fixed global quota.",
+          "howItWorks": "A Redis token bucket (atomic Lua script for refill+consume) holds the global budget; workers call try_acquire before each request, backing off with jitter on empty; per-tenant sub-buckets sum to the global quota; and the resilient wrapper's Retry-After handling catches any residual 429s."
+        },
+        "whyImportant": "It's the mechanism that lets you scale worker count freely without scaling into rate-limit failures — decoupling concurrency from quota.",
+        "realWorldExample": "Replacing 50 per-pod limiters with one Redis token bucket sized to the provider quota eliminated a recurring 429 storm during traffic spikes.",
+        "followUps": [
+          { "question": "Why must the token-bucket operations be atomic?", "answer": "Without atomic refill-and-consume (e.g. a Lua script or Redis primitive), concurrent workers can double-spend tokens under a race, overshooting the quota — atomicity enforces the ceiling exactly." },
+          { "question": "What if Redis (the limiter) is unavailable?", "answer": "Fail safe: fall back to a conservative per-worker local limit and the resilient wrapper's Retry-After/backoff so you degrade to under-quota behavior rather than uncontrolled fan-out." }
+        ]
+      }
+    ]
+  },
+  "keyTakeaways": [
+    "Keep workers stateless — externalize session state so any worker serves any request, enabling autoscaling and crash recovery.",
+    "Put long agent runs behind a queue: return a job id immediately so request latency is decoupled from run duration and runs survive restarts.",
+    "Autoscale workers on a load signal like queue depth so cost tracks demand instead of provisioning for peak.",
+    "Enforce the provider's global quota fleet-wide with one shared token bucket — per-worker limiting still sums over quota and 429-storms.",
+    "Give every autonomous run a hard step/token/time budget; this is where resilience, async concurrency, and versioned releases all converge into one serving architecture."
+  ]
+}

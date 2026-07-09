@@ -1,5 +1,5 @@
 import React from 'react';
-import { Database, Layout, Server, ChevronRight } from 'lucide-react';
+import { Database, Layout, Server, Bot, ChevronRight } from 'lucide-react';
 
 interface DashboardProps {
   onSelectDomain: (domain: string) => void;
@@ -191,6 +191,49 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain }) => {
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
             {['Go', 'Python (soon)', 'Java (soon)'].map(tech => (
+              <span key={tech} style={{
+                padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600,
+                background: 'var(--bg-inner)', color: 'var(--text-primary)', border: '1px solid var(--border-glass)'
+              }}>{tech}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* AI Agents Card - Active */}
+        <div
+          onClick={() => onSelectDomain('ai-agents')}
+          className="domain-card active-card glass-panel"
+          style={{
+            padding: '32px',
+            borderRadius: '20px',
+            border: '1px solid var(--border-glass)',
+            background: 'var(--bg-glass)',
+            cursor: 'pointer',
+            transition: 'all 0.3s ease',
+            position: 'relative',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column'
+          }}
+        >
+          <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '4px', background: 'linear-gradient(90deg, #8b5cf6, #ec4899)' }} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+            <div style={{
+              width: '56px', height: '56px', borderRadius: '14px',
+              background: 'rgba(139, 92, 246, 0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <Bot size={28} color="#8b5cf6" />
+            </div>
+            <ChevronRight size={24} color="var(--text-muted)" className="card-arrow" />
+          </div>
+
+          <h2 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>AI Agents</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.6, marginBottom: '24px', flex: 1 }}>
+            Build production AI agents from first principles — tool use, RAG, memory, orchestration, multi-agent & MCP — with interactive, animated playgrounds. Zero to pro.
+          </p>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {['Python', 'Tool Use', 'RAG', 'LangGraph', 'MCP'].map(tech => (
               <span key={tech} style={{
                 padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 600,
                 background: 'var(--bg-inner)', color: 'var(--text-primary)', border: '1px solid var(--border-glass)'

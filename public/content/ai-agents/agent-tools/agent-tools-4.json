@@ -1,0 +1,179 @@
+{
+  "schema": "agent.v1",
+  "id": "agent-tools-4",
+  "tech": "agent-tools",
+  "domain": "ai-agents",
+  "title": "Parallel Tool Calls",
+  "difficulty": "advanced",
+  "archetype": "pattern",
+  "summary": "When a model requests several independent tools in one turn, running them one after another wastes time — the calls don't depend on each other. The parallel-tool-calls pattern executes them concurrently with asyncio or a thread pool, collects the results, keeps each result paired to its originating tool_call_id, and handles partial failures so one broken tool doesn't sink the others. Done right, a turn's tool latency drops to the slowest single call instead of the sum of all.",
+  "prerequisites": ["agent-tools-3", "agent-tools-1"],
+  "relatedConcepts": ["agent-tools-3", "agent-tools-1"],
+  "nestedConcepts": ["when calls are independent", "concurrency: asyncio vs threads", "collecting results", "preserving id order", "partial failures"],
+  "subtopics": [
+    {
+      "title": "Parallelize only independent calls",
+      "explanation": "The model often emits several tool calls in one turn that don't depend on each other — three separate lookups, say — and those can run at the same time. If one call's arguments depend on another's result, they belong in different turns and must stay sequential. Recognizing independence is the precondition for safely parallelizing, because concurrency can't reorder a true data dependency.",
+      "example": "# independent: no call needs another's output\ntool_calls = [\n    {\"id\": \"a\", \"name\": \"get_weather\", \"args\": {\"city\": \"Paris\"}},\n    {\"id\": \"b\", \"name\": \"get_weather\", \"args\": {\"city\": \"Tokyo\"}},\n    {\"id\": \"c\", \"name\": \"get_fx\",      \"args\": {\"pair\": \"EURJPY\"}},\n]\n# safe to run all three at once — none consumes another's result"
+    },
+    {
+      "title": "asyncio for I/O, threads for blocking calls",
+      "explanation": "Most tools are I/O-bound (HTTP, DB, file), so concurrency — not parallelism of CPU — is what you need. If your tools are async, gather them with asyncio; if they're blocking functions you can't rewrite, run them in a thread pool. Both overlap the waiting so total time approaches the slowest call, which is the entire point of parallel tool calls.",
+      "example": "import asyncio\n\nasync def run_all(async_tools):\n    # overlap I/O waits; total time ~= slowest single call\n    return await asyncio.gather(*[t() for t in async_tools])\n\n# blocking tools instead? use a thread pool:\nfrom concurrent.futures import ThreadPoolExecutor\ndef run_blocking(fns):\n    with ThreadPoolExecutor(max_workers=8) as ex:\n        return list(ex.map(lambda f: f(), fns))"
+    },
+    {
+      "title": "Collect results as they complete",
+      "explanation": "Concurrency means results arrive out of order — the fastest tool finishes first regardless of its position in the list. You collect all outcomes, then reassemble them, rather than assuming the order you launched them in. Treating completion order as unrelated to request order is what keeps concurrent dispatch correct.",
+      "example": "import asyncio\n\nasync def gather_map(coros_by_id):\n    async def wrap(cid, coro):\n        return cid, await coro          # tag result with its id\n    pairs = await asyncio.gather(\n        *[wrap(cid, c) for cid, c in coros_by_id.items()]\n    )\n    return dict(pairs)                   # id -> result, order-independent"
+    },
+    {
+      "title": "Preserve the id pairing and message order",
+      "explanation": "Each result must still go back as a tool message keyed by its original tool_call_id, and the tool messages are typically appended in the same order the calls were requested regardless of which finished first. The id is the join key; request order keeps the transcript tidy. Reassembling by id, then emitting in request order, is what makes parallel execution invisible to the model.",
+      "example": "results_by_id = await gather_map(coros_by_id)  # completion order\nfor call in tool_calls:                          # request order\n    messages.append({\n        \"role\": \"tool\",\n        \"tool_call_id\": call[\"id\"],\n        \"content\": str(results_by_id[call[\"id\"]]),\n    })\n# model sees one id-matched result per call, in the order it asked"
+    },
+    {
+      "title": "Handle partial failures gracefully",
+      "explanation": "When several tools run at once, one may fail while the others succeed, and a single exception must not discard the good results. You capture each tool's outcome independently — success value or error text — and return an error observation for the failed one so the model can react. Isolating failures per call is what lets a parallel turn degrade gracefully instead of all-or-nothing.",
+      "example": "import asyncio\n\nasync def safe(cid, coro):\n    try:\n        return cid, await coro\n    except Exception as e:\n        return cid, f\"error: {e}\"        # isolate this failure\n\n# return_exceptions is another option, but per-call try/except\n# lets you format a clean error observation the model can use\nresults = dict(await asyncio.gather(*[safe(i, c) for i, c in items]))"
+    }
+  ],
+  "foundations": {
+    "overview": "A single model turn can request several tool calls at once, and when those calls are independent — none consumes another's output — running them sequentially wastes wall-clock time equal to the sum of their latencies. The parallel-tool-calls pattern runs them concurrently instead, so a turn's tool latency approaches the slowest single call rather than the total. Because agent tools are almost always I/O-bound (network, database, file), the right primitive is concurrency: asyncio.gather when your tools are async coroutines, or a thread pool (ThreadPoolExecutor) when they're blocking functions you can't rewrite. Concurrency introduces two correctness concerns. First, results arrive in completion order, which is unrelated to the order the model requested them, so you must tag each result with its originating tool_call_id and reassemble by id — then append the tool messages in request order to keep the transcript clean. Second, one tool can fail while others succeed; you isolate each call's outcome (success value or an error observation) so a partial failure degrades gracefully instead of discarding every good result. Crucially, you parallelize only genuinely independent calls: if the model's second call depends on the first's result, that dependency lives across turns and must stay sequential.",
+    "formalDefinition": "Parallel tool execution is the concurrent evaluation of the independent tool calls in a single model turn: given tool_calls [(id, name, args)], dispatch all of them at once via an async gather or a thread pool, collect outcomes tagged by id (each either a result or a captured error), and emit exactly one tool-result message per id — reassembled by id and appended in request order — such that the turn's tool latency approaches max(latency_i) rather than sum(latency_i), and any single call's failure is isolated to its own error observation.",
+    "whyItMatters": "Latency in an agent is dominated by round-trips and slow tools; when a turn fans out to several independent I/O calls, serializing them can multiply the wait for no reason. Parallelizing them cuts perceived latency dramatically, which matters for interactive agents and for cost when time-based resources are involved — while correct id pairing and partial-failure isolation keep that speedup from introducing subtle bugs.",
+    "mentalModel": "Think of a chef with three orders that don't depend on each other: boiling pasta, roasting vegetables, and baking bread. A novice does them one at a time (sum of times); a pro starts all three and tends whichever needs attention (slowest single time). But if a dish needs the bread's crumbs, that step waits — you can't parallelize a real dependency. And if the bread burns, the pasta and vegetables still go out; you don't scrap the whole meal.",
+    "realWorldUsage": "A research agent fetching five sources at once, a support agent looking up an order and the customer's loyalty status simultaneously, a data agent issuing several independent warehouse queries in one turn, and a travel agent pricing flights and hotels concurrently — all fan out independent tool calls and gather the results.",
+    "performanceImpact": "For n independent I/O-bound calls, sequential execution costs roughly the sum of latencies while concurrent execution costs roughly the maximum, so a turn with five 300ms calls drops from ~1.5s to ~300ms. The gain grows with fan-out and with latency variance; it does not help CPU-bound tools (use processes) or calls with true dependencies (they can't overlap).",
+    "commonUseCases": [
+      "Fanning out several independent lookups in one turn",
+      "Fetching multiple sources concurrently in a research agent",
+      "Running independent warehouse queries in parallel",
+      "Overlapping slow third-party API calls to cut turn latency"
+    ],
+    "commonMisconceptions": [
+      { "myth": "You can always parallelize the tool calls in a turn.", "reality": "Only independent calls can overlap. If one call's arguments depend on another's result, that's a cross-turn data dependency that must stay sequential." },
+      { "myth": "Results come back in the order you launched the calls.", "reality": "Completion order is unrelated to launch order; you must tag results by tool_call_id and reassemble, then emit in request order." },
+      { "myth": "One failing tool should fail the whole turn.", "reality": "Isolate each call's outcome so a single error becomes an error observation while the successful results are still returned — partial success beats all-or-nothing." },
+      { "myth": "asyncio makes CPU-bound tools faster.", "reality": "asyncio overlaps I/O waits, not CPU work; CPU-bound tools need processes, and most agent tools are I/O-bound anyway." }
+    ]
+  },
+  "interactiveExamples": [
+    {
+      "level": "intermediate",
+      "title": "Run independent async tools with asyncio.gather",
+      "explanation": "Three independent I/O-bound tools (simulated with asyncio.sleep) run concurrently; each result is tagged with its tool_call_id so it can be reassembled correctly despite finishing out of order, and the total time approaches the slowest call, not the sum.",
+      "code": {
+        "language": "python",
+        "code": "import asyncio, time\n\nasync def get_weather(city):\n    await asyncio.sleep(0.3)          # simulate I/O latency\n    return f\"{city}: 18C\"\n\nasync def get_fx(pair):\n    await asyncio.sleep(0.2)\n    return f\"{pair}: 1.08\"\n\nTOOLS = {\"get_weather\": get_weather, \"get_fx\": get_fx}\n\ntool_calls = [\n    {\"id\": \"a\", \"name\": \"get_weather\", \"args\": {\"city\": \"Paris\"}},\n    {\"id\": \"b\", \"name\": \"get_weather\", \"args\": {\"city\": \"Tokyo\"}},\n    {\"id\": \"c\", \"name\": \"get_fx\",      \"args\": {\"pair\": \"EURJPY\"}},\n]\n\nasync def run_parallel(tool_calls):\n    async def one(call):\n        fn = TOOLS[call[\"name\"]]\n        return call[\"id\"], await fn(**call[\"args\"])   # tag by id\n    pairs = await asyncio.gather(*[one(c) for c in tool_calls])\n    return dict(pairs)\n\nstart = time.perf_counter()\nresults = asyncio.run(run_parallel(tool_calls))\nelapsed = time.perf_counter() - start\n\n# emit in REQUEST order, keyed by id\nfor call in tool_calls:\n    print(call[\"id\"], \"->\", results[call[\"id\"]])\nprint(f\"~{elapsed:.1f}s (slowest call, not the sum)\")",
+        "caption": "All three calls overlap, so elapsed time is near the 0.3s slowest call rather than the 0.8s sum; results are reassembled by id and printed in request order.",
+        "expectedOutput": "a -> Paris: 18C\nb -> Tokyo: 18C\nc -> EURJPY: 1.08\n~0.3s (slowest call, not the sum)"
+      }
+    },
+    {
+      "level": "advanced",
+      "title": "Partial failure isolation with a thread pool",
+      "explanation": "Blocking tools run in a ThreadPoolExecutor. One tool raises; the pattern captures each outcome independently so the failure becomes an error observation for its own id while the other results survive — the turn degrades gracefully instead of all-or-nothing.",
+      "code": {
+        "language": "python",
+        "code": "from concurrent.futures import ThreadPoolExecutor\n\ndef get_price(item):\n    return {\"widget\": 4.0, \"gadget\": 6.0}[item]   # KeyError on unknown\n\ndef get_stock(item):\n    return 42\n\nTOOLS = {\"get_price\": get_price, \"get_stock\": get_stock}\n\ntool_calls = [\n    {\"id\": \"1\", \"name\": \"get_price\", \"args\": {\"item\": \"widget\"}},\n    {\"id\": \"2\", \"name\": \"get_price\", \"args\": {\"item\": \"unknown\"}},  # will fail\n    {\"id\": \"3\", \"name\": \"get_stock\", \"args\": {\"item\": \"widget\"}},\n]\n\ndef run_one(call):\n    try:\n        result = TOOLS[call[\"name\"]](**call[\"args\"])\n        return call[\"id\"], str(result)\n    except Exception as e:\n        return call[\"id\"], f\"error: {type(e).__name__}\"   # isolate failure\n\nwith ThreadPoolExecutor(max_workers=4) as ex:\n    results = dict(ex.map(run_one, tool_calls))\n\nfor call in tool_calls:\n    print(call[\"id\"], \"->\", results[call[\"id\"]])",
+        "caption": "Call 2 raises a KeyError but only its own result becomes an error observation; calls 1 and 3 still return their values, so the model gets partial success.",
+        "expectedOutput": "1 -> 4.0\n2 -> error: KeyError\n3 -> 42"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "kind": "mcq",
+      "prompt": "Which set of tool calls in one turn is safe to run in parallel?",
+      "options": ["Call B uses the id returned by call A", "Three independent lookups that share no inputs or outputs", "A call whose arguments depend on a previous call's result", "Any calls, since concurrency handles dependencies automatically"],
+      "answerIndex": 1,
+      "explanation": "Only genuinely independent calls can overlap. If one call consumes another's output, that's a data dependency that must stay sequential — concurrency cannot reorder a real dependency safely."
+    },
+    {
+      "kind": "spot-the-bug",
+      "prompt": "This parallel dispatch sometimes attaches results to the wrong call. Why?",
+      "code": "results = await asyncio.gather(*[TOOLS[c[\"name\"]](**c[\"args\"]) for c in tool_calls])\nfor call, result in zip(tool_calls, results):\n    messages.append({\"role\": \"tool\",\n                     \"tool_call_id\": call[\"id\"],\n                     \"content\": str(result)})",
+      "options": ["gather is not awaitable", "asyncio.gather preserves input order, so this is actually fine only if every coroutine is created in order — but a raised exception cancels the rest and misaligns results; wrap each call to capture id + outcome (and errors) instead", "zip cannot be used with lists", "str(result) drops the id"],
+      "answerIndex": 1,
+      "explanation": "asyncio.gather does return results in input order, but a single raised exception propagates and cancels the others, so you lose the good results and the alignment breaks. Wrapping each call to return (id, result-or-error) isolates failures and keeps the pairing explicit."
+    },
+    {
+      "kind": "predict-output",
+      "prompt": "Given these async tools, what does the elapsed time approach?",
+      "code": "# three independent calls, run concurrently with asyncio.gather\n# latencies: 0.3s, 0.2s, 0.1s\nresults = asyncio.run(run_parallel(tool_calls))\n# what is total elapsed time closest to?",
+      "options": ["0.6s (the sum)", "0.3s (the slowest single call)", "0.1s (the fastest call)", "0.2s (the average)"],
+      "answerIndex": 1,
+      "explanation": "Concurrent I/O-bound calls overlap their waits, so total time approaches the slowest single call (0.3s), not the 0.6s sum — that reduction is the whole point of parallel tool calls."
+    }
+  ],
+  "interviewPrep": {
+    "theory": [
+      {
+        "id": "at4-th-1",
+        "tech": "agent-tools",
+        "category": "fundamentals",
+        "difficulty": "advanced",
+        "question": "When and how do you run a turn's tool calls in parallel, and what are the correctness pitfalls?",
+        "directAnswer": "Run them in parallel when the calls in a single turn are independent — none consumes another's output. Because tools are I/O-bound, use asyncio.gather for async tools or a thread pool for blocking ones so total time approaches the slowest call instead of the sum. The pitfalls are ordering (results complete out of order, so tag each by tool_call_id and reassemble, then emit in request order) and partial failure (isolate each call's outcome so one exception doesn't discard the successful results).",
+        "detailedExplanation": {
+          "whatItIs": "A concurrency pattern that overlaps the independent tool calls the model emits in one turn to cut that turn's tool latency.",
+          "whyItExists": "Serializing independent I/O-bound calls wastes wall-clock time equal to their sum; overlapping them reduces it to roughly the maximum.",
+          "howItWorks": "Dispatch all independent calls at once with asyncio.gather or ThreadPoolExecutor, wrap each to return (id, result-or-error), reassemble a dict by tool_call_id, and append one tool message per call in request order."
+        },
+        "whyImportant": "It's the main lever for reducing tool latency in fan-out turns, and doing it wrong reintroduces subtle id-mismatch and failure-propagation bugs, so getting the concurrency and reassembly right is what makes the speedup safe.",
+        "realWorldExample": "A research agent that requested five source fetches in one turn dropped from ~2.5s serial to ~0.6s by gathering them concurrently and reassembling results by id, with one failed fetch returned as an error observation.",
+        "followUps": [
+          { "question": "Why not just parallelize every turn's calls automatically?", "answer": "Only independent calls can overlap; if a call depends on another's result the dependency spans turns and must stay sequential, so you parallelize within a turn only." },
+          { "question": "asyncio or threads — how do you choose?", "answer": "Use asyncio when your tools are async coroutines; use a thread pool when they're blocking functions you can't rewrite. For CPU-bound work use processes, though agent tools are usually I/O-bound." }
+        ]
+      },
+      {
+        "id": "at4-th-2",
+        "tech": "agent-tools",
+        "category": "reliability",
+        "difficulty": "advanced",
+        "question": "How do you handle partial failures when several tools run concurrently?",
+        "directAnswer": "Capture each tool's outcome independently — a success value or a formatted error observation — rather than letting one exception propagate and cancel the batch. Wrap each call in its own try/except (or use gather with return_exceptions and then format each) so the failed call yields an error message keyed to its tool_call_id while the successful calls return normally. The model then sees partial success and can react to just the failed tool.",
+        "detailedExplanation": {
+          "whatItIs": "Per-call failure isolation in a concurrent batch so a single error doesn't discard the other results.",
+          "whyItExists": "A raised exception in asyncio.gather (without return_exceptions) propagates and cancels the remaining tasks, throwing away good work; production agents need graceful degradation.",
+          "howItWorks": "Wrap each coroutine/function to return (id, value) on success and (id, 'error: ...') on failure, gather all of them, and emit one id-matched tool-result message per call including the error observations."
+        },
+        "whyImportant": "Partial-success handling is what lets a fan-out turn degrade gracefully; without it a single flaky tool wastes every concurrent call's work and can stall the agent.",
+        "realWorldExample": "A pricing agent fetched flight and hotel prices concurrently; the hotel API timed out, but isolating the failure meant the flight price still returned and the model reported the hotel lookup failed instead of erroring the whole turn.",
+        "followUps": [
+          { "question": "What does return_exceptions=True do in asyncio.gather?", "answer": "It makes gather return exception objects in place of results instead of raising, so you can inspect and format each — but you still must convert them into clean error observations." },
+          { "question": "Should a failed tool be retried inside the same turn?", "answer": "Optionally, with a small bounded retry for transient errors, but keep it per-call and time-boxed so it doesn't erase the concurrency win or stall the turn." }
+        ]
+      }
+    ],
+    "scenario": [
+      {
+        "id": "at4-sc-1",
+        "tech": "agent-tools",
+        "category": "performance",
+        "difficulty": "advanced",
+        "question": "Your agent's turns that call five external APIs take ~2.5s each and users complain about latency. How do you cut it, and what do you watch out for?",
+        "directAnswer": "If those five calls are independent, run them concurrently: since they're I/O-bound external APIs, gather them with asyncio (or a thread pool if blocking), dropping turn latency from the ~2.5s sum toward the ~0.6s slowest call. Watch out for three things: don't parallelize calls with real data dependencies, reassemble results by tool_call_id (completion order differs from request order) and emit in request order, and isolate partial failures plus add per-call timeouts so one slow or broken API can't stall the whole turn.",
+        "detailedExplanation": {
+          "whatItIs": "A latency-optimization problem for a fan-out turn dominated by serialized independent I/O calls.",
+          "whyItExists": "Running independent I/O-bound calls sequentially costs the sum of their latencies; the model already requested them together, so the serialization is unnecessary.",
+          "howItWorks": "Confirm independence, dispatch concurrently with asyncio.gather/thread pool, wrap each call for (id, result-or-error) with a timeout, reassemble by id, and append one tool message per call in request order; measure turn latency and tool error rate before and after."
+        },
+        "whyImportant": "It shows the concrete latency math (sum vs max), the independence precondition, and the correctness guards (id pairing, partial failure, timeouts) that separate a safe optimization from a buggy one.",
+        "realWorldExample": "Adding asyncio.gather with per-call 1s timeouts to a five-API turn cut median turn latency from 2.5s to 0.7s; a timed-out API returned an error observation and the other four results still came back.",
+        "followUps": [
+          { "question": "How do you cap concurrency so you don't overwhelm a downstream API?", "answer": "Bound it with a semaphore (asyncio) or max_workers (thread pool) so at most N calls hit a given service at once, trading a little latency for stability." },
+          { "question": "What if two of the five calls are actually dependent?", "answer": "Parallelize the independent subset within the turn; the dependent call waits for its input and is issued in a later turn once its prerequisite result is available." }
+        ]
+      }
+    ]
+  },
+  "keyTakeaways": [
+    "Parallelize only the independent tool calls in a turn; a call that needs another's result is a cross-turn dependency and stays sequential.",
+    "Tools are I/O-bound, so use asyncio.gather for async tools or a thread pool for blocking ones — total time approaches the slowest call, not the sum.",
+    "Results complete out of order: tag each by tool_call_id, reassemble by id, and append tool messages in request order.",
+    "Isolate partial failures so one tool's exception becomes an error observation without discarding the other successful results.",
+    "Guard concurrency with per-call timeouts and a concurrency cap (semaphore/max_workers) so one slow or flaky API can't stall the turn."
+  ]
+}
