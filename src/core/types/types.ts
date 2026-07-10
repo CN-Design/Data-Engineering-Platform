@@ -20,6 +20,7 @@ export type FrontendCategory =
   | 'frontend-security'
   | 'accessibility'
   | 'frontend-architecture'
+  | 'systems'
   | 'design-systems'
   | 'frontend-system-design'
   | 'build-tools'

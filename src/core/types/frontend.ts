@@ -141,6 +141,11 @@ export interface FrontendTopicData {
   domain: 'frontend';
   title: string;
   difficulty: Difficulty;
+  // Presentation tier. Controls how much Foundations depth is shown up-front:
+  // 'core' = essential facets only (lighter, for foundational topics),
+  // 'deep' = the full facet set. When omitted, the renderer derives it from
+  // difficulty (beginner -> core, otherwise deep).
+  tier?: 'core' | 'deep';
   summary?: string;
   // Knowledge-graph edges (recursive learning / cross-linking).
   // prerequisites & relatedConcepts hold TOPIC IDS (used as clickable links).

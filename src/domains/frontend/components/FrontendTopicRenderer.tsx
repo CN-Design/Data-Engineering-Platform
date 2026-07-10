@@ -84,7 +84,19 @@ const SubtopicItem: React.FC<{ s: SubtopicDetail }> = ({ s }) => {
   );
 };
 
-const Foundations: React.FC<{ data: FoundationsSection; subtopics?: SubtopicDetail[] }> = ({ data, subtopics }) => (
+const Foundations: React.FC<{ data: FoundationsSection; subtopics?: SubtopicDetail[]; tier: 'core' | 'deep' }> = ({ data, subtopics, tier }) => {
+  const [showMore, setShowMore] = useState(false);
+  const extras = (
+    <>
+      <Facet label="Browser Perspective" value={data.browserPerspective} accent="#06b6d4" />
+      <Facet label="How It Works in Production" value={data.realWorldUsage} accent="#8b5cf6" />
+      <Facet label="Performance Impact" value={data.performanceImpact} accent="#f59e0b" />
+      <Facet label="Engineering Impact" value={data.engineeringImpact} />
+      <Facet label="Business Impact" value={data.businessImpact} />
+    </>
+  );
+  const hasExtras = !!(data.browserPerspective || data.realWorldUsage || data.performanceImpact || data.engineeringImpact || data.businessImpact);
+  return (
   <div>
     {data.overview && <p className="fe-lead">{formatText(data.overview)}</p>}
 
@@ -101,12 +113,18 @@ const Foundations: React.FC<{ data: FoundationsSection; subtopics?: SubtopicDeta
       <Facet label="Formal Definition" value={data.formalDefinition} accent={BLUE} />
       <Facet label="Why It Matters" value={data.whyItMatters} accent="#3b82f6" />
       <Facet label="Mental Model" value={data.mentalModel} accent="#10b981" />
-      <Facet label="Browser Perspective" value={data.browserPerspective} accent="#06b6d4" />
-      <Facet label="How It Works in Production" value={data.realWorldUsage} accent="#8b5cf6" />
-      <Facet label="Performance Impact" value={data.performanceImpact} accent="#f59e0b" />
-      <Facet label="Engineering Impact" value={data.engineeringImpact} />
-      <Facet label="Business Impact" value={data.businessImpact} />
+      {tier === 'deep' && extras}
     </div>
+
+    {tier === 'core' && hasExtras && (
+      <div style={{ marginTop: '12px' }}>
+        <button onClick={() => setShowMore(s => !s)} style={hintBtn}>
+          {showMore ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {showMore ? 'Hide deeper context' : 'More context — production, performance & impact'}
+        </button>
+        {showMore && <div className="fe-grid" style={{ marginTop: '12px' }}>{extras}</div>}
+      </div>
+    )}
 
     {data.commonUseCases?.length > 0 && (
       <div className="fe-subsection">
@@ -129,7 +147,8 @@ const Foundations: React.FC<{ data: FoundationsSection; subtopics?: SubtopicDeta
       </div>
     )}
   </div>
-);
+  );
+};
 
 // ---------------- Visual Explorer ----------------
 const VisualExplorer: React.FC<{ items: VisualExplorerItem[] }> = ({ items }) => (
@@ -365,7 +384,7 @@ const ProductionDeepDive: React.FC<{ data: ProductionDeepDiveSection }> = ({ dat
     <Field label="Observability" value={data.observability} />
     {data.caseStudies?.length > 0 && (
       <div>
-        <strong style={{ fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Case Studies</strong>
+        <strong style={{ fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>Real-World Scenarios</strong>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '8px' }}>
           {data.caseStudies.map((c, i) => (
             <div key={i} style={{ padding: '12px', borderRadius: '8px', background: 'var(--bg-inner)', border: '1px solid var(--border-glass)' }}>
@@ -491,9 +510,12 @@ export const FrontendTopicRenderer: React.FC<FrontendTopicRendererProps> = ({ da
   });
   const [active, setActive] = useState<FrontendSectionId>(available[0]?.id || 'foundations');
 
+  // Presentation tier: explicit override, else derived from difficulty.
+  const tier: 'core' | 'deep' = data.tier ?? (data.difficulty === 'beginner' ? 'core' : 'deep');
+
   const renderSection = () => {
     switch (active) {
-      case 'foundations': return <Foundations data={data.foundations} subtopics={data.subtopics} />;
+      case 'foundations': return <Foundations data={data.foundations} subtopics={data.subtopics} tier={tier} />;
       case 'visualExplorer': return data.visualExplorer ? <VisualExplorer items={data.visualExplorer} /> : null;
       case 'interactiveExamples': return data.interactiveExamples ? <InteractiveExamples items={data.interactiveExamples} /> : null;
       case 'codeLab': return data.codeLab ? <CodeLab items={data.codeLab} /> : null;
@@ -516,6 +538,7 @@ export const FrontendTopicRenderer: React.FC<FrontendTopicRendererProps> = ({ da
         <div className="fe-title-row">
           <h1 className="fe-title">{data.title}</h1>
           <span className="fe-pill" style={{ background: diff.bg, color: diff.color }}>{data.difficulty}</span>
+          <span className="fe-pill" style={tier === 'core' ? { background: 'var(--bg-inner)', color: 'var(--text-muted)' } : { background: 'rgba(139,92,246,0.15)', color: '#8b5cf6' }}>{tier === 'core' ? 'Core' : 'Deep dive'}</span>
         </div>
         {data.summary && <p className="fe-summary">{formatText(data.summary)}</p>}
         <div className="fe-chips">

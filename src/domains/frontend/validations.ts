@@ -7,6 +7,222 @@
 // ============================================================
 
 export const FRONTEND_VALIDATIONS: Record<string, string> = {
+  // Machine coding — React: tabs. Clicking a tab shows only its panel.
+  'react-tabs': `
+    var r = document.getElementById('root');
+    var btns = Array.prototype.slice.call(r ? r.querySelectorAll('button') : []);
+    if (btns.length < 3) { window.__report({ passed: false, message: 'Render at least 3 tab buttons.' }); }
+    else {
+      btns[1].click();
+      setTimeout(function(){
+        var txt = r.innerText || '';
+        if (/Panel B/.test(txt) && !/Panel A/.test(txt)) window.__report({ passed: true, message: 'Clicking a tab shows only its panel. ✔' });
+        else window.__report({ passed: false, message: 'Clicking the 2nd tab should show Panel B and hide Panel A.' });
+      }, 60);
+    }
+  `,
+  // Machine coding — React: accordion. A header toggles its content open/closed.
+  'react-accordion': `
+    var r = document.getElementById('root');
+    var btns = Array.prototype.slice.call(r ? r.querySelectorAll('button') : []);
+    if (btns.length === 0) { window.__report({ passed: false, message: 'Render a header button per item.' }); }
+    else {
+      var before = (r.innerText || '').length;
+      btns[0].click();
+      setTimeout(function(){
+        var open = (r.innerText || '').length;
+        btns[0].click();
+        setTimeout(function(){
+          var closed = (r.innerText || '').length;
+          if (open > before && closed < open) window.__report({ passed: true, message: 'Accordion expands and collapses on click. ✔' });
+          else window.__report({ passed: false, message: 'Clicking a header should reveal its content, and clicking again should hide it.' });
+        }, 50);
+      }, 50);
+    }
+  `,
+  // Machine coding — JS: deep flatten.
+  'js-flatten': `
+    if (typeof flatten !== 'function') { window.__report({ passed: false, message: 'Define flatten(arr).' }); }
+    else { var r = flatten([1,[2,[3,[4]]],5]); if (JSON.stringify(r) === '[1,2,3,4,5]') window.__report({ passed: true, message: 'flatten deeply flattens nested arrays. ✔' }); else window.__report({ passed: false, message: 'flatten([1,[2,[3,[4]]],5]) should be [1,2,3,4,5], got ' + JSON.stringify(r) + '.' }); }
+  `,
+  // Machine coding — JS: Promise.allSettled.
+  'js-promise-allsettled': `
+    if (typeof promiseAllSettled !== 'function') { window.__report({ passed: false, message: 'Define promiseAllSettled(promises).' }); }
+    else {
+      promiseAllSettled([Promise.resolve(1), Promise.reject('e')]).then(function(res){
+        var ok = Array.isArray(res) && res.length === 2 && res[0].status === 'fulfilled' && res[0].value === 1 && res[1].status === 'rejected' && res[1].reason === 'e';
+        if (ok) window.__report({ passed: true, message: 'Never rejects; reports per-promise status/value/reason. ✔' });
+        else window.__report({ passed: false, message: 'Expected [{status:"fulfilled",value:1},{status:"rejected",reason:"e"}], got ' + JSON.stringify(res) + '.' });
+      }, function(){ window.__report({ passed: false, message: 'promiseAllSettled must never reject.' }); });
+    }
+  `,
+  // HTML: an input associated with a <label>.
+  'html-labeled-input': `
+    var good = false;
+    document.querySelectorAll('input').forEach(function(inp){
+      if (inp.id && document.querySelector('label[for="' + inp.id + '"]')) good = true;
+      if (inp.closest('label')) good = true;
+    });
+    if (good) window.__report({ passed: true, message: 'The input is associated with a <label>. ✔' });
+    else window.__report({ passed: false, message: 'Associate the input with a <label> — either label[for] matching the input id, or wrap the input in the label.' });
+  `,
+  // HTML: table uses <th> header cells.
+  'html-table-headers': `
+    var ths = document.querySelectorAll('table th');
+    if (ths.length >= 2) window.__report({ passed: true, message: 'Table uses ' + ths.length + ' <th> header cells. ✔' });
+    else window.__report({ passed: false, message: 'Use <th> cells for the table headers (at least 2).' });
+  `,
+  // TypeScript (behavioral): identity<T>(x) returns x unchanged.
+  'ts-identity': `
+    if (typeof identity !== 'function') { window.__report({ passed: false, message: 'Define function identity<T>(x: T): T.' }); }
+    else if (identity(5) === 5 && identity('a') === 'a') window.__report({ passed: true, message: 'identity returns its argument unchanged. ✔' });
+    else window.__report({ passed: false, message: 'identity(x) must return x unchanged.' });
+  `,
+  // TypeScript (behavioral): pluck(arr, key) maps objects to a key.
+  'ts-pluck': `
+    if (typeof pluck !== 'function') { window.__report({ passed: false, message: 'Define pluck(arr, key).' }); }
+    else { var r = pluck([{a:1},{a:2},{a:3}], 'a'); if (JSON.stringify(r) === '[1,2,3]') window.__report({ passed: true, message: 'pluck maps each object to its key. ✔' }); else window.__report({ passed: false, message: 'pluck([{a:1},{a:2},{a:3}], "a") should be [1,2,3], got ' + JSON.stringify(r) + '.' }); }
+  `,
+  // TypeScript (behavioral): lastItem returns the last element or undefined.
+  'ts-lastitem': `
+    if (typeof lastItem !== 'function') { window.__report({ passed: false, message: 'Define lastItem<T>(arr: T[]): T | undefined.' }); }
+    else if (lastItem([1,2,3]) === 3 && lastItem([]) === undefined) window.__report({ passed: true, message: 'lastItem returns the last element, or undefined when empty. ✔' });
+    else window.__report({ passed: false, message: 'lastItem should return the last element, or undefined for an empty array.' });
+  `,
+  // Machine coding — JS: curry supports full and partial application.
+  'js-curry': `
+    if (typeof curry !== 'function') { window.__report({ passed: false, message: 'Define curry(fn).' }); }
+    else {
+      var add = function(a,b,c){ return a+b+c; };
+      var c1 = curry(add), ok = false;
+      try { ok = c1(1)(2)(3) === 6 && c1(1,2)(3) === 6 && c1(1)(2,3) === 6; } catch (e) {}
+      if (ok) window.__report({ passed: true, message: 'curry supports curry(f)(1)(2)(3) and partial application. ✔' });
+      else window.__report({ passed: false, message: 'curry(add)(1)(2)(3), curry(add)(1,2)(3), and curry(add)(1)(2,3) should all equal 6.' });
+    }
+  `,
+
+  // Machine coding — CSS: responsive auto-fit grid forms multiple columns.
+  'css-grid-autofit': `
+    var g = document.querySelector('.grid');
+    if (!g) { window.__report({ passed: false, message: 'No .grid element found.' }); }
+    else {
+      var cs = getComputedStyle(g);
+      var cols = (cs.gridTemplateColumns || '').trim().split(/\\s+/).filter(Boolean);
+      if (cs.display === 'grid' && cols.length >= 2) window.__report({ passed: true, message: 'Responsive grid produced ' + cols.length + ' columns at this width. ✔' });
+      else window.__report({ passed: false, message: 'Use display:grid with grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)) so it forms multiple columns with no media queries.' });
+    }
+  `,
+
+  // Machine coding — CSS: sticky footer pinned to the bottom with short content.
+  'css-sticky-footer': `
+    var layout = document.querySelector('.layout');
+    var footer = document.querySelector('footer');
+    if (!layout || !footer) { window.__report({ passed: false, message: 'Need a .layout containing a <footer>.' }); }
+    else {
+      var lr = layout.getBoundingClientRect(), fr = footer.getBoundingClientRect();
+      if (Math.abs(fr.bottom - lr.bottom) <= 2 && (fr.top - lr.top) > 40) window.__report({ passed: true, message: 'Footer is pinned to the bottom with content above it. ✔' });
+      else window.__report({ passed: false, message: 'The footer should sit at the bottom of .layout even with little content — make .layout a flex column and give main flex:1.' });
+    }
+  `,
+
+  // Machine coding — JS: debounce. 3 rapid calls collapse into 1 after the delay.
+  'js-debounce': `
+    if (typeof debounce !== 'function') { window.__report({ passed: false, message: 'Define a function debounce(fn, delay).' }); }
+    else {
+      var calls = 0;
+      var d = debounce(function(){ calls++; }, 50);
+      d(); d(); d();
+      var immediate = calls;
+      setTimeout(function(){
+        if (immediate === 0 && calls === 1) window.__report({ passed: true, message: '3 rapid calls collapsed into 1 after the delay. ✔' });
+        else window.__report({ passed: false, message: 'Expected 0 calls immediately and exactly 1 after the delay. Immediate=' + immediate + ', final=' + calls + '.' });
+      }, 130);
+    }
+  `,
+
+  // Machine coding — JS: throttle. 4 invocations across 2 windows → limited calls.
+  'js-throttle': `
+    if (typeof throttle !== 'function') { window.__report({ passed: false, message: 'Define a function throttle(fn, limit).' }); }
+    else {
+      var calls = 0;
+      var t = throttle(function(){ calls++; }, 100);
+      t(); t(); t();
+      setTimeout(function(){
+        t();
+        setTimeout(function(){
+          if (calls >= 1 && calls <= 3) window.__report({ passed: true, message: 'Rate-limited: ' + calls + ' call(s) for 4 invocations across 2 windows. ✔' });
+          else window.__report({ passed: false, message: 'Expected the callback to be throttled (1–3 calls), got ' + calls + '.' });
+        }, 30);
+      }, 140);
+    }
+  `,
+
+  // Machine coding — JS: Promise.all. Resolves in order; rejects on first rejection.
+  'js-promise-all': `
+    if (typeof promiseAll !== 'function') { window.__report({ passed: false, message: 'Define promiseAll(promises) that returns a Promise.' }); }
+    else {
+      var p = promiseAll([Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)]);
+      if (!p || typeof p.then !== 'function') { window.__report({ passed: false, message: 'promiseAll must return a Promise.' }); }
+      else {
+        p.then(function(res){
+          if (Array.isArray(res) && res.join(',') === '1,2,3') {
+            promiseAll([Promise.resolve('a'), Promise.reject('boom')]).then(
+              function(){ window.__report({ passed: false, message: 'Should reject if any input promise rejects.' }); },
+              function(err){ if (err === 'boom') window.__report({ passed: true, message: 'Resolves in input order and rejects on first rejection. ✔' }); else window.__report({ passed: false, message: 'Rejected, but with the wrong reason.' }); }
+            );
+          } else { window.__report({ passed: false, message: 'Expected [1,2,3] in input order, got ' + JSON.stringify(res) + '.' }); }
+        }, function(){ window.__report({ passed: false, message: 'Should resolve when all inputs resolve.' }); });
+      }
+    }
+  `,
+
+  // Machine coding — React: star rating. Clicking the 3rd star fills 3 (★).
+  'react-star-rating': `
+    var r = document.getElementById('root');
+    var btns = r ? r.querySelectorAll('button') : [];
+    if (btns.length < 5) { window.__report({ passed: false, message: 'Render at least 5 star buttons. Found ' + btns.length + '.' }); }
+    else {
+      btns[2].click();
+      setTimeout(function(){
+        var filled = ((r.innerText || '').match(/★/g) || []).length;
+        if (filled === 3) window.__report({ passed: true, message: 'Clicking the 3rd star fills exactly 3 stars. ✔' });
+        else window.__report({ passed: false, message: 'After clicking the 3rd star, expected 3 filled ★, found ' + filled + '. Use ★ for filled and ☆ for empty.' });
+      }, 60);
+    }
+  `,
+
+  // Machine coding — React: accessible modal. "Open" reveals a role="dialog".
+  'react-modal': `
+    var r = document.getElementById('root');
+    var openBtn = r ? Array.prototype.find.call(r.querySelectorAll('button'), function(b){ return /open/i.test(b.textContent); }) : null;
+    if (!openBtn) { window.__report({ passed: false, message: 'Add a button labelled "Open".' }); }
+    else {
+      openBtn.click();
+      setTimeout(function(){
+        var dialog = r.querySelector('[role="dialog"]');
+        if (dialog) window.__report({ passed: true, message: 'Clicking Open renders an element with role="dialog". ✔' });
+        else window.__report({ passed: false, message: 'Opening should render an element with role="dialog".' });
+      }, 60);
+    }
+  `,
+
+  // Machine coding — React: live search filter. Typing "an" narrows to 2 items.
+  'react-search-filter': `
+    var r = document.getElementById('root');
+    var input = r && r.querySelector('input');
+    if (!input) { window.__report({ passed: false, message: 'Render a text <input>.' }); }
+    else {
+      var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'an');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      setTimeout(function(){
+        var items = r.querySelectorAll('li');
+        if (items.length === 2) window.__report({ passed: true, message: 'Typing "an" filters to 2 matching names. ✔' });
+        else window.__report({ passed: false, message: 'Typing "an" should show 2 items (Anna, Anand). Found ' + items.length + '. Filter case-insensitively.' });
+      }, 80);
+    }
+  `,
+
   // React: a counter button that increments its label on click.
   'react-counter': `
     var root = document.getElementById('root');

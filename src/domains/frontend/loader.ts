@@ -4,12 +4,13 @@ import type { FrontendManifest, FrontendTechMeta } from '../../core/types/fronte
 // Frontend technology registry — drives the frontend PathSelection screen.
 // `available: true` means content exists; others render as "coming soon".
 export const FRONTEND_TECHS: FrontendTechMeta[] = [
-  { id: 'react', title: 'React', description: 'Components, hooks, rendering, performance, and patterns — the most-asked frontend framework in interviews.', color: '#06b6d4', available: true, topicCount: 44 },
+  { id: 'react', title: 'React', description: 'Components, hooks, rendering, performance, and patterns — the most-asked frontend framework in interviews.', color: '#06b6d4', available: true, topicCount: 45 },
   { id: 'javascript', title: 'JavaScript', description: 'The language of the web: closures, the event loop, async, prototypes, and the DOM.', color: '#f7df1e', available: true, topicCount: 40 },
   { id: 'typescript', title: 'TypeScript', description: 'Types, interfaces, generics, and utility types for safer frontend code.', color: '#3178c6', available: true, topicCount: 32 },
   { id: 'css', title: 'CSS', description: 'The box model, Flexbox, Grid, responsive design, and animations.', color: '#1572b6', available: true, topicCount: 32 },
   { id: 'nextjs', title: 'Next.js', description: 'Routing, SSR/SSG/ISR, server components, and production deployment.', color: '#a855f7', available: true, topicCount: 30 },
   { id: 'html', title: 'HTML', description: 'Semantic markup, forms, accessibility, and document structure.', color: '#e34f26', available: true, topicCount: 28 },
+  { id: 'systems', title: 'Systems & the Web Platform', description: 'How the web works: HTTP, security, auth, Git, Web Vitals, and build/deploy — the production context around your code.', color: '#0ea5e9', available: true, topicCount: 6 },
 ];
 
 // A minimal ConceptDetail stub. Frontend topics are rendered by the

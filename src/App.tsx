@@ -16,6 +16,8 @@ import { PathSelection } from './domains/data-engineering/components/PathSelecti
 import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab';
 import { FrontendPlaygroundTab } from './domains/frontend/components/FrontendPlaygroundTab';
 import { FrontendPracticeTab } from './domains/frontend/components/FrontendPracticeTab';
+import { FrontendRoadmap } from './domains/frontend/components/FrontendRoadmap';
+import { FrontendCommandPalette } from './domains/frontend/components/FrontendCommandPalette';
 import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loader';
 import { BackendLearnTab } from './domains/backend-engineering/components/BackendLearnTab';
 import { BackendPracticeTab } from './domains/backend-engineering/components/BackendPracticeTab';
@@ -110,18 +112,30 @@ export default function App() {
   const isBackend = currentDomain === 'backend-engineering';
   const isAiAgents = currentDomain === 'ai-agents';
 
+  // Open any frontend topic (used by the roadmap and the ⌘K command palette).
+  const openFrontendTopic = async (tech: Category, topicId?: string) => {
+    setSelectedTech(tech);
+    setActiveTab('learn');
+    const manifest = await loadFrontendManifest(tech);
+    const topics = manifest ? manifestToTopics(manifest) : [];
+    setFrontendTopics(topics);
+    setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
+  };
+
   if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering' || currentDomain === 'ai-agents') && !selectedTech) {
+    if (isFrontend) {
+      return <FrontendRoadmap
+        completedTopics={completedTopics}
+        onBack={() => setCurrentDomain('dashboard')}
+        onOpenTopic={openFrontendTopic}
+      />;
+    }
     return <PathSelection
       domain={currentDomain}
       onSelectTech={async (tech, topicId) => {
         setSelectedTech(tech);
         setActiveTab('learn');
-        if (currentDomain === 'frontend') {
-          const manifest = await loadFrontendManifest(tech);
-          const topics = manifest ? manifestToTopics(manifest) : [];
-          setFrontendTopics(topics);
-          setActiveTopic(topics[0] || null);
-        } else if (currentDomain === 'backend-engineering') {
+        if (currentDomain === 'backend-engineering') {
           const manifest = await loadBackendManifest(tech);
           const topics = manifest ? backendManifestToTopics(manifest) : [];
           setBackendTopics(topics);
@@ -156,6 +170,7 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {isFrontend && <FrontendCommandPalette onOpen={openFrontendTopic} />}
       <div
         className={`sidebar-backdrop ${isSidebarOpen ? 'active' : ''}`}
         onClick={() => setIsSidebarOpen(false)}
@@ -288,7 +303,7 @@ export default function App() {
                     { id: 'learn', label: 'Learn', icon: BookOpen },
                     { id: 'interview', label: 'Interview Prep', icon: GraduationCap },
                     { id: 'practice', label: 'Coding Practice', icon: CheckSquare },
-                    ...(!isFrontend ? [{ id: 'projects', label: 'Projects', icon: Rocket }] : []),
+                    { id: 'projects', label: 'Projects', icon: Rocket },
                     { id: 'playground', label: 'Playground', icon: Terminal },
                     { id: 'gemini', label: 'Ask Gemini', icon: Sparkles, color: '#a855f7' }
                   ].map((item) => (
@@ -605,8 +620,15 @@ export default function App() {
             )
           )}
 
-          {activeTab === 'projects' && !isFrontend && (
-            isBackend ? (
+          {activeTab === 'projects' && (
+            isFrontend ? (
+              <ProjectsTab
+                dataUrl="/content/frontend/projects.json"
+                progressKey="de_project_progress"
+                heading="Frontend Build-Along Projects"
+                blurb={<>A portfolio-ready ladder of real frontend apps — from a vanilla-JS interactive UI to a full React product with data fetching. Each project builds on the last, with staged milestones, tasks, acceptance criteria, and hints. Work top to bottom, check off milestones as you go, and finish with builds you can put on your resume and defend in interviews.</>}
+              />
+            ) : isBackend ? (
               <ProjectsTab
                 dataUrl="/content/backend/golang/projects.json"
                 heading="Go Build-Along Projects"
