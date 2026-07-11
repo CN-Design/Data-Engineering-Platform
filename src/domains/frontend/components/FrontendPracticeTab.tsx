@@ -76,8 +76,7 @@ export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, 
     }
     return (
       <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 700 }}>Coding Practice</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '14px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '4px' }}>
           {challenges.map(c => (
             <div key={c.id} onClick={() => open(c)} className="glass-panel" style={{ padding: '14px 16px', borderRadius: '10px', border: '1px solid var(--border-glass)', background: 'var(--bg-secondary)', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>

@@ -50,7 +50,6 @@ export const FrontendPlaygroundTab: React.FC<FrontendPlaygroundTabProps> = ({ th
   return (
     <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0 }}>Frontend Playground</h2>
         <select
           aria-label="Load example"
           onChange={(e) => {

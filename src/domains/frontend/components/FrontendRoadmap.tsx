@@ -4,7 +4,7 @@ import type { FrontendManifest } from '../../../core/types/frontend';
 import { loadFrontendManifest } from '../loader';
 import {
   ArrowLeft, ChevronDown, ChevronUp, CheckCircle2, Circle,
-  Map as MapIcon, Rocket, Wrench, GraduationCap, Flame, Zap, Star, Lock,
+  Map as MapIcon, Rocket, Wrench, GraduationCap, Flame, Zap, Star, ChevronRight,
 } from 'lucide-react';
 import { getStats, levelFromXp } from '../../data-engineering/utils/engagement';
 
@@ -165,25 +165,19 @@ export const FrontendRoadmap: React.FC<FrontendRoadmapProps> = ({ completedTopic
   const stats = useMemo(() => getStats(), [completedTopics]);
   const lvl = useMemo(() => levelFromXp(stats.xp), [stats.xp]);
 
-  // Stage gating: a track-bearing stage unlocks once the previous one is >=50% complete.
-  const manifestsReady = techs.every(t => manifests[t] !== undefined);
-  const lockedStages = useMemo(() => {
-    const locked: Record<number, boolean> = {};
-    if (!manifestsReady) return locked; // never lock before data loads
-    const trackStages = STAGES.filter(s => s.tracks.length > 0);
-    const pct = (s: StageDef) => {
-      let tot = 0, dn = 0;
-      s.tracks.forEach(t => { const tp = manifests[t]?.topics ?? []; tot += tp.length; dn += tp.filter(x => completedTopics[x.id]).length; });
-      return tot ? dn / tot : 0;
-    };
-    trackStages.forEach((s, i) => { locked[s.n] = i > 0 && pct(trackStages[i - 1]) < 0.5; });
-    return locked;
-  }, [manifestsReady, manifests, completedTopics]);
-  const prevTrackStage = (n: number): StageDef | null => {
-    const ts = STAGES.filter(s => s.tracks.length > 0);
-    const i = ts.findIndex(s => s.n === n);
-    return i > 0 ? ts[i - 1] : null;
-  };
+  // One-click fast lane: resume the last lesson, else the first unfinished topic.
+  const hero = useMemo(() => {
+    const flat: { tech: Category; id: string; title: string; techTitle: string }[] = [];
+    STAGES.forEach(s => s.tracks.forEach(t =>
+      (manifests[t]?.topics ?? []).forEach(tp => flat.push({ tech: t, id: tp.id, title: tp.title, techTitle: manifests[t]?.title || t }))));
+    if (flat.length === 0) return null;
+    let last: { tech: Category; topicId: string } | null = null;
+    try { last = JSON.parse(localStorage.getItem('fe_last_topic') || 'null'); } catch { /* ignore */ }
+    const resume = last && flat.find(f => f.tech === last!.tech && f.id === last!.topicId);
+    const nextUp = flat.find(f => !completedTopics[f.id]);
+    const target = resume || nextUp || flat[0];
+    return { ...target, mode: (resume ? 'resume' : nextUp ? 'next' : 'start') as 'resume' | 'next' | 'start' };
+  }, [manifests, completedTopics]);
 
   return (
     <div style={{ maxWidth: '900px', margin: '0 auto', padding: '24px 16px 60px' }}>
@@ -207,6 +201,26 @@ export const FrontendRoadmap: React.FC<FrontendRoadmapProps> = ({ completedTopic
           </div>
           <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{overall.done}/{overall.total} topics · {overall.pct}%</span>
         </div>
+
+        {hero && (
+          <button
+            onClick={() => onOpenTopic(hero.tech, hero.id)}
+            style={{ width: '100%', marginTop: '16px', display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 18px', borderRadius: '12px', border: 'none', cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', color: '#fff' }}
+          >
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(255,255,255,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <Rocket size={20} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '11px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.6px', opacity: 0.85 }}>
+                {hero.mode === 'resume' ? 'Continue learning' : hero.mode === 'next' ? 'Jump back in' : 'Start here'}
+              </div>
+              <div style={{ fontSize: '16px', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {hero.techTitle} · {hero.title}
+              </div>
+            </div>
+            <ChevronRight size={22} style={{ flexShrink: 0 }} />
+          </button>
+        )}
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '14px' }}>
           <div style={statTile}>
@@ -241,38 +255,28 @@ export const FrontendRoadmap: React.FC<FrontendRoadmapProps> = ({ completedTopic
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {STAGES.map(stage => {
           const Icon = STAGE_ICON[stage.n] || Rocket;
-          const locked = !!lockedStages[stage.n];
-          const prev = prevTrackStage(stage.n);
           return (
-            <div key={stage.n} style={{ ...card, opacity: locked ? 0.72 : 1 }}>
+            <div key={stage.n} style={card}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: stage.tracks.length || stage.note ? '14px' : 0 }}>
-                <div style={{ width: '34px', height: '34px', borderRadius: '9px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '15px', background: locked ? 'var(--bg-inner)' : stage.kind === 'info' ? 'var(--bg-inner)' : 'linear-gradient(135deg,#3b82f6,#8b5cf6)', color: locked || stage.kind === 'info' ? 'var(--text-secondary)' : '#fff' }}>
-                  {locked ? <Lock size={16} /> : stage.kind === 'info' ? <Icon size={17} /> : stage.n}
+                <div style={{ width: '34px', height: '34px', borderRadius: '9px', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '15px', background: stage.kind === 'info' ? 'var(--bg-inner)' : 'linear-gradient(135deg,#3b82f6,#8b5cf6)', color: stage.kind === 'info' ? 'var(--text-secondary)' : '#fff' }}>
+                  {stage.kind === 'info' ? <Icon size={17} /> : stage.n}
                 </div>
                 <div style={{ flex: 1 }}>
                   <h2 style={{ margin: 0, fontSize: '17px', fontWeight: 700, color: 'var(--text-primary)' }}>Stage {stage.n} · {stage.title}</h2>
                   <p style={{ margin: '2px 0 0', fontSize: '13px', color: 'var(--text-muted)' }}>{stage.subtitle}</p>
                 </div>
-                {locked && <span style={{ fontSize: '10.5px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-muted)', border: '1px solid var(--border-glass)', borderRadius: 6, padding: '3px 8px' }}>Locked</span>}
               </div>
 
-              {stage.note && !locked && (
+              {stage.note && (
                 <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6, padding: '10px 12px', borderRadius: '10px', background: 'var(--bg-inner)', border: '1px solid var(--border-glass)' }}>{stage.note}</p>
               )}
 
               {stage.tracks.length > 0 && (
-                locked ? (
-                  <div style={{ padding: '12px 14px', borderRadius: '10px', background: 'var(--bg-inner)', border: '1px dashed var(--border-glass)', fontSize: '13.5px', color: 'var(--text-secondary)' }}>
-                    <Lock size={13} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-                    Reach 50% of {prev ? `Stage ${prev.n} · ${prev.title}` : 'the previous stage'} to unlock {stage.tracks.map(t => manifests[t]?.title || t).join(' & ')}.
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {stage.tracks.map(tech => (
-                      <TrackBlock key={tech} tech={tech} manifest={manifests[tech] ?? null} completedTopics={completedTopics} onOpenTopic={onOpenTopic} />
-                    ))}
-                  </div>
-                )
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {stage.tracks.map(tech => (
+                    <TrackBlock key={tech} tech={tech} manifest={manifests[tech] ?? null} completedTopics={completedTopics} onOpenTopic={onOpenTopic} />
+                  ))}
+                </div>
               )}
             </div>
           );

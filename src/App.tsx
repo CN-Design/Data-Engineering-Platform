@@ -12,11 +12,13 @@ import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
 import type { Topic, Category, Domain, CodingChallenge } from './core/types/types';
 import { CheckSquare, BookOpen, GraduationCap, Sparkles, Terminal, Sun, Moon, Menu, ChevronDown, ArrowLeft, Rocket } from 'lucide-react';
-import { PathSelection } from './domains/data-engineering/components/PathSelection';
+import { DomainRoadmap, ROADMAPS } from './core/components/DomainRoadmap';
 import { FrontendLearnTab } from './domains/frontend/components/FrontendLearnTab';
 import { FrontendPlaygroundTab } from './domains/frontend/components/FrontendPlaygroundTab';
 import { FrontendPracticeTab } from './domains/frontend/components/FrontendPracticeTab';
-import { FrontendRoadmap } from './domains/frontend/components/FrontendRoadmap';
+import { FRONTEND_TECHS } from './domains/frontend/loader';
+import { BACKEND_TECHS } from './domains/backend-engineering/loader';
+import { AI_AGENT_TECHS } from './domains/ai-agents/loader';
 import { FrontendCommandPalette } from './domains/frontend/components/FrontendCommandPalette';
 import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loader';
 import { BackendLearnTab } from './domains/backend-engineering/components/BackendLearnTab';
@@ -102,10 +104,42 @@ export default function App() {
   };
 
   if (currentDomain === 'dashboard') {
-    return <Dashboard onSelectDomain={(d) => {
+    // One-click launch into any domain's track — no intermediate selection screen.
+    const launch = async (d: 'frontend' | 'backend-engineering' | 'ai-agents' | 'data-engineering', tech: Category, topicId?: string) => {
       setCurrentDomain(d as any);
-      setSelectedTech(null); // Reset tech selection on domain change
-    }} />;
+      setSelectedTech(tech);
+      setActiveTab('learn');
+      if (d === 'frontend') {
+        const m = await loadFrontendManifest(tech);
+        const ts = m ? manifestToTopics(m) : [];
+        setFrontendTopics(ts);
+        const target = (topicId && ts.find(t => t.id === topicId)) || ts[0] || null;
+        setActiveTopic(target);
+        try { if (target) localStorage.setItem('fe_last_topic', JSON.stringify({ tech, topicId: target.id, title: target.title, techTitle: m?.title || String(tech) })); } catch { /* ignore */ }
+      } else if (d === 'backend-engineering') {
+        const m = await loadBackendManifest(tech);
+        const ts = m ? backendManifestToTopics(m) : [];
+        setBackendTopics(ts);
+        setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else if (d === 'ai-agents') {
+        const m = await loadAgentManifest(tech);
+        const ts = m ? agentManifestToTopics(m) : [];
+        setAiTopics(ts);
+        setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else {
+        const ts = allTopics.filter(t => t.category === tech);
+        const target = ts[0] || null;
+        setActiveTopic(target);
+        if (target) setDeLastTopic(target.id);
+      }
+    };
+    return <Dashboard
+      theme={theme}
+      onToggleTheme={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
+      onSelectDomain={(d) => { setCurrentDomain(d as any); setSelectedTech(null); }}
+      onResumeFrontend={(tech, topicId) => launch('frontend', tech, topicId)}
+      onLaunch={launch}
+    />;
   }
 
   const isFrontend = currentDomain === 'frontend';
@@ -119,45 +153,56 @@ export default function App() {
     const manifest = await loadFrontendManifest(tech);
     const topics = manifest ? manifestToTopics(manifest) : [];
     setFrontendTopics(topics);
-    setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
+    const target = (topicId && topics.find(t => t.id === topicId)) || topics[0] || null;
+    setActiveTopic(target);
+    // Remember the last frontend lesson so the roadmap + dashboard can offer one-click resume.
+    try { if (target) localStorage.setItem('fe_last_topic', JSON.stringify({ tech, topicId: target.id, title: target.title, techTitle: manifest?.title || String(tech) })); } catch { /* ignore */ }
   };
 
   if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering' || currentDomain === 'ai-agents') && !selectedTech) {
-    if (isFrontend) {
-      return <FrontendRoadmap
-        completedTopics={completedTopics}
-        onBack={() => setCurrentDomain('dashboard')}
-        onOpenTopic={openFrontendTopic}
-      />;
-    }
-    return <PathSelection
-      domain={currentDomain}
-      onSelectTech={async (tech, topicId) => {
-        setSelectedTech(tech);
-        setActiveTab('learn');
-        if (currentDomain === 'backend-engineering') {
-          const manifest = await loadBackendManifest(tech);
-          const topics = manifest ? backendManifestToTopics(manifest) : [];
-          setBackendTopics(topics);
-          // Deep-link to a specific topic (resume / due-for-revision) when requested.
-          setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
-        } else if (currentDomain === 'ai-agents') {
-          const manifest = await loadAgentManifest(tech);
-          const topics = manifest ? agentManifestToTopics(manifest) : [];
-          setAiTopics(topics);
-          setActiveTopic((topicId && topics.find(t => t.id === topicId)) || topics[0] || null);
-        } else {
-          const techTopics = allTopics.filter(t => t.category === tech);
-          // Deep-link to a specific topic when requested (resume / due-for-revision),
-          // otherwise start at the track's first topic.
-          const target = (topicId && techTopics.find(t => t.id === topicId)) || techTopics[0];
-          if (target) {
-            setActiveTopic(target);
-            setDeLastTopic(target.id);
-          }
-        }
-      }}
+    // Pick a track from the domain roadmap -> load its topics -> open the first lesson.
+    const launchTrack = async (tech: Category, topicId?: string) => {
+      setSelectedTech(tech);
+      setActiveTab('learn');
+      if (isFrontend) {
+        const m = await loadFrontendManifest(tech);
+        const ts = m ? manifestToTopics(m) : [];
+        setFrontendTopics(ts);
+        const target = (topicId && ts.find(t => t.id === topicId)) || ts[0] || null;
+        setActiveTopic(target);
+        try { if (target) localStorage.setItem('fe_last_topic', JSON.stringify({ tech, topicId: target.id, title: target.title, techTitle: m?.title || String(tech) })); } catch { /* ignore */ }
+      } else if (isBackend) {
+        const m = await loadBackendManifest(tech);
+        const ts = m ? backendManifestToTopics(m) : [];
+        setBackendTopics(ts);
+        setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else if (isAiAgents) {
+        const m = await loadAgentManifest(tech);
+        const ts = m ? agentManifestToTopics(m) : [];
+        setAiTopics(ts);
+        setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else {
+        const techTopics = allTopics.filter(t => t.category === tech);
+        const target = techTopics[0] || null;
+        setActiveTopic(target);
+        if (target) setDeLastTopic(target.id);
+      }
+    };
+    const getDomainTopics = async (): Promise<Topic[]> => {
+      if (isFrontend) { const a: Topic[] = []; for (const t of FRONTEND_TECHS.filter(x => x.available)) { const m = await loadFrontendManifest(t.id); if (m) a.push(...manifestToTopics(m)); } return a; }
+      if (isBackend) { const a: Topic[] = []; for (const t of BACKEND_TECHS.filter(x => x.available)) { const m = await loadBackendManifest(t.id); if (m) a.push(...backendManifestToTopics(m)); } return a; }
+      if (isAiAgents) { const a: Topic[] = []; for (const t of AI_AGENT_TECHS.filter(x => x.available)) { const m = await loadAgentManifest(t.id); if (m) a.push(...agentManifestToTopics(m)); } return a; }
+      return allTopics;
+    };
+    return <DomainRoadmap
+      key={currentDomain}
+      config={ROADMAPS[currentDomain]}
+      getTopics={getDomainTopics}
+      completedTopics={completedTopics}
+      onOpenTrack={(tech) => launchTrack(tech)}
       onBack={() => setCurrentDomain('dashboard')}
+      theme={theme}
+      onToggleTheme={() => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))}
     />;
   }
 
@@ -356,7 +401,8 @@ export default function App() {
               </button>
             </div>
 
-            {/* Mobile Row 3: Topic Title (Left) & Difficulty (Right) */}
+            {/* Mobile Row 3: page title — hidden on Learn (the lesson owns its title) */}
+            {activeTab !== 'learn' && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
               <h1 style={{
                 margin: 0,
@@ -371,25 +417,13 @@ export default function App() {
                 paddingRight: '12px'
               }}>
                 {activeTab === 'playground' ? 'Interactive Playground' :
-                 activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
                  activeTab === 'interview' ? 'Interview Preparation' :
                  activeTab === 'practice' ? 'Coding Practice' :
                  activeTab === 'projects' ? 'Projects' :
                  'Ask Gemini'}
               </h1>
-
-              <span style={{ fontSize: '13px', color: 'var(--text-muted)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}>
-                {activeTab === 'learn' && activeTopic ? (
-                  <>
-                    <span style={{
-                      width: '6px', height: '6px', borderRadius: '50%',
-                      background: activeTopic.difficulty === 'beginner' ? '#10b981' : activeTopic.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444'
-                    }} />
-                    {activeTopic.difficulty.charAt(0).toUpperCase() + activeTopic.difficulty.slice(1)}
-                  </>
-                ) : ''}
-              </span>
             </div>
+            )}
 
 
           </div>
@@ -505,7 +539,7 @@ export default function App() {
           {/* ========================================================= */}
           {/* DESKTOP TOPIC TITLE & DIFFICULTY (Below header)           */}
           {/* ========================================================= */}
-          {!(isFrontend && activeTab === 'learn') && (
+          {activeTab !== 'learn' && (
           <div className="desktop-only" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '24px' }}>
             <h1 style={{
               margin: 0,
@@ -517,27 +551,17 @@ export default function App() {
               letterSpacing: '-0.5px'
             }}>
               {activeTab === 'playground' ? 'Interactive Playground' :
-               activeTab === 'learn' ? (activeTopic ? activeTopic.title : 'Data Engineering Prep') :
                activeTab === 'interview' ? 'Interview Preparation' :
                activeTab === 'practice' ? 'Coding Practice' :
                activeTab === 'projects' ? 'Build-Along Projects' :
                'Ask Gemini'}
             </h1>
             <span style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-inner)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-glass)' }}>
-              {activeTab === 'playground' ? 'SQL & PySpark Sandboxes' : 
-               activeTab === 'learn' && activeTopic ? (
-                <>
-                  <span style={{
-                    width: '8px', height: '8px', borderRadius: '50%',
-                    background: activeTopic.difficulty === 'beginner' ? '#10b981' : activeTopic.difficulty === 'intermediate' ? '#f59e0b' : '#ef4444',
-                    boxShadow: activeTopic.difficulty === 'beginner' ? '0 0 8px rgba(16,185,129,0.4)' : activeTopic.difficulty === 'intermediate' ? '0 0 8px rgba(245,158,11,0.4)' : '0 0 8px rgba(239,68,68,0.4)'
-                  }} />
-                  {activeTopic.difficulty.charAt(0).toUpperCase() + activeTopic.difficulty.slice(1)}
-                </>
-              ) : activeTab === 'interview' ? 'Q&A Flashcards' :
-                 activeTab === 'practice' ? 'Interactive Challenges' :
-                 activeTab === 'projects' ? 'Portfolio-Ready Builds' :
-                 'AI Assistant'}
+              {activeTab === 'playground' ? 'Live code sandbox' :
+               activeTab === 'interview' ? 'Q&A Flashcards' :
+               activeTab === 'practice' ? 'Interactive Challenges' :
+               activeTab === 'projects' ? 'Portfolio-Ready Builds' :
+               'AI Assistant'}
             </span>
           </div>
           )}
