@@ -15,6 +15,7 @@ import type { ExplainerScript } from '../../../core/types/types';
 import { getMastery, setLastTopic } from '../../data-engineering/utils/learnProgress';
 import { formatText } from '../../../core/utils/textFormatting';
 import '../backend.css';
+import { SystemDesignWorkbench } from '../../../core/components/SystemDesignWorkbench';
 import {
   BookOpen, Eye, Sparkles, Brain, Code2, Bug, GraduationCap, Server, ListChecks, PlayCircle,
   ChevronDown, ChevronUp, Lightbulb, ChevronLeft, ChevronRight, CheckCircle2, FlaskConical,
@@ -216,10 +217,10 @@ const DebugCard: React.FC<{ ex: DebuggingLabExercise; theme: 'dark' | 'light' }>
 };
 
 const InterviewEmbedded: React.FC<{ data: BackendInterviewSection }> = ({ data }) => {
-  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[] }> = [
+  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[]; design?: boolean }> = [
     { label: 'Theory', qs: data.theory },
     { label: 'Scenario', qs: data.scenario },
-    { label: 'System Design', qs: data.systemDesign },
+    { label: 'System Design', qs: data.systemDesign, design: true },
     { label: 'Coding', coding: data.coding },
   ];
   return (
@@ -231,7 +232,7 @@ const InterviewEmbedded: React.FC<{ data: BackendInterviewSection }> = ({ data }
           <div key={g.label}>
             <h4 style={{ margin: '0 0 10px 0', color: 'var(--text-primary)', borderBottom: `2px solid ${ACC}`, paddingBottom: '6px', display: 'inline-block' }}>{g.label}</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {g.qs?.map(q => <ConceptualCard key={q.id} q={q} />)}
+              {g.qs?.map(q => g.design ? <SystemDesignWorkbench key={q.id} q={q} accent={ACC} /> : <ConceptualCard key={q.id} q={q} />)}
               {g.coding?.map(q => <CodingCard key={q.id} q={q} />)}
             </div>
           </div>

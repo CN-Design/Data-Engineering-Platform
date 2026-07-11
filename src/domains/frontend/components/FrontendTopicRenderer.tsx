@@ -18,6 +18,7 @@ import type { ConceptualInterviewQuestion, CodingInterviewQuestion } from '../..
 import { FRONTEND_VISUALIZATIONS } from '../visualizations/registry';
 import { EditableSandbox } from '../../../core/components/EditableSandbox';
 import { formatText } from '../../../core/utils/textFormatting';
+import { SystemDesignWorkbench } from '../../../core/components/SystemDesignWorkbench';
 import '../frontend.css';
 import {
   BookOpen, Eye, Code2, Bug, GraduationCap, Server, Hammer, Sparkles,
@@ -269,10 +270,10 @@ const DebugCard: React.FC<{ ex: DebuggingLabExercise }> = ({ ex }) => {
 
 // ---------------- Interview (embedded) ----------------
 const InterviewEmbedded: React.FC<{ data: FrontendInterviewSection }> = ({ data }) => {
-  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[] }> = [
+  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[]; design?: boolean }> = [
     { label: 'Theory', qs: data.theory },
     { label: 'Scenario', qs: data.scenario },
-    { label: 'System Design', qs: data.systemDesign },
+    { label: 'System Design', qs: data.systemDesign, design: true },
     { label: 'Coding', coding: data.coding },
     { label: 'Machine Coding', coding: data.machineCoding },
   ];
@@ -285,7 +286,7 @@ const InterviewEmbedded: React.FC<{ data: FrontendInterviewSection }> = ({ data 
           <div key={g.label}>
             <h4 style={{ margin: '0 0 10px 0', color: 'var(--text-primary)', borderBottom: `2px solid ${BLUE}`, paddingBottom: '6px', display: 'inline-block' }}>{g.label}</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {g.qs?.map(q => <ConceptualCard key={q.id} q={q} />)}
+              {g.qs?.map(q => g.design ? <SystemDesignWorkbench key={q.id} q={q} accent={BLUE} /> : <ConceptualCard key={q.id} q={q} />)}
               {g.coding?.map(q => <CodingCard key={q.id} q={q} />)}
             </div>
           </div>

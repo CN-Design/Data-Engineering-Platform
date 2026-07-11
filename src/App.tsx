@@ -7,7 +7,9 @@ import { PracticeTab } from './domains/data-engineering/components/PracticeTab';
 import { PlaygroundTab } from './domains/data-engineering/components/PlaygroundTab';
 import { ProjectsTab } from './domains/data-engineering/components/ProjectsTab';
 import { setLastTopic as setDeLastTopic } from './domains/data-engineering/utils/learnProgress';
-import { recordActivityToday as recordDeActivity } from './domains/data-engineering/utils/engagement';
+import { recordActivityToday as recordDeActivity, getStats, levelFromXp, getAchievements } from './domains/data-engineering/utils/engagement';
+import { Celebration } from './core/components/Celebration';
+import { celebrate } from './core/lib/celebrate';
 import { GeminiTab } from './domains/data-engineering/components/GeminiTab';
 import { Dashboard } from './core/components/Dashboard';
 import type { Topic, Category, Domain, CodingChallenge } from './core/types/types';
@@ -19,7 +21,7 @@ import { FrontendPracticeTab } from './domains/frontend/components/FrontendPract
 import { FRONTEND_TECHS } from './domains/frontend/loader';
 import { BACKEND_TECHS } from './domains/backend-engineering/loader';
 import { AI_AGENT_TECHS } from './domains/ai-agents/loader';
-import { FrontendCommandPalette } from './domains/frontend/components/FrontendCommandPalette';
+import { GlobalCommandPalette, type PaletteItem } from './core/components/GlobalCommandPalette';
 import { loadFrontendManifest, manifestToTopics } from './domains/frontend/loader';
 import { BackendLearnTab } from './domains/backend-engineering/components/BackendLearnTab';
 import { BackendPracticeTab } from './domains/backend-engineering/components/BackendPracticeTab';
@@ -83,24 +85,42 @@ export default function App() {
 
   const toggleTopicCompleted = () => {
     if (!activeTopic) return;
+    const willComplete = !completedTopics[activeTopic.id];
+    const before = willComplete ? getStats() : null;
     const updated = {
       ...completedTopics,
-      [activeTopic.id]: !completedTopics[activeTopic.id]
+      [activeTopic.id]: willComplete
     };
     setCompletedTopics(updated);
     localStorage.setItem('de_completed_topics', JSON.stringify(updated));
     // Record a real activity day when a topic is marked complete (fuels streak/XP).
     // The engagement engine is shared across domains, so backend/frontend count too.
-    if (updated[activeTopic.id]) recordDeActivity();
+    if (willComplete && before) {
+      recordDeActivity();
+      const after = getStats();
+      const beforeLvl = levelFromXp(before.xp).level;
+      const afterInfo = levelFromXp(after.xp);
+      const earnedBefore = new Set(getAchievements(before).filter(a => a.earned).map(a => a.id));
+      const newlyEarned = getAchievements(after).filter(a => a.earned && !earnedBefore.has(a.id));
+      if (afterInfo.level > beforeLvl) {
+        celebrate({ title: `Level ${afterInfo.level} — ${afterInfo.title}!`, subtitle: 'You leveled up', kind: 'level', xp: 10 });
+      } else {
+        celebrate({ title: 'Topic complete', subtitle: activeTopic.title, kind: 'topic', xp: 10 });
+      }
+      // Stagger any freshly-unlocked achievements after the primary toast.
+      newlyEarned.forEach((a, i) => setTimeout(() => celebrate({ title: a.label, subtitle: a.desc, kind: 'achievement' }), 500 * (i + 1)));
+    }
   };
 
   const markChallengeCompleted = (challengeId: string) => {
+    const already = !!completedChallenges[challengeId];
     const updated = {
       ...completedChallenges,
       [challengeId]: true
     };
     setCompletedChallenges(updated);
     localStorage.setItem('de_completed_challenges', JSON.stringify(updated));
+    if (!already) celebrate({ title: 'Challenge solved!', subtitle: 'All tests passed', kind: 'challenge', xp: 15 });
   };
 
   if (currentDomain === 'dashboard') {
@@ -146,17 +166,44 @@ export default function App() {
   const isBackend = currentDomain === 'backend-engineering';
   const isAiAgents = currentDomain === 'ai-agents';
 
-  // Open any frontend topic (used by the roadmap and the ⌘K command palette).
-  const openFrontendTopic = async (tech: Category, topicId?: string) => {
+  // Open any topic in any domain (used by the global ⌘K command palette).
+  const openAnyTopic = async (domain: 'frontend' | 'backend-engineering' | 'ai-agents' | 'data-engineering', tech: Category, topicId?: string) => {
+    setCurrentDomain(domain as any);
     setSelectedTech(tech);
     setActiveTab('learn');
-    const manifest = await loadFrontendManifest(tech);
-    const topics = manifest ? manifestToTopics(manifest) : [];
-    setFrontendTopics(topics);
-    const target = (topicId && topics.find(t => t.id === topicId)) || topics[0] || null;
-    setActiveTopic(target);
-    // Remember the last frontend lesson so the roadmap + dashboard can offer one-click resume.
-    try { if (target) localStorage.setItem('fe_last_topic', JSON.stringify({ tech, topicId: target.id, title: target.title, techTitle: manifest?.title || String(tech) })); } catch { /* ignore */ }
+    if (domain === 'frontend') {
+      const m = await loadFrontendManifest(tech);
+      const ts = m ? manifestToTopics(m) : [];
+      setFrontendTopics(ts);
+      const target = (topicId && ts.find(t => t.id === topicId)) || ts[0] || null;
+      setActiveTopic(target);
+      try { if (target) localStorage.setItem('fe_last_topic', JSON.stringify({ tech, topicId: target.id, title: target.title, techTitle: m?.title || String(tech) })); } catch { /* ignore */ }
+    } else if (domain === 'backend-engineering') {
+      const m = await loadBackendManifest(tech);
+      const ts = m ? backendManifestToTopics(m) : [];
+      setBackendTopics(ts);
+      setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+    } else if (domain === 'ai-agents') {
+      const m = await loadAgentManifest(tech);
+      const ts = m ? agentManifestToTopics(m) : [];
+      setAiTopics(ts);
+      setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+    } else {
+      const ts = allTopics.filter(t => t.category === tech);
+      const target = (topicId && ts.find(t => t.id === topicId)) || ts[0] || null;
+      setActiveTopic(target);
+      if (target) setDeLastTopic(target.id);
+    }
+  };
+
+  // Build a search index of every lesson across all domains (for ⌘K).
+  const getGlobalIndex = async (): Promise<PaletteItem[]> => {
+    const items: PaletteItem[] = [];
+    for (const t of FRONTEND_TECHS.filter(x => x.available)) { const m = await loadFrontendManifest(t.id); if (m) manifestToTopics(m).forEach(tp => items.push({ domain: 'frontend', tech: t.id, id: tp.id, title: tp.title, techTitle: t.title })); }
+    for (const t of BACKEND_TECHS.filter(x => x.available)) { const m = await loadBackendManifest(t.id); if (m) backendManifestToTopics(m).forEach(tp => items.push({ domain: 'backend-engineering', tech: t.id, id: tp.id, title: tp.title, techTitle: t.title })); }
+    for (const t of AI_AGENT_TECHS.filter(x => x.available)) { const m = await loadAgentManifest(t.id); if (m) agentManifestToTopics(m).forEach(tp => items.push({ domain: 'ai-agents', tech: t.id, id: tp.id, title: tp.title, techTitle: t.title })); }
+    allTopics.forEach(tp => items.push({ domain: 'data-engineering', tech: tp.category, id: tp.id, title: tp.title, techTitle: String(tp.category) }));
+    return items;
   };
 
   if ((currentDomain === 'data-engineering' || currentDomain === 'frontend' || currentDomain === 'backend-engineering' || currentDomain === 'ai-agents') && !selectedTech) {
@@ -215,7 +262,8 @@ export default function App() {
 
   return (
     <div className="app-container">
-      {isFrontend && <FrontendCommandPalette onOpen={openFrontendTopic} />}
+      <Celebration />
+      <GlobalCommandPalette onOpen={(it) => openAnyTopic(it.domain, it.tech, it.id)} getIndex={getGlobalIndex} />
       <div
         className={`sidebar-backdrop ${isSidebarOpen ? 'active' : ''}`}
         onClick={() => setIsSidebarOpen(false)}
@@ -402,7 +450,7 @@ export default function App() {
             </div>
 
             {/* Mobile Row 3: page title — hidden on Learn (the lesson owns its title) */}
-            {activeTab !== 'learn' && (
+            {!['learn', 'interview', 'projects'].includes(activeTab) && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
               <h1 style={{
                 margin: 0,
@@ -539,7 +587,7 @@ export default function App() {
           {/* ========================================================= */}
           {/* DESKTOP TOPIC TITLE & DIFFICULTY (Below header)           */}
           {/* ========================================================= */}
-          {activeTab !== 'learn' && (
+          {!['learn', 'interview', 'projects'].includes(activeTab) && (
           <div className="desktop-only" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: '24px' }}>
             <h1 style={{
               margin: 0,

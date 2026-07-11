@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Category, CodingChallenge } from '../../../core/types/types';
 import { LiveSandbox } from '../../../core/components/LiveSandbox';
 import { FRONTEND_VALIDATIONS } from '../validations';
-import { ArrowLeft, Check, X, Lightbulb, Loader2 } from 'lucide-react';
+import { ArrowLeft, Check, X, Lightbulb } from 'lucide-react';
+import { LoadingBlock } from '../../../core/components/LoadingBlock';
+import { ErrorState } from '../../../core/components/ErrorState';
+import { celebrate } from '../../../core/lib/celebrate';
 
 interface FrontendPracticeTabProps {
   tech: Category;
@@ -15,6 +18,9 @@ const DIFF_COLOR: Record<string, string> = { easy: '#10b981', medium: '#f59e0b',
 export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, theme }) => {
   const [challenges, setChallenges] = useState<CodingChallenge[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const celebratedRef = useRef<Set<string>>(new Set());
   const [selected, setSelected] = useState<CodingChallenge | null>(null);
   const [code, setCode] = useState('');
   const [files, setFiles] = useState<Record<string, string> | null>(null);
@@ -28,20 +34,20 @@ export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      setLoading(true);
+      setLoading(true); setError(false);
       try {
         const res = await fetch(`/content/frontend/${tech}/practice.json`);
         const data = res.ok ? ((await res.json()) as CodingChallenge[]) : [];
         if (!cancelled) setChallenges(Array.isArray(data) ? data : []);
       } catch {
-        if (!cancelled) setChallenges([]);
+        if (!cancelled) { setChallenges([]); setError(true); } // network failure — recoverable
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
     load();
     return () => { cancelled = true; };
-  }, [tech]);
+  }, [tech, reloadKey]);
 
   const open = (c: CodingChallenge) => {
     setSelected(c);
@@ -67,7 +73,11 @@ export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, 
   const sandboxCode = useMemo(() => code, [code]);
 
   if (loading) {
-    return <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', padding: '60px', color: 'var(--text-secondary)' }}><Loader2 size={18} className="spin" /> Loading challenges...</div>;
+    return <LoadingBlock label="Loading challenges…" />;
+  }
+
+  if (error) {
+    return <ErrorState onRetry={() => setReloadKey(k => k + 1)} />;
   }
 
   if (!selected) {
@@ -126,7 +136,7 @@ export const FrontendPracticeTab: React.FC<FrontendPracticeTabProps> = ({ tech, 
             files={files ?? undefined}
             language={mode === 'react' ? 'jsx' : (selected.type === 'typescript' ? 'typescript' : selected.type === 'css' ? 'css' : selected.type === 'html' ? 'html' : undefined)}
             testCode={withTests ? testCode : undefined}
-            onResult={(r) => setResult(r)}
+            onResult={(r) => { setResult(r); if (r.passed && selected && !celebratedRef.current.has(selected.id)) { celebratedRef.current.add(selected.id); celebrate({ title: 'Challenge solved!', subtitle: selected.title, kind: 'challenge', xp: 15 }); } }}
             runSignal={runSignal}
             height={300}
           />

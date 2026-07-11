@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import type { DeProject } from '../../../core/types/types';
+import { LoadingBlock } from '../../../core/components/LoadingBlock';
 import {
   ArrowLeft, ArrowRight, CheckCircle2, Circle, ChevronDown, ChevronUp,
   Target, Wrench, ListChecks, GitBranch, Database, Rocket, Award,
@@ -138,7 +139,7 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
   const selected = useMemo(() => projects.find(p => p.id === selectedId) || null, [projects, selectedId]);
 
   if (loading) {
-    return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>Loading projects…</div>;
+    return <LoadingBlock label="Loading projects…" />;
   }
   if (projects.length === 0) {
     return <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>No projects available yet.</div>;

@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Topic } from '../../../core/types/types';
 import { Flame, Trophy, Star, X, Zap, BarChart3, Lock, CheckCircle2, Download, Upload } from 'lucide-react';
 import { getStats, levelFromXp, getAchievements } from '../utils/engagement';
@@ -65,10 +66,10 @@ const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void; domainLabe
   const completeTracks = Object.entries(trackTotals).filter(([, v]) => v.total > 0 && v.done === v.total).map(([cat]) => cat);
   const domainComplete = Object.values(trackTotals).length > 0 && Object.values(trackTotals).every(v => v.total > 0 && v.done === v.total);
 
-  return (
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label="Your progress"
       onClick={onClose}
-      style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}>
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}>
       <div onClick={e => e.stopPropagation()} className="glass-panel animate-slide-up"
         style={{ width: '100%', maxWidth: 640, maxHeight: '85vh', overflowY: 'auto', padding: 24, background: 'var(--bg-secondary)', position: 'relative', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <button onClick={onClose} aria-label="Close" autoFocus style={{ position: 'absolute', top: 14, right: 14, background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={18} /></button>
@@ -122,9 +123,9 @@ const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void; domainLabe
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
             {achievements.map(a => (
-              <div key={a.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: 10, borderRadius: 10, border: `1px solid ${a.earned ? '#10b981' : 'var(--border-glass)'}`, background: a.earned ? 'rgba(16,185,129,0.08)' : 'var(--bg-inner)', opacity: a.earned ? 1 : 0.7 }}>
+              <div key={a.id} style={{ minWidth: 0, display: 'flex', gap: 10, alignItems: 'flex-start', padding: 10, borderRadius: 10, border: `1px solid ${a.earned ? '#10b981' : 'var(--border-glass)'}`, background: a.earned ? 'rgba(16,185,129,0.08)' : 'var(--bg-inner)', opacity: a.earned ? 1 : 0.7 }}>
                 <span style={{ color: a.earned ? '#10b981' : 'var(--text-muted)', flexShrink: 0, marginTop: 1 }}>{a.earned ? <CheckCircle2 size={16} /> : <Lock size={14} />}</span>
-                <div>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-primary)' }}>{a.label}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{a.desc}</div>
                   {!a.earned && a.progress > 0 && (
@@ -177,7 +178,8 @@ const ProgressModal: React.FC<{ topics: Topic[]; onClose: () => void; domainLabe
         </div>
       </div>
       {cert && <Certificate label={cert.label} kind={cert.kind} onClose={() => setCert(null)} />}
-    </div>
+    </div>,
+    document.body
   );
 };
 

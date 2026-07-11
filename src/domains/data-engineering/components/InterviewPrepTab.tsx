@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from 'react';
+import { LoadingBlock } from '../../../core/components/LoadingBlock';
+import { getPyodide, runPythonChallenge, OFFLINE_UNSUPPORTED, type PyRunResult } from '../../../core/lib/pythonRunner';
 import type {
   Category,
   Difficulty,
@@ -14,7 +16,6 @@ import {
   ChevronUp,
   Code2,
   Search,
-  Loader2,
   Lightbulb,
   Play,
 } from 'lucide-react';
@@ -249,9 +250,7 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
 
       {/* Content */}
       {loading ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '60px', color: 'var(--text-secondary)' }}>
-          <Loader2 size={18} className="spin" /> Loading {INTERVIEW_CATEGORIES.find(c => c.id === activeCategory)?.label} questions...
-        </div>
+        <LoadingBlock label="Loading interview questions…" />
       ) : filtered.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '50px', color: 'var(--text-secondary)' }}>
           {questions.length === 0
@@ -295,27 +294,89 @@ const Section: React.FC<{ label: string; color?: string; children: React.ReactNo
   </div>
 );
 
-const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => (
-  <pre
-    style={{
-      margin: '8px 0 0 0',
-      padding: '14px',
-      borderRadius: '10px',
-      background: 'var(--bg-code, #0d1117)',
-      border: '1px solid var(--border-glass)',
-      overflowX: 'auto',
-      fontSize: '13px',
-      lineHeight: 1.5,
-    }}
-  >
-    <code style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', color: 'var(--text-code, #e2e8f0)' }}>
-      {code}
-    </code>
-    {language ? (
-      <span style={{ display: 'block', marginTop: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>{language}</span>
-    ) : null}
-  </pre>
-);
+const mono = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+
+// Editable + runnable Python (Pyodide). Lets learners tweak the reference
+// solution and run it in-browser. Reuses the shared, verified pythonRunner.
+const RunnablePython: React.FC<{ code: string; testCases?: Array<{ input: string; expected: string }> }> = ({ code, testCases }) => {
+  const [src, setSrc] = useState(code);
+  const [running, setRunning] = useState(false);
+  const [pyReady, setPyReady] = useState(false);
+  const [pyFailed, setPyFailed] = useState(false);
+  const [res, setRes] = useState<PyRunResult | null>(null);
+  const graded = !!(testCases && testCases.length);
+  useEffect(() => {
+    let cancelled = false;
+    getPyodide().then(() => { if (!cancelled) setPyReady(true); }).catch(() => { if (!cancelled) setPyFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const run = async () => {
+    setRunning(true); setRes(null);
+    try { setRes(await runPythonChallenge(src, testCases || [])); }
+    catch (e) { setRes({ ok: false, stdout: '', stderr: '', error: e instanceof Error ? e.message : 'Python runtime unavailable.', tests: [], allPassed: false }); setPyFailed(true); }
+    finally { setRunning(false); }
+  };
+  return (
+    <div style={{ margin: '8px 0 0 0' }}>
+      <div style={{ border: '1px solid var(--border-glass)', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 10px', background: 'var(--bg-inner)', borderBottom: '1px solid var(--border-glass)' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>python · {graded ? 'write your solution' : 'editable'}</span>
+          <button onClick={run} disabled={running || pyFailed} style={{ cursor: running || pyFailed ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 700, fontSize: 12, padding: '5px 12px', borderRadius: 7, border: 'none', background: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', color: '#fff', opacity: running || pyFailed ? 0.6 : 1 }}>
+            {running ? 'Running…' : !pyReady && !pyFailed ? 'Loading Python…' : graded ? '▶ Run tests' : '▶ Run'}
+          </button>
+        </div>
+        <textarea value={src} onChange={(e) => setSrc(e.target.value)} spellCheck={false} rows={Math.min(20, src.split('\n').length + 1)}
+          style={{ width: '100%', boxSizing: 'border-box', border: 'none', outline: 'none', resize: 'vertical', padding: 14, fontFamily: mono, fontSize: 13, lineHeight: 1.5, background: 'var(--bg-code, #0d1117)', color: 'var(--text-code, #e2e8f0)' }} />
+      </div>
+      {res && (
+        <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--bg-inner)', border: `1px solid ${res.error ? '#ef4444' : res.tests.length && !res.allPassed ? '#ef4444' : 'var(--border-glass)'}`, fontFamily: mono, fontSize: 12.5, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>
+          {res.error ? <span style={{ color: '#ef4444' }}>{res.error}</span>
+            : res.tests.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <strong style={{ color: res.allPassed ? '#10b981' : '#ef4444' }}>{res.tests.filter((t) => t.passed).length}/{res.tests.length} tests passed{res.allPassed ? ' — solved!' : ''}</strong>
+                {res.tests.map((t) => (
+                  <div key={t.index} style={{ borderLeft: `3px solid ${t.passed ? '#10b981' : '#ef4444'}`, paddingLeft: 8 }}>
+                    {t.passed ? '✓ ' : '✗ '}{t.input}{!t.passed && `\n   expected: ${t.expected}\n   got:      ${t.actual}`}
+                  </div>
+                ))}
+              </div>
+            )
+            : (res.stdout.trim() || res.stderr.trim())
+              ? <>{res.stdout}{res.stderr && <span style={{ color: '#f59e0b' }}>{res.stderr}</span>}</>
+              : <span style={{ color: 'var(--text-muted)' }}>Ran successfully (no output). Add a print() to see results.</span>}
+        </div>
+      )}
+      {pyFailed && <span style={{ display: 'block', marginTop: 6, fontSize: 11.5, color: 'var(--text-muted)' }}>In-browser Python unavailable — copy and run locally.</span>}
+    </div>
+  );
+};
+
+const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
+  if ((language || '').toLowerCase() === 'python' && !OFFLINE_UNSUPPORTED.test(code)) {
+    return <RunnablePython code={code} />;
+  }
+  return (
+    <pre
+      style={{
+        margin: '8px 0 0 0',
+        padding: '14px',
+        borderRadius: '10px',
+        background: 'var(--bg-code, #0d1117)',
+        border: '1px solid var(--border-glass)',
+        overflowX: 'auto',
+        fontSize: '13px',
+        lineHeight: 1.5,
+      }}
+    >
+      <code style={{ fontFamily: mono, color: 'var(--text-code, #e2e8f0)' }}>
+        {code}
+      </code>
+      {language ? (
+        <span style={{ display: 'block', marginTop: '8px', fontSize: '11px', color: 'var(--text-muted)' }}>{language}</span>
+      ) : null}
+    </pre>
+  );
+};
 
 interface QuestionCardProps {
   q: InterviewPrepQuestion;
@@ -460,6 +521,12 @@ const CodingAnswer: React.FC<{ q: CodingInterviewQuestion }> = ({ q }) => (
     {q.thoughtProcess && (
       <Section label="Interview Thought Process" color={CATEGORY_COLOR}>
         <Prose>{q.thoughtProcess}</Prose>
+      </Section>
+    )}
+
+    {q.testCases && q.testCases.length > 0 && q.starterCode && (
+      <Section label="Try it yourself" color="#10b981">
+        <RunnablePython code={q.starterCode} testCases={q.testCases} />
       </Section>
     )}
 

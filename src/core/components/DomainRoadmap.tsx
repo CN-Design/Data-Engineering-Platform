@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { Category, Topic } from '../types/types';
 import { getStats, levelFromXp } from '../../domains/data-engineering/utils/engagement';
+import { ProgressButton } from './ProgressButton';
 import {
   ArrowLeft, ChevronRight, Rocket, Flame, Zap, Star, Sun, Moon,
   FileCode2, Palette, Braces, Atom, Triangle, Globe, Terminal, Code2, Database, Network,
@@ -108,11 +109,14 @@ export const DomainRoadmap: React.FC<Props> = ({ config, getTopics, completedTop
           <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '0.5px', background: 'linear-gradient(to right,#3b82f6,#10b981,#a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>CN-DESIGN</span>
           <span className="dash-subtitle" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginLeft: 6, borderLeft: '1px solid var(--border-glass)', paddingLeft: 12 }}>Engineering Academy</span>
         </div>
-        {onToggleTheme && (
-          <button onClick={onToggleTheme} aria-label="Toggle theme" title="Toggle theme" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 10, border: '1px solid var(--border-glass)', background: 'var(--bg-inner)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <ProgressButton />
+          {onToggleTheme && (
+            <button onClick={onToggleTheme} aria-label="Toggle theme" title="Toggle theme" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 10, border: '1px solid var(--border-glass)', background: 'var(--bg-inner)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          )}
+        </div>
       </header>
 
       <div style={{ flex: 1, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'clamp(22px,4vw,40px) clamp(16px,5vw,40px) 60px', overflowX: 'hidden' }}>

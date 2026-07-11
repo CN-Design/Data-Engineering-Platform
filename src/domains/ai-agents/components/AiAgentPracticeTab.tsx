@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import type { CodingChallenge } from '../../../core/types/types';
-import { Loader2, ArrowLeft, Eye, RotateCcw, Lightbulb, Terminal, Trophy, Search, Copy, Check } from 'lucide-react';
+import { ArrowLeft, Eye, RotateCcw, Lightbulb, Terminal, Trophy, Search, Copy, Check, Play, Loader2 } from 'lucide-react';
+import { LoadingBlock } from '../../../core/components/LoadingBlock';
+import { ErrorState } from '../../../core/components/ErrorState';
+import { getPyodide, runPythonChallenge, type PyRunResult } from '../../../core/lib/pythonRunner';
+import { celebrate } from '../../../core/lib/celebrate';
 import '../../backend-engineering/backend.css';
 import './aiagents.css';
 
@@ -11,6 +15,8 @@ let cache: CodingChallenge[] | null = null;
 export const AiAgentPracticeTab: React.FC<Props> = ({ theme = 'dark' }) => {
   const [challenges, setChallenges] = useState<CodingChallenge[] | null>(cache);
   const [loading, setLoading] = useState(!cache);
+  const [error, setError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [selected, setSelected] = useState<CodingChallenge | null>(null);
   const [code, setCode] = useState('');
   const [pane, setPane] = useState<'problem' | 'solution' | 'discussion'>('problem');
@@ -20,24 +26,52 @@ export const AiAgentPracticeTab: React.FC<Props> = ({ theme = 'dark' }) => {
   const [search, setSearch] = useState('');
   const [diff, setDiff] = useState('all');
   const [solved, setSolved] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('ai_solved') || '{}'); } catch { return {}; } });
+  const [pyReady, setPyReady] = useState(false);
+  const [pyFailed, setPyFailed] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<PyRunResult | null>(null);
+
+  // Warm up the Python runtime in the background so the first Run is fast.
+  useEffect(() => {
+    let cancelled = false;
+    getPyodide().then(() => { if (!cancelled) setPyReady(true); }).catch(() => { if (!cancelled) setPyFailed(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (cache) return;
     let cancelled = false;
     (async () => {
-      setLoading(true);
+      setLoading(true); setError(false);
       try { const res = await fetch('/content/ai-agents/challenges.json'); const data = res.ok ? (await res.json()) as CodingChallenge[] : []; cache = data; if (!cancelled) setChallenges(data); }
-      catch { if (!cancelled) setChallenges([]); }
+      catch { if (!cancelled) { setChallenges(null); setError(true); } } // network failure — recoverable, don't cache
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
-  const open = (c: CodingChallenge) => { setSelected(c); setCode(c.initialCode); setPane('problem'); setHints(0); setRevealed(false); setCopied(false); };
+  const open = (c: CodingChallenge) => { setSelected(c); setCode(c.initialCode); setPane('problem'); setHints(0); setRevealed(false); setCopied(false); setRunResult(null); };
+  const run = async () => {
+    if (!selected) return;
+    setRunning(true); setRunResult(null);
+    try {
+      const r = await runPythonChallenge(code, selected.testCases || []);
+      setRunResult(r);
+      if (r.allPassed) {
+        const firstSolve = !solved[selected.id];
+        markSolved(selected.id);
+        if (firstSolve) celebrate({ title: 'Challenge solved!', subtitle: selected.title, kind: 'challenge', xp: 15 });
+      }
+    } catch (e) {
+      setRunResult({ ok: false, stdout: '', stderr: '', error: e instanceof Error ? e.message : 'Python runtime unavailable.', tests: [], allPassed: false });
+      setPyFailed(true);
+    } finally { setRunning(false); }
+  };
   const markSolved = (id: string) => { const n = { ...solved, [id]: true }; setSolved(n); try { localStorage.setItem('ai_solved', JSON.stringify(n)); } catch { /* ignore */ } };
   const copy = async () => { try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ } };
 
-  if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 60, color: 'var(--text-secondary)' }}><Loader2 size={18} className="spin" /> Loading challenges...</div>;
+  if (loading) return <LoadingBlock label="Loading challenges…" />;
+  if (error) return <ErrorState onRetry={() => { cache = null; setReloadKey(k => k + 1); }} />;
   if (!challenges || challenges.length === 0) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-secondary)' }}>Coding challenges are coming soon.</div>;
 
   if (!selected) {
@@ -46,7 +80,7 @@ export const AiAgentPracticeTab: React.FC<Props> = ({ theme = 'dark' }) => {
     return (
       <div className="be-root ai-root" style={{ gap: 16 }}>
         <div className="be-header" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div><h1 className="be-title" style={{ fontSize: 22 }}>AI Agent Coding Practice</h1><p className="be-summary" style={{ marginTop: 6 }}>Pure-Python challenges behind agent mechanics — editable, with revealable solutions. Run locally with <code>python</code>.</p></div>
+          <div><p className="be-summary" style={{ margin: 0 }}>Pure-Python challenges behind agent mechanics — editable, with revealable solutions. Run locally with <code>python</code>.</p></div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}><Trophy size={20} color="#8b5cf6" /> <strong>{totalSolved}</strong>/{challenges.length}</div>
         </div>
         <div className="be-panel" style={{ padding: 14, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -122,9 +156,58 @@ export const AiAgentPracticeTab: React.FC<Props> = ({ theme = 'dark' }) => {
             </div>
           </div>
           <Editor height="420px" theme={theme === 'dark' ? 'vs-dark' : 'light'} language="python" value={code} onChange={v => setCode(v || '')} options={{ minimap: { enabled: false }, fontSize: 13, lineNumbers: 'on', scrollBeyondLastLine: false, tabSize: 4 }} />
-          <div style={{ padding: '10px 12px', background: 'var(--bg-inner)', borderTop: '1px solid var(--border-glass)' }}>
-            <span className="be-run-note"><Terminal size={12} /> These are pure-Python (stdlib) — write your solution, reveal to compare, then run locally with <code>python solution.py</code>.</span>
+          <div style={{ padding: '10px 12px', background: 'var(--bg-inner)', borderTop: '1px solid var(--border-glass)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button
+              className="be-btn"
+              onClick={run}
+              disabled={running || pyFailed}
+              style={{ background: 'linear-gradient(135deg,#8b5cf6,#6366f1)', color: '#fff', border: 'none', fontWeight: 700, opacity: (running || pyFailed) ? 0.6 : 1 }}
+            >
+              {running ? <><Loader2 size={13} className="spin" /> Running…</> : (!pyReady && !pyFailed) ? <><Loader2 size={13} className="spin" /> Loading Python…</> : <><Play size={13} /> Run &amp; Test</>}
+            </button>
+            <span className="be-run-note" style={{ margin: 0 }}>
+              {pyFailed
+                ? <><Terminal size={12} /> Python runtime unavailable — copy the code and run locally with <code>python solution.py</code>.</>
+                : <><Terminal size={12} /> Runs in-browser (Pyodide) and checks your solution against the test cases.</>}
+            </span>
           </div>
+          {runResult && (
+            <div style={{ padding: '12px 14px', borderTop: '1px solid var(--border-glass)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {runResult.error ? (
+                <div className="be-code" style={{ margin: 0, borderLeft: '3px solid #ef4444' }}>
+                  <div className="be-output-label" style={{ color: '#ef4444' }}>Error</div>
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{runResult.error}</pre>
+                </div>
+              ) : (
+                <>
+                  {selected.testCases && selected.testCases.length > 0 && (
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 13, color: runResult.allPassed ? '#10b981' : '#ef4444' }}>
+                      {runResult.allPassed ? <Check size={16} /> : <RotateCcw size={16} />}
+                      {runResult.tests.filter(t => t.passed).length}/{runResult.tests.length} tests passed
+                      {runResult.allPassed && ' — nice work!'}
+                    </div>
+                  )}
+                  {runResult.tests.map(t => (
+                    <div key={t.index} className="be-code" style={{ margin: 0, borderLeft: `3px solid ${t.passed ? '#10b981' : '#ef4444'}` }}>
+                      <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{`${t.passed ? '✓' : '✗'} ${t.input}${t.passed ? '' : `\n   expected: ${t.expected}\n   got:      ${t.actual}`}`}</pre>
+                    </div>
+                  ))}
+                  {runResult.stdout.trim() && (
+                    <div className="be-code" style={{ margin: 0 }}>
+                      <div className="be-output-label">stdout</div>
+                      <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{runResult.stdout}</pre>
+                    </div>
+                  )}
+                  {runResult.stderr.trim() && (
+                    <div className="be-code" style={{ margin: 0, borderLeft: '3px solid #f59e0b' }}>
+                      <div className="be-output-label" style={{ color: '#f59e0b' }}>stderr</div>
+                      <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{runResult.stderr}</pre>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

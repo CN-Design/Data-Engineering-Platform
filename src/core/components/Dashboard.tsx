@@ -1,6 +1,7 @@
 import React from 'react';
 import { Layout, Database, Server, Bot, ChevronRight, PlayCircle, Sun, Moon, ArrowRight } from 'lucide-react';
 import type { Category } from '../types/types';
+import { ProgressButton } from './ProgressButton';
 
 type DomainId = 'frontend' | 'backend-engineering' | 'ai-agents' | 'data-engineering';
 
@@ -32,7 +33,7 @@ const DOMAINS: DomainDef[] = [
     tags: ['React', 'TypeScript', 'Next.js', 'CSS', 'Systems'],
   },
   {
-    id: 'data-engineering', title: 'Data Engineering', meta: '13 tracks',
+    id: 'data-engineering', title: 'Data Engineering', meta: '13 tracks · 484 lessons',
     description: 'Python, SQL, Spark, warehousing, orchestration, streaming, and reliability — the full modern data stack.',
     Icon: Database, bar: 'linear-gradient(90deg,#3b82f6,#a855f7)', tint: 'rgba(59,130,246,0.14)', color: '#3b82f6',
     tags: ['SQL', 'Python', 'PySpark', 'Databricks', 'Airflow'],
@@ -44,7 +45,7 @@ const DOMAINS: DomainDef[] = [
     tags: ['Go', 'gRPC', 'Microservices', 'Python (soon)'],
   },
   {
-    id: 'ai-agents', title: 'AI Agents', meta: '10 tracks',
+    id: 'ai-agents', title: 'AI Agents', meta: '10 tracks · 83 lessons',
     description: 'Build production agents from scratch — tool use, RAG, memory, orchestration, multi-agent, MCP, and safety.',
     Icon: Bot, bar: 'linear-gradient(90deg,#8b5cf6,#ec4899)', tint: 'rgba(139,92,246,0.14)', color: '#8b5cf6',
     tags: ['RAG', 'Tool Use', 'LangGraph', 'MCP'],
@@ -64,11 +65,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onSelectDomain, onResumeFr
           <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: '0.5px', background: 'linear-gradient(to right,#3b82f6,#10b981,#a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>CN-DESIGN</span>
           <span className="dash-subtitle" style={{ fontSize: 12.5, color: 'var(--text-muted)', marginLeft: 6, borderLeft: '1px solid var(--border-glass)', paddingLeft: 12 }}>Engineering Academy</span>
         </div>
-        {onToggleTheme && (
-          <button onClick={onToggleTheme} aria-label="Toggle theme" title="Toggle theme" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 10, border: '1px solid var(--border-glass)', background: 'var(--bg-inner)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <ProgressButton />
+          {onToggleTheme && (
+            <button onClick={onToggleTheme} aria-label="Toggle theme" title="Toggle theme" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 38, height: 38, borderRadius: 10, border: '1px solid var(--border-glass)', background: 'var(--bg-inner)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+          )}
+        </div>
       </header>
 
       <div style={{ flex: 1, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'clamp(28px,5vw,60px) clamp(16px,5vw,40px)', overflowX: 'hidden' }}>

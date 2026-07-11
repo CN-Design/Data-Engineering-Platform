@@ -64,8 +64,7 @@ export const BackendPracticeTab: React.FC<Props> = ({ tech, theme = 'dark' }) =>
       <div className="be-root" style={{ gap: '16px' }}>
         <div className="be-header" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <h1 className="be-title" style={{ fontSize: '22px' }}>Go Coding Practice</h1>
-            <p className="be-summary" style={{ marginTop: '6px' }}>Editable problems with revealable, line-by-line solutions. Verify locally with <code>go test ./...</code>.</p>
+            <p className="be-summary" style={{ margin: 0 }}>Editable Go problems with revealable, line-by-line solutions. Verify locally with <code>go test ./...</code>.</p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)' }}><Trophy size={20} color="#00ADD8" /> <strong>{totalSolved}</strong>/{challenges.length}</div>
         </div>

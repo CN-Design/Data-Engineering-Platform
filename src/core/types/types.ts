@@ -388,6 +388,10 @@ export interface CodingInterviewQuestion {
   }>;
   followUps: InterviewFollowUp[];
   tags?: string[];
+  // Optional auto-grading (pure-Python questions): a starter stub the learner
+  // fills in, plus test cases evaluated in-browser against their attempt.
+  starterCode?: string;
+  testCases?: Array<{ input: string; expected: string }>;
 }
 
 export type InterviewPrepQuestion = ConceptualInterviewQuestion | CodingInterviewQuestion;

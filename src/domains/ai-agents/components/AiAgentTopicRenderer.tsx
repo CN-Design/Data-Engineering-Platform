@@ -7,7 +7,9 @@ import { AGENT_SECTIONS } from '../../../core/types/aiagents';
 import type { BackendTopicData, Checkpoint } from '../../../core/types/backend';
 import type { ConceptualInterviewQuestion, CodingInterviewQuestion, ExplainerScript } from '../../../core/types/types';
 import { AGENT_WIDGETS } from '../widgets/registry';
-import { PyCodeBlock } from './PyCodeBlock';
+import { PyCodeBlock, OFFLINE_UNSUPPORTED } from './PyCodeBlock';
+import { celebrate } from '../../../core/lib/celebrate';
+import { SystemDesignWorkbench } from './SystemDesignWorkbench';
 import { CheckpointWidget } from '../../backend-engineering/components/Checkpoint';
 import { BackendSelfCheck } from '../../backend-engineering/components/BackendSelfCheck';
 import { ExplainerPlayer } from '../../data-engineering/components/ExplainerPlayer';
@@ -154,30 +156,54 @@ const ConceptualCard: React.FC<{ q: ConceptualInterviewQuestion }> = ({ q }) => 
     </div>
   );
 };
-const CodingCard: React.FC<{ q: CodingInterviewQuestion }> = ({ q }) => {
+const CodingCard: React.FC<{ q: CodingInterviewQuestion; theme: 'dark' | 'light' }> = ({ q, theme }) => {
   const [open, setOpen] = useState(false);
+  const [showApproach, setShowApproach] = useState(false);
+  const solCode = q.solution?.code || '';
+  // Runnable in-browser when it's pure-stdlib Python (no framework/network deps).
+  const runnable = q.solution?.language === 'python' && !!solCode && !OFFLINE_UNSUPPORTED.test(solCode);
   return (
     <div style={{ padding: 14, borderRadius: 10, border: '1px solid var(--border-glass)', background: 'var(--bg-secondary)' }}>
       <div onClick={() => setOpen(o => !o)} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, cursor: 'pointer' }}>
         <span style={{ display: 'flex', gap: 8, alignItems: 'center', fontWeight: 600, color: 'var(--text-primary)' }}><Code2 size={15} color={ACC} /> {q.question}</span>{open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
       </div>
       {open && (<div style={{ marginTop: 12, borderTop: '1px solid var(--border-glass)', paddingTop: 12 }}>
-        <Field label="Thought Process" value={q.thoughtProcess} color={ACC} />
-        {q.solution?.code && <div className="be-code"><pre><code>{q.solution.code}</code></pre></div>}
-        <Field label="Line-by-Line" value={q.lineByLine} />
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}><Field label="Time" value={q.timeComplexity} color="#f59e0b" /><Field label="Space" value={q.spaceComplexity} color="#f59e0b" /></div>
+        {runnable ? (
+          <PyCodeBlock
+            block={{ language: 'python', code: q.starterCode || '# Write your solution here, then Run to try it.\n', editable: true, solution: solCode }}
+            theme={theme}
+            title={q.testCases?.length ? 'Your solution — write, run against tests, reveal' : 'Your solution — edit, run, reveal'}
+            testCases={q.testCases}
+            onSolved={q.testCases?.length ? () => celebrate({ title: 'Interview question solved!', subtitle: 'All tests passed', kind: 'challenge', xp: 15 }) : undefined}
+          />
+        ) : (
+          <>
+            {solCode && <div className="be-code"><pre><code>{solCode}</code></pre></div>}
+            <p className="be-run-note">This one leans on a framework/keys — copy it and run locally.</p>
+          </>
+        )}
+        <button className="be-btn" style={{ marginTop: 12 }} onClick={() => setShowApproach(s => !s)}>
+          {showApproach ? 'Hide approach' : 'Show approach & complexity'}
+        </button>
+        {showApproach && (
+          <div style={{ marginTop: 12 }}>
+            <Field label="Thought Process" value={q.thoughtProcess} color={ACC} />
+            <Field label="Line-by-Line" value={q.lineByLine} />
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}><Field label="Time" value={q.timeComplexity} color="#f59e0b" /><Field label="Space" value={q.spaceComplexity} color="#f59e0b" /></div>
+          </div>
+        )}
       </div>)}
     </div>
   );
 };
-const InterviewEmbedded: React.FC<{ data: AgentInterviewSection }> = ({ data }) => {
-  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[] }> = [
-    { label: 'Theory', qs: data.theory }, { label: 'Scenario', qs: data.scenario }, { label: 'System Design', qs: data.systemDesign }, { label: 'Coding', coding: data.coding },
+const InterviewEmbedded: React.FC<{ data: AgentInterviewSection; theme: 'dark' | 'light' }> = ({ data, theme }) => {
+  const groups: Array<{ label: string; qs?: ConceptualInterviewQuestion[]; coding?: CodingInterviewQuestion[]; design?: boolean }> = [
+    { label: 'Theory', qs: data.theory }, { label: 'Scenario', qs: data.scenario }, { label: 'System Design', qs: data.systemDesign, design: true }, { label: 'Coding', coding: data.coding },
   ];
   return (<div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
     {groups.map(g => { const items = g.qs || g.coding; if (!items || items.length === 0) return null;
       return (<div key={g.label}><h4 style={{ margin: '0 0 10px 0', color: 'var(--text-primary)', borderBottom: `2px solid ${ACC}`, paddingBottom: 6, display: 'inline-block' }}>{g.label}</h4>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{g.qs?.map(q => <ConceptualCard key={q.id} q={q} />)}{g.coding?.map(q => <CodingCard key={q.id} q={q} />)}</div></div>); })}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>{g.qs?.map(q => g.design ? <SystemDesignWorkbench key={q.id} q={q} /> : <ConceptualCard key={q.id} q={q} />)}{g.coding?.map(q => <CodingCard key={q.id} q={q} theme={theme} />)}</div></div>); })}
   </div>);
 };
 
@@ -252,7 +278,7 @@ export const AiAgentTopicRenderer: React.FC<Props> = ({ data, topics = [], onNav
       case 'checkpoints': return data.checkpoints ? <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>{(data.checkpoints as Checkpoint[]).map((cp, i) => <CheckpointWidget key={i} cp={cp} />)}</div> : null;
       case 'codeLab': return data.codeLab ? <CodeLab items={data.codeLab} theme={theme} /> : null;
       case 'debuggingLab': return data.debuggingLab ? <DebuggingLab items={data.debuggingLab} theme={theme} /> : null;
-      case 'interviewPrep': return data.interviewPrep ? <InterviewEmbedded data={data.interviewPrep} /> : null;
+      case 'interviewPrep': return data.interviewPrep ? <InterviewEmbedded data={data.interviewPrep} theme={theme} /> : null;
       case 'productionDeepDive': return data.productionDeepDive ? <ProductionDeepDive data={data.productionDeepDive} /> : null;
       case 'selfCheck': return <BackendSelfCheck topicId={data.id} data={data as unknown as BackendTopicData} onMasteryChange={setMasteryState} />;
       case 'explainer': return explainer ? <ExplainerPlayer script={explainer} /> : null;
