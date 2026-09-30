@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { allTopics } from './domains/data-engineering/data';
 import { Sidebar } from './core/components/Sidebar';
 import { LearnTab } from './domains/data-engineering/components/LearnTab';
@@ -63,6 +63,47 @@ export default function App() {
   const toggleTheme = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
+
+  // Restore the last location on load so a refresh doesn't drop the user back
+  // to the dashboard. Runs once; loads the saved track's manifest and reopens
+  // the saved lesson/tab.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (bootstrapped.current) return;
+    bootstrapped.current = true;
+    let saved: { domain?: string; tech?: Category | null; topicId?: string | null; tab?: typeof activeTab } | null = null;
+    try { saved = JSON.parse(localStorage.getItem('platform_nav') || 'null'); } catch { saved = null; }
+    if (!saved || !saved.domain || saved.domain === 'dashboard') return;
+    const { domain, tech, topicId, tab } = saved;
+    (async () => {
+      setCurrentDomain(domain as any);
+      if (tab) setActiveTab(tab);
+      if (!tech) return;
+      setSelectedTech(tech);
+      if (domain === 'frontend') {
+        const m = await loadFrontendManifest(tech); const ts = m ? manifestToTopics(m) : [];
+        setFrontendTopics(ts); setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else if (domain === 'backend-engineering') {
+        const m = await loadBackendManifest(tech); const ts = m ? backendManifestToTopics(m) : [];
+        setBackendTopics(ts); setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else if (domain === 'ai-agents') {
+        const m = await loadAgentManifest(tech); const ts = m ? agentManifestToTopics(m) : [];
+        setAiTopics(ts); setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      } else {
+        const ts = allTopics.filter(t => t.category === tech);
+        setActiveTopic((topicId && ts.find(t => t.id === topicId)) || ts[0] || null);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the current location whenever it changes (cleared on the dashboard).
+  useEffect(() => {
+    try {
+      if (currentDomain === 'dashboard') { localStorage.removeItem('platform_nav'); return; }
+      localStorage.setItem('platform_nav', JSON.stringify({ domain: currentDomain, tech: selectedTech, topicId: activeTopic?.id || null, tab: activeTab }));
+    } catch { /* persistence is optional */ }
+  }, [currentDomain, selectedTech, activeTopic, activeTab]);
 
   // Load completed items from localStorage
   const [completedTopics, setCompletedTopics] = useState<Record<string, boolean>>(() => {
@@ -255,6 +296,11 @@ export default function App() {
 
   // Filter topics for the sidebar based on selected tech / domain.
   const sidebarTopics = isFrontend ? frontendTopics : isBackend ? backendTopics : isAiAgents ? aiTopics : allTopics.filter(t => t.category === selectedTech);
+  const rememberFrontendTopic = (topic: Topic | null | undefined) => {
+    if (!topic) return;
+    const techTitle = FRONTEND_TECHS.find(t => t.id === topic.category)?.title || String(topic.category);
+    try { localStorage.setItem('fe_last_topic', JSON.stringify({ tech: topic.category, topicId: topic.id, title: topic.title, techTitle })); } catch { /* resume is optional */ }
+  };
   
   const currentTopicIndex = sidebarTopics.findIndex(t => t.id === activeTopic?.id);
   const previousTopic = currentTopicIndex > 0 ? sidebarTopics[currentTopicIndex - 1] : null;
@@ -276,6 +322,7 @@ export default function App() {
           setActiveTopic(t);
           setActiveTab('learn');
           if (currentDomain === 'data-engineering') setDeLastTopic(t.id);
+          if (currentDomain === 'frontend') rememberFrontendTopic(t);
         }}
         completedTopics={completedTopics}
         isOpen={isSidebarOpen}
@@ -529,16 +576,14 @@ export default function App() {
                   <CheckSquare size={15} />
                   Coding Practice
                 </button>
-                {!isFrontend && (
-                  <button
-                    className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`}
-                    onClick={() => setActiveTab('projects')}
-                    style={{ borderRadius: '8px', padding: '6px 14px' }}
-                  >
-                    <Rocket size={15} />
-                    Projects
-                  </button>
-                )}
+                <button
+                  className={`tab-btn ${activeTab === 'projects' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('projects')}
+                  style={{ borderRadius: '8px', padding: '6px 14px' }}
+                >
+                  <Rocket size={15} />
+                  Projects
+                </button>
                 <button
                   className={`tab-btn ${activeTab === 'playground' ? 'active' : ''}`}
                   onClick={() => setActiveTab('playground')}
@@ -619,11 +664,11 @@ export default function App() {
                 tech={selectedTech}
                 topicId={activeTopic?.id || null}
                 topics={frontendTopics.map(t => ({ id: t.id, title: t.title }))}
-                onNavigate={(id) => { const t = frontendTopics.find(x => x.id === id); if (t) setActiveTopic(t); }}
+                onNavigate={(id) => { const t = frontendTopics.find(x => x.id === id); if (t) { setActiveTopic(t); rememberFrontendTopic(t); } }}
                 isCompleted={!!completedTopics[activeTopic?.id || '']}
                 onToggleComplete={toggleTopicCompleted}
-                onPrev={previousTopic ? () => setActiveTopic(previousTopic) : undefined}
-                onNext={nextTopic ? () => setActiveTopic(nextTopic) : undefined}
+                onPrev={previousTopic ? () => { setActiveTopic(previousTopic); rememberFrontendTopic(previousTopic); } : undefined}
+                onNext={nextTopic ? () => { setActiveTopic(nextTopic); rememberFrontendTopic(nextTopic); } : undefined}
                 prevTitle={previousTopic?.title}
                 nextTitle={nextTopic?.title}
               />

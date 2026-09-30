@@ -48,6 +48,7 @@ const TECH_LABELS: Partial<Record<Category, string>> = {
   html: 'HTML',
   css: 'CSS',
   nextjs: 'Next.js',
+  systems: 'Frontend Systems',
 };
 
 // Falls back to a prettified id for any tech without an explicit label.
@@ -99,9 +100,11 @@ export const InterviewPrepTab: React.FC<InterviewPrepTabProps> = ({ tech }) => {
         // Some categories are role-level (tech-agnostic): they load from a
         // single shared file that appears on every technology's tab.
         const SHARED_CATEGORIES = ['behavioral', 'systemdesign', 'takehome'];
-        const url = SHARED_CATEGORIES.includes(activeCategory)
-          ? `/content/interview/_shared/${activeCategory}.json`
-          : `/content/interview/${tech}/${activeCategory}.json`;
+        const url = tech === 'systems' && activeCategory === 'systemdesign'
+          ? '/content/interview/systems/systemdesign.json'
+          : SHARED_CATEGORIES.includes(activeCategory)
+            ? `/content/interview/_shared/${activeCategory}.json`
+            : `/content/interview/${tech}/${activeCategory}.json`;
         const res = await fetch(url);
         if (res.ok) {
           const data = (await res.json()) as InterviewPrepQuestion[];

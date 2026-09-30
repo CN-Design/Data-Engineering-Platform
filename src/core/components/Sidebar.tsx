@@ -212,18 +212,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           if (catTopics.length === 0) return null;
 
           const progress = getCategoryProgress(cat);
-          const isCollapsed = !!collapsedCategories[cat];
+          // When the sidebar holds a single track, the collapse "dropdown" is
+          // redundant — show the groups directly under a plain, static header.
+          const singleCategory = categories.length === 1;
+          const isCollapsed = singleCategory ? false : !!collapsedCategories[cat];
 
           return (
             <div key={cat} style={{ marginBottom: '20px' }}>
               {/* Category Header */}
               <div
-                onClick={() => toggleCategory(cat)}
+                onClick={singleCategory ? undefined : () => toggleCategory(cat)}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  cursor: 'pointer',
+                  cursor: singleCategory ? 'default' : 'pointer',
                   padding: '10px 8px',
                   borderRadius: '8px',
                   background: 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
@@ -231,11 +234,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   marginBottom: '10px',
                   transition: 'background 0.2s ease'
                 }}
-                onMouseOver={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)'}
-                onMouseOut={(e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)'}
+                onMouseOver={singleCategory ? undefined : (e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)'}
+                onMouseOut={singleCategory ? undefined : (e) => e.currentTarget.style.background = 'linear-gradient(90deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)'}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                  {!singleCategory && (isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />)}
                   <span style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                     {cat.replace('-', ' ')}
                   </span>

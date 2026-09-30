@@ -105,6 +105,7 @@ export const FrontendLearnTab: React.FC<FrontendLearnTabProps> = ({ tech, topicI
   }
   return (
     <FrontendTopicRenderer
+      key={data.id}
       data={data}
       topics={topics}
       onNavigate={onNavigate}

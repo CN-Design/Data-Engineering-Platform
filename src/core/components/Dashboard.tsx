@@ -27,7 +27,7 @@ interface DomainDef {
 
 const DOMAINS: DomainDef[] = [
   {
-    id: 'frontend', title: 'Frontend Engineering', meta: '7 tracks · 213 lessons',
+    id: 'frontend', title: 'Frontend Engineering', meta: '7 tracks · 270 lessons',
     description: 'HTML, CSS, JavaScript, TypeScript, React & Next.js — visual, interactive, project-driven, and interview-focused.',
     Icon: Layout, bar: 'linear-gradient(90deg,#10b981,#06b6d4)', tint: 'rgba(16,185,129,0.14)', color: '#10b981',
     tags: ['React', 'TypeScript', 'Next.js', 'CSS', 'Systems'],

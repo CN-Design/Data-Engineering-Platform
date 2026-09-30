@@ -180,6 +180,34 @@ const ConceptStepsViz: React.FC<VisualizationProps> = ({ config }) => {
   );
 };
 
+// ---------- Frontend systems architecture flow ----------
+const SystemsFlowViz: React.FC<VisualizationProps> = ({ config }) => {
+  const nodes = (config?.nodes as Array<{ title: string; detail: string }>) || [];
+  const [selected, setSelected] = useState(0);
+  if (!nodes.length) return <div style={{ ...card, color: 'var(--text-muted)' }}>No architecture steps provided.</div>;
+  const active = Math.min(selected, nodes.length - 1);
+  return (
+    <div style={card}>
+      <p style={{ marginTop: 0, color: 'var(--text-secondary)', fontSize: 13.5 }}>{config?.intro as string || 'Select each part to follow the request path.'}</p>
+      <div style={{ display: 'flex', alignItems: 'stretch', justifyContent: 'center', flexWrap: 'wrap', gap: 8 }}>
+        {nodes.map((node, index) => (
+          <React.Fragment key={`${node.title}-${index}`}>
+            <button onClick={() => setSelected(index)} aria-pressed={active === index} style={{ ...btn, minWidth: 120, maxWidth: 210, flex: '1 1 120px', padding: '12px 10px', borderColor: active === index ? '#3b82f6' : 'var(--border-glass)', background: active === index ? 'rgba(59,130,246,0.16)' : 'var(--bg-secondary)', whiteSpace: 'normal' }}>
+              <span style={{ display: 'block', color: active === index ? '#60a5fa' : 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>STEP {index + 1}</span>
+              <span style={{ color: 'var(--text-primary)' }}>{node.title}</span>
+            </button>
+            {index < nodes.length - 1 && <span aria-hidden="true" style={{ alignSelf: 'center', color: '#60a5fa', fontSize: 20 }}>→</span>}
+          </React.Fragment>
+        ))}
+      </div>
+      <div aria-live="polite" style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg-secondary)', borderLeft: '3px solid #3b82f6' }}>
+        <strong style={{ color: 'var(--text-primary)' }}>{nodes[active].title}</strong>
+        <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{nodes[active].detail}</p>
+      </div>
+    </div>
+  );
+};
+
 // ---------- JS Event Loop ----------
 interface ELStep {
   line: number | null;
@@ -1184,4 +1212,6 @@ export const FRONTEND_VISUALIZATIONS: Record<string, React.FC<VisualizationProps
   'predict-output': PredictOutputViz,
   'flashcards': FlashcardsViz,
   'concept-steps': ConceptStepsViz,
+  'web-request-architecture': SystemsFlowViz,
+  'frontend-system-architecture': SystemsFlowViz,
 };

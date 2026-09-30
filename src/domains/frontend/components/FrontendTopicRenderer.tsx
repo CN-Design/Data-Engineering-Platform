@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import type {
   FrontendTopicData,
   FrontendSectionId,
@@ -14,15 +14,16 @@ import type {
   SubtopicDetail,
 } from '../../../core/types/frontend';
 import { FRONTEND_SECTIONS } from '../../../core/types/frontend';
-import type { ConceptualInterviewQuestion, CodingInterviewQuestion } from '../../../core/types/types';
+import type { ConceptualInterviewQuestion, CodingInterviewQuestion, ExplainerScript, McqQuestion } from '../../../core/types/types';
 import { FRONTEND_VISUALIZATIONS } from '../visualizations/registry';
 import { EditableSandbox } from '../../../core/components/EditableSandbox';
+const ExplainerPlayer = lazy(() => import('../../data-engineering/components/ExplainerPlayer').then(module => ({ default: module.ExplainerPlayer })));
 import { formatText } from '../../../core/utils/textFormatting';
 import { SystemDesignWorkbench } from '../../../core/components/SystemDesignWorkbench';
 import '../frontend.css';
 import {
   BookOpen, Eye, Code2, Bug, GraduationCap, Server, Hammer, Sparkles,
-  ChevronDown, ChevronUp, Lightbulb, ChevronLeft, ChevronRight, CheckCircle2,
+  ChevronDown, ChevronUp, Lightbulb, ChevronLeft, ChevronRight, CheckCircle2, PlayCircle,
 } from 'lucide-react';
 
 const SECTION_ICON: Record<FrontendSectionId, any> = {
@@ -37,6 +38,106 @@ const SECTION_ICON: Record<FrontendSectionId, any> = {
 };
 
 const BLUE = '#3b82f6';
+
+const buildExplainer = (data: FrontendTopicData): ExplainerScript => {
+  const scenes: ExplainerScript['scenes'] = [
+    { template: 'title', kicker: `${data.tech} · ${data.difficulty}`, headline: data.title, subtitle: data.summary || 'A visual guide to the core idea', narration: `${data.title}. ${data.summary || data.foundations.overview}` },
+    { template: 'callout', kicker: 'Start with the idea', headline: 'In plain language', text: data.foundations.overview, narration: data.foundations.overview, tone: 'neutral' },
+  ];
+  const concepts = (data.subtopics || []).slice(0, 4);
+  if (concepts.length > 1) scenes.push({ template: 'flow', kicker: 'Build the mental model', headline: 'The pieces fit together', nodes: concepts.map((item) => item.title), narration: concepts.map((item) => `${item.title}: ${item.explanation}`).join(' ') });
+  else if (concepts.length === 1) scenes.push({ template: 'bullets', kicker: 'Core concept', headline: concepts[0].title, items: [concepts[0].explanation], narration: concepts[0].explanation });
+  if (data.keyTakeaways?.length) scenes.push({ template: 'bullets', kicker: 'Remember', headline: 'What to keep', items: data.keyTakeaways.slice(0, 4), narration: data.keyTakeaways.slice(0, 4).join(' ') });
+  return { topicId: data.id, title: data.title, scenes };
+};
+
+type RecallRating = 'again' | 'almost' | 'got-it';
+type RecallRecord = Record<string, { rating: RecallRating; dueAt: number }>;
+
+const TopicRecall: React.FC<{ topicId: string; takeaways: string[] }> = ({ topicId, takeaways }) => {
+  const storageKey = `fe_recall_${topicId}`;
+  const [records, setRecords] = useState<RecallRecord>(() => {
+    try { return JSON.parse(window.localStorage.getItem(storageKey) || '{}') as RecallRecord; } catch { return {}; }
+  });
+  const rate = (index: number, rating: RecallRating) => {
+    const days = rating === 'again' ? 1 : rating === 'almost' ? 3 : 7;
+    const next = { ...records, [String(index)]: { rating, dueAt: Date.now() + days * 24 * 60 * 60 * 1000 } };
+    setRecords(next);
+    try { window.localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* local progress is optional */ }
+  };
+  if (!takeaways.length) return null;
+  return (
+    <section className="fe-takeaways" aria-label="Self-check and spaced review">
+      <p className="fe-block-title" style={{ color: BLUE }}>Quick self-check</p>
+      <p style={{ color: 'var(--text-secondary)', margin: '0 0 12px' }}>Cover the takeaway, explain it from memory, then choose when to review it.</p>
+      <div style={{ display: 'grid', gap: 10 }}>
+        {takeaways.slice(0, 5).map((item, index) => {
+          const record = records[String(index)];
+          return <details key={`${topicId}-${index}`} style={{ padding: 12, border: '1px solid var(--border-glass)', borderRadius: 10, background: 'var(--bg-inner)' }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--text-primary)', fontWeight: 600 }}>Explain this idea in your own words: {index + 1}</summary>
+            <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>{formatText(item)}</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+              {(['again', 'almost', 'got-it'] as RecallRating[]).map(rating => <button key={rating} aria-pressed={record?.rating === rating} className="fe-foot-btn" onClick={() => rate(index, rating)}>{rating === 'again' ? 'Review tomorrow' : rating === 'almost' ? 'Review in 3 days' : 'Got it · 7 days'}</button>)}
+              {record && <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Saved: {record.rating.replace('-', ' ')} · due {new Date(record.dueAt).toLocaleDateString()}</span>}
+            </div>
+          </details>;
+        })}
+      </div>
+    </section>
+  );
+};
+
+const FrontendGradedQuiz: React.FC<{ tech: string; topicId: string }> = ({ tech, topicId }) => {
+  const [questions, setQuestions] = useState<McqQuestion[]>([]);
+  const [answers, setAnswers] = useState<Record<string, number>>(() => {
+    try { return JSON.parse(window.localStorage.getItem(`fe_mcq_${topicId}`) || '{}') as Record<string, number>; } catch { return {}; }
+  });
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/content/quiz/${tech}/${topicId}.json`).then(r => r.ok ? r.json() : []).then((items: McqQuestion[]) => { if (!cancelled && Array.isArray(items)) setQuestions(items); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [tech, topicId]);
+  if (!questions.length) return null;
+  const correct = questions.filter(q => answers[q.id] === q.correctIndex).length;
+  const answered = questions.filter(q => answers[q.id] !== undefined).length;
+  const choose = (q: McqQuestion, index: number) => {
+    if (answers[q.id] !== undefined) return;
+    const next = { ...answers, [q.id]: index };
+    setAnswers(next);
+    try { window.localStorage.setItem(`fe_mcq_${topicId}`, JSON.stringify(next)); } catch { /* progress is optional */ }
+  };
+  const reset = () => { setAnswers({}); try { window.localStorage.removeItem(`fe_mcq_${topicId}`); } catch { /* ignore */ } };
+  return <section className="fe-takeaways" aria-label="Graded knowledge check">
+    <p className="fe-block-title" style={{ color: BLUE }}>Knowledge check</p>
+    <p style={{ color: 'var(--text-secondary)' }}>Choose the best answer. Your score is saved on this device. {answered}/{questions.length} answered · {correct} correct.</p>
+    {questions.map((q, qi) => <fieldset key={q.id} style={{ border: '1px solid var(--border-glass)', borderRadius: 10, padding: 14, margin: '12px 0', background: 'var(--bg-inner)' }}>
+      <legend id={`fe-quiz-question-${qi}`} style={{ color: 'var(--text-primary)', fontWeight: 650 }}>Q{qi + 1}. {q.question}</legend>
+      <div role="radiogroup" aria-labelledby={`fe-quiz-question-${qi}`}>
+      {q.options.map((option, oi) => {
+        const selected = answers[q.id] === oi;
+        const isCorrect = oi === q.correctIndex;
+        const color = answers[q.id] === undefined ? 'var(--text-secondary)' : isCorrect ? '#10b981' : selected ? '#ef4444' : 'var(--text-muted)';
+        const optionId = `fe-quiz-option-${qi}-${oi}`;
+        return <button key={oi} id={optionId} type="button" role="radio" aria-checked={selected} tabIndex={selected || (answers[q.id] === undefined && oi === 0) ? 0 : -1} disabled={answers[q.id] !== undefined} onClick={() => choose(q, oi)} onKeyDown={event => {
+          if (answers[q.id] !== undefined || !['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(event.key)) return;
+          event.preventDefault();
+          const delta = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1;
+          const next = (oi + delta + q.options.length) % q.options.length;
+          document.getElementById(`fe-quiz-option-${qi}-${next}`)?.focus();
+        }} style={{ display: 'block', width: '100%', textAlign: 'left', marginTop: 8, padding: '10px 12px', borderRadius: 8, border: `1px solid ${color}`, color: 'var(--text-primary)', background: selected ? 'rgba(59,130,246,.08)' : 'var(--bg-secondary)', cursor: answers[q.id] !== undefined ? 'default' : 'pointer' }}>{String.fromCharCode(65 + oi)}. {conciseQuizOption(option)}</button>;
+      })}
+      </div>
+      {answers[q.id] !== undefined && <p role="status" style={{ color: answers[q.id] === q.correctIndex ? '#10b981' : 'var(--text-secondary)', lineHeight: 1.6 }}>{answers[q.id] === q.correctIndex ? 'Correct. ' : 'Review this concept. '}{q.explanation}</p>}
+    </fieldset>)}
+    <button type="button" className="fe-foot-btn" onClick={reset}>Reset quiz</button>
+  </section>;
+};
+
+const conciseQuizOption = (option: string): string => {
+  const text = option.trim();
+  const sentenceEnd = text.search(/[.!?](?:["”’')\]]*)\s+/);
+  return sentenceEnd >= 0 ? text.slice(0, sentenceEnd + 1).trim() : text;
+};
 
 const Prose: React.FC<{ children?: string }> = ({ children }) =>
   children ? (
@@ -67,8 +168,8 @@ const Facet: React.FC<{ label: string; value?: string; accent?: string }> = ({ l
     </div>
   ) : null;
 
-const SubtopicItem: React.FC<{ s: SubtopicDetail }> = ({ s }) => {
-  const [open, setOpen] = useState(false);
+const SubtopicItem: React.FC<{ s: SubtopicDetail; defaultOpen?: boolean }> = ({ s, defaultOpen }) => {
+  const [open, setOpen] = useState(!!defaultOpen);
   return (
     <div className="fe-sub">
       <button className="fe-sub-head" onClick={() => setOpen(o => !o)}>
@@ -105,7 +206,7 @@ const Foundations: React.FC<{ data: FoundationsSection; subtopics?: SubtopicDeta
       <div className="fe-subsection" style={{ marginTop: 0, marginBottom: '20px' }}>
         <p className="fe-block-title" style={{ color: BLUE }}>Core Sub-topics — Explained</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {subtopics.map((s, i) => <SubtopicItem key={i} s={s} />)}
+          {subtopics.map((s, i) => <SubtopicItem key={i} s={s} defaultOpen={i === 0} />)}
         </div>
       </div>
     )}
@@ -462,16 +563,6 @@ const DIFFICULTY_PILL: Record<string, { bg: string; color: string }> = {
   advanced: { bg: 'rgba(239,68,68,0.15)', color: '#ef4444' },
 };
 
-const ChipRow: React.FC<{ label: string; items?: string[]; core?: boolean }> = ({ label, items, core }) => {
-  if (!items || items.length === 0) return null;
-  return (
-    <div className="fe-chip-row">
-      <span className="fe-chip-label">{label}</span>
-      {items.map((c, i) => <span key={i} className={`fe-chip${core ? ' core' : ''}`}>{c}</span>)}
-    </div>
-  );
-};
-
 // Prerequisites / Related hold topic IDs — render them as clickable links to
 // those lessons when the id resolves against the manifest; otherwise plain chip.
 const NavChipRow: React.FC<{ label: string; items?: string[]; navMap: Record<string, string>; onNavigate?: (id: string) => void }> = ({ label, items, navMap, onNavigate }) => {
@@ -502,20 +593,51 @@ interface FrontendTopicRendererProps {
   nextTitle?: string;
 }
 
+// Learner-facing step labels (plain language, replaces dev section names).
+const STEP_LABEL: Record<FrontendSectionId, string> = {
+  foundations: 'Learn the concept',
+  visualExplorer: 'See it visually',
+  interactiveExamples: 'Study worked examples',
+  codeLab: 'Try it yourself',
+  debuggingLab: 'Debug it',
+  interviewPrep: 'Interview prep',
+  productionDeepDive: 'In production',
+  projectBuilder: 'Build a project',
+};
+
+type StepId = FrontendSectionId | 'review';
+
 export const FrontendTopicRenderer: React.FC<FrontendTopicRendererProps> = ({ data, topics = [], onNavigate, isCompleted, onToggleComplete, onPrev, onNext, prevTitle, nextTitle }) => {
+  const [showExplainer, setShowExplainer] = useState(false);
   const navMap = Object.fromEntries(topics.map(t => [t.id, t.title])) as Record<string, string>;
   // Only show sections that have content.
   const available = FRONTEND_SECTIONS.filter(s => {
     const v = (data as any)[s.id];
     return v && (Array.isArray(v) ? v.length > 0 : true);
   });
-  const [active, setActive] = useState<FrontendSectionId>(available[0]?.id || 'foundations');
 
   // Presentation tier: explicit override, else derived from difficulty.
   const tier: 'core' | 'deep' = data.tier ?? (data.difficulty === 'beginner' ? 'core' : 'deep');
 
-  const renderSection = () => {
-    switch (active) {
+  // Guided linear path: content sections in order, then a final "Check yourself" step.
+  const hasReview = (data.keyTakeaways?.length || 0) > 0;
+  const steps: Array<{ id: StepId; label: string; desc: string }> = [
+    ...available.map(s => ({ id: s.id as StepId, label: STEP_LABEL[s.id] || s.label, desc: s.description })),
+    ...(hasReview ? [{ id: 'review' as StepId, label: 'Check yourself', desc: 'Recap, recall from memory, then take the graded quiz.' }] : []),
+  ];
+  const [stepIndex, setStepIndex] = useState(0);
+  const current = steps[Math.min(stepIndex, steps.length - 1)] || steps[0];
+
+  // Reset to the first step whenever the lesson changes.
+  useEffect(() => { setStepIndex(0); setShowExplainer(false); }, [data.id]);
+
+  // Where this lesson sits in the whole track (Lesson X of Y).
+  const lessonPos = topics.findIndex(t => t.id === data.id);
+  const lessonNo = lessonPos >= 0 ? lessonPos + 1 : null;
+  const trackPct = topics.length ? Math.round(((lessonPos >= 0 ? lessonPos + 1 : 1) / topics.length) * 100) : 0;
+
+  const renderStep = (id: StepId) => {
+    switch (id) {
       case 'foundations': return <Foundations data={data.foundations} subtopics={data.subtopics} tier={tier} />;
       case 'visualExplorer': return data.visualExplorer ? <VisualExplorer items={data.visualExplorer} /> : null;
       case 'interactiveExamples': return data.interactiveExamples ? <InteractiveExamples items={data.interactiveExamples} /> : null;
@@ -524,13 +646,33 @@ export const FrontendTopicRenderer: React.FC<FrontendTopicRendererProps> = ({ da
       case 'interviewPrep': return data.interviewPrep ? <InterviewEmbedded data={data.interviewPrep} /> : null;
       case 'productionDeepDive': return data.productionDeepDive ? <ProductionDeepDive data={data.productionDeepDive} /> : null;
       case 'projectBuilder': return data.projectBuilder ? <ProjectBuilder data={data.projectBuilder} /> : null;
+      case 'review': return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {data.keyTakeaways?.length > 0 && (
+            <div>
+              <p className="fe-block-title" style={{ color: BLUE }}>Key Takeaways</p>
+              <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                {data.keyTakeaways.map((k, i) => <li key={i}>{formatText(k)}</li>)}
+              </ul>
+            </div>
+          )}
+          <TopicRecall topicId={data.id} takeaways={data.keyTakeaways || []} />
+          <FrontendGradedQuiz tech={data.tech} topicId={data.id} />
+          {(data.prerequisites?.length || data.relatedConcepts?.length) ? (
+            <div className="fe-chips">
+              <NavChipRow label="Prerequisites" items={data.prerequisites} navMap={navMap} onNavigate={onNavigate} />
+              <NavChipRow label="Related lessons" items={data.relatedConcepts} navMap={navMap} onNavigate={onNavigate} />
+            </div>
+          ) : null}
+        </div>
+      );
       default: return null;
     }
   };
 
   const diff = DIFFICULTY_PILL[data.difficulty] || DIFFICULTY_PILL.beginner;
-  const activeMeta = FRONTEND_SECTIONS.find(s => s.id === active);
-  const ActiveIcon = SECTION_ICON[active];
+  const StepIcon = current.id === 'review' ? CheckCircle2 : SECTION_ICON[current.id as FrontendSectionId];
+  const isLastStep = stepIndex >= steps.length - 1;
 
   return (
     <div className="fe-root">
@@ -539,48 +681,62 @@ export const FrontendTopicRenderer: React.FC<FrontendTopicRendererProps> = ({ da
         <div className="fe-title-row">
           <h1 className="fe-title">{data.title}</h1>
           <span className="fe-pill" style={{ background: diff.bg, color: diff.color }}>{data.difficulty}</span>
-          <span className="fe-pill" style={tier === 'core' ? { background: 'var(--bg-inner)', color: 'var(--text-muted)' } : { background: 'rgba(139,92,246,0.15)', color: '#8b5cf6' }}>{tier === 'core' ? 'Core' : 'Deep dive'}</span>
         </div>
         {data.summary && <p className="fe-summary">{formatText(data.summary)}</p>}
-        <div className="fe-chips">
-          <NavChipRow label="Prerequisites" items={data.prerequisites} navMap={navMap} onNavigate={onNavigate} />
-          <ChipRow label="Core sub-topics" items={data.nestedConcepts} core />
-          <NavChipRow label="Related" items={data.relatedConcepts} navMap={navMap} onNavigate={onNavigate} />
-        </div>
       </header>
 
-      {/* Section nav */}
-      <nav className="fe-nav">
-        {available.map(s => {
-          const Icon = SECTION_ICON[s.id];
+      {/* Where you are in the track */}
+      <div className="fe-path-bar">
+        <span className="fe-path-meta">{lessonNo ? `Lesson ${lessonNo} of ${topics.length}` : 'Lesson'} · {data.tech}</span>
+        <div className="fe-path-track"><div className="fe-path-fill" style={{ width: `${trackPct}%` }} /></div>
+        <span className="fe-path-meta">{trackPct}%</span>
+      </div>
+
+      {/* Guided step map */}
+      <nav className="fe-stepper" aria-label="Lesson steps">
+        {steps.map((s, i) => {
+          const Icon = s.id === 'review' ? CheckCircle2 : SECTION_ICON[s.id as FrontendSectionId];
+          const state = i === stepIndex ? 'active' : i < stepIndex ? 'done' : '';
           return (
-            <button key={s.id} onClick={() => setActive(s.id)} title={s.description} className={`fe-nav-btn${s.id === active ? ' active' : ''}`}>
-              <Icon size={15} /> {s.label}
+            <button key={s.id} onClick={() => setStepIndex(i)} title={s.desc} className={`fe-step-chip ${state}`}>
+              <span className="fe-step-num">{i < stepIndex ? '✓' : i + 1}</span>
+              <Icon size={14} /> {s.label}
             </button>
           );
         })}
       </nav>
 
-      {/* Active section panel */}
+      {/* Current step */}
       <section className="fe-panel">
         <div className="fe-panel-head">
-          <div className="fe-panel-icon"><ActiveIcon size={20} /></div>
+          <div className="fe-panel-icon"><StepIcon size={20} /></div>
           <div>
-            <h2 className="fe-panel-title">{activeMeta?.label}</h2>
-            <p className="fe-panel-desc">{activeMeta?.description}</p>
+            <h2 className="fe-panel-title">Step {stepIndex + 1} of {steps.length} · {current.label}</h2>
+            <p className="fe-panel-desc">{current.desc}</p>
           </div>
         </div>
-        <div className="fe-panel-body animate-fade-in" key={active}>{renderSection()}</div>
-      </section>
-
-      {data.keyTakeaways?.length > 0 && (
-        <div className="fe-takeaways">
-          <p className="fe-block-title" style={{ color: BLUE }}>Key Takeaways</p>
-          <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-            {data.keyTakeaways.map((k, i) => <li key={i}>{formatText(k)}</li>)}
-          </ul>
+        <div className="fe-panel-body animate-fade-in" key={current.id}>
+          {current.id === 'foundations' && (
+            <>
+              <button type="button" className="fe-explainer-card" onClick={() => setShowExplainer(v => !v)}>
+                <span className="fe-explainer-ic"><PlayCircle size={22} /></span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: 'block', fontWeight: 700, color: 'var(--text-primary)' }}>Watch the animated lesson first</span>
+                  <span style={{ display: 'block', fontSize: 13, color: 'var(--text-secondary)' }}>A short narrated walkthrough of the core idea.</span>
+                </span>
+                {showExplainer ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+              </button>
+              {showExplainer && <div style={{ marginBottom: 20 }}><Suspense fallback={<p style={{ color: 'var(--text-secondary)' }}>Preparing the animated lesson…</p>}><ExplainerPlayer script={buildExplainer(data)} /></Suspense></div>}
+            </>
+          )}
+          {renderStep(current.id)}
+          {!isLastStep && (
+            <button type="button" className="fe-continue" onClick={() => { setStepIndex(i => Math.min(i + 1, steps.length - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+              Continue <ChevronRight size={18} />
+            </button>
+          )}
         </div>
-      )}
+      </section>
 
       {(onPrev || onNext || onToggleComplete) && (
         <div className="fe-footer">

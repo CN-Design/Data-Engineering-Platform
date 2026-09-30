@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Code, Zap, Layers, Network, Terminal, Cloud, Radio, Workflow, Warehouse, Container, ShieldCheck, Siren, ChevronRight, ArrowLeft, Lock } from 'lucide-react';
 import type { Category, Domain, Topic } from '../../../core/types/types';
-import { FRONTEND_TECHS } from '../../frontend/loader';
+import { FRONTEND_TECHS, loadFrontendManifest, manifestToTopics as frontendManifestToTopics } from '../../frontend/loader';
 import { BACKEND_TECHS, loadBackendManifest, manifestToTopics as backendManifestToTopics } from '../../backend-engineering/loader';
 import { AI_AGENT_TECHS } from '../../ai-agents/loader';
 import { allTopics } from '../data';
 import { LearnJourneyPanel } from './LearnJourneyPanel';
 import { Diagnostic } from './Diagnostic';
 import { EngagementBar } from './EngagementBar';
+import { FrontendPlacement } from '../../frontend/components/FrontendPlacement';
 
 interface PathSelectionProps {
   onSelectTech: (tech: Category, topicId?: string) => void;
@@ -16,6 +17,43 @@ interface PathSelectionProps {
 }
 
 type TechOption = { id: Category; title: string; description: string; icon: any; color: string; bg: string; available: boolean; topicCount: number };
+
+const FrontendJourney: React.FC<{ topics: Topic[]; onSelectTech: (tech: Category, topicId?: string) => void }> = ({ topics, onSelectTech }) => {
+  let resume: { tech: Category; topicId: string; title?: string; techTitle?: string } | null = null;
+  try { resume = JSON.parse(localStorage.getItem('fe_last_topic') || 'null'); } catch { /* ignore malformed local progress */ }
+  const topicById = new Map(topics.map(topic => [topic.id, topic]));
+  const resumeTopic = resume ? topicById.get(resume.topicId) : undefined;
+  const completed = getCompleted();
+  const nextTopic = topics.find(topic => !completed[topic.id]);
+  const dueTopics = topics.filter(topic => {
+    try {
+      const records = JSON.parse(localStorage.getItem(`fe_recall_${topic.id}`) || '{}') as Record<string, { dueAt?: number }>;
+      return Object.values(records).some(record => typeof record.dueAt === 'number' && record.dueAt <= Date.now());
+    } catch { return false; }
+  }).slice(0, 3);
+  if (!resumeTopic && dueTopics.length === 0 && !nextTopic) return null;
+  return (
+    <section style={{ width: '100%', maxWidth: 1100, margin: '24px 0 32px' }}>
+      <h2 style={{ fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.6, color: 'var(--text-muted)', marginBottom: 14 }}>Your Frontend learning path</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: 14 }}>
+        {nextTopic && <div className="glass-panel" style={{ padding: 18, background: 'var(--bg-secondary)' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 7 }}>Recommended next lesson</div>
+          <strong style={{ color: 'var(--text-primary)' }}>{FRONTEND_TECHS.find(t => t.id === nextTopic.category)?.title || nextTopic.category} · {nextTopic.title}</strong>
+          <div><button className="btn btn-primary" style={{ marginTop: 12, padding: '8px 12px' }} onClick={() => onSelectTech(nextTopic.category, nextTopic.id)}>Start lesson</button></div>
+        </div>}
+        {resumeTopic && resume && <div className="glass-panel" style={{ padding: 18, background: 'var(--bg-secondary)' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 7 }}>Continue where you left off</div>
+          <strong style={{ color: 'var(--text-primary)' }}>{resume.techTitle || resumeTopic.category} · {resume.title || resumeTopic.title}</strong>
+          <div><button className="btn btn-primary" style={{ marginTop: 12, padding: '8px 12px' }} onClick={() => onSelectTech(resumeTopic.category, resumeTopic.id)}>Continue lesson</button></div>
+        </div>}
+        {dueTopics.length > 0 && <div className="glass-panel" style={{ padding: 18, background: 'var(--bg-secondary)' }}>
+          <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 7 }}>Ready to review</div>
+          <div style={{ display: 'grid', gap: 8 }}>{dueTopics.map(topic => <button key={topic.id} className="fe-foot-btn" onClick={() => onSelectTech(topic.category, topic.id)}>{FRONTEND_TECHS.find(t => t.id === topic.category)?.title || topic.category} · {topic.title}</button>)}</div>
+        </div>}
+      </div>
+    </section>
+  );
+};
 
 // Completed topics from localStorage, used to show per-tech progress.
 const getCompleted = (): Record<string, boolean> => {
@@ -32,6 +70,7 @@ const hexToBg = (hex: string) => {
 
 export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBack, domain = 'data-engineering' }) => {
   const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const [showFrontendPlacement, setShowFrontendPlacement] = useState(false);
   const countFor = (id: Category) => allTopics.filter(t => t.category === id).length;
   // Ordered as the recommended zero-to-job learning path (Phase 1.1 roadmap).
   const dataOptions: TechOption[] = [
@@ -84,6 +123,18 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
     })();
     return () => { cancelled = true; };
   }, [isBackend]);
+
+  const [frontendJourneyTopics, setFrontendJourneyTopics] = useState<Topic[]>([]);
+  useEffect(() => {
+    if (!isFrontend) return;
+    let cancelled = false;
+    (async () => {
+      const manifests = await Promise.all(FRONTEND_TECHS.filter(t => t.available).map(t => loadFrontendManifest(t.id)));
+      const all = manifests.flatMap(m => m ? frontendManifestToTopics(m) : []);
+      if (!cancelled) setFrontendJourneyTopics(all);
+    })();
+    return () => { cancelled = true; };
+  }, [isFrontend]);
 
   const completed = getCompleted();
   const completedFor = (id: Category) => Object.keys(completed).filter(tid => completed[tid] && tid.startsWith(id + '-')).length;
@@ -150,9 +201,14 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
           {heading}
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: 'clamp(15px, 4vw, 18px)', margin: '0 auto', lineHeight: 1.6 }}>
-          Select a technology or domain to dive into tailored courses, interview prep, and coding challenges.
+          {isFrontend
+            ? 'Follow the beginner-first path from HTML and CSS through JavaScript, TypeScript, React, Next.js, and production web systems. Each track also includes practice and interview preparation.'
+            : 'Select a technology or domain to dive into tailored courses, interview prep, and coding challenges.'}
         </p>
+        {isFrontend && <button onClick={() => setShowFrontendPlacement(true)} className="btn btn-primary" style={{ marginTop: 18, padding: '10px 16px' }}>Not sure where to start? Find my path</button>}
       </div>
+
+      {isFrontend && showFrontendPlacement && <FrontendPlacement onClose={() => setShowFrontendPlacement(false)} onStart={(tech, topicId) => { setShowFrontendPlacement(false); onSelectTech(tech, topicId); }} />}
 
       {/* Engagement (Data Engineering only) */}
       {isData && <EngagementBar topics={allTopics} />}
@@ -171,6 +227,14 @@ export const PathSelection: React.FC<PathSelectionProps> = ({ onSelectTech, onBa
           onPick={(track) => { setShowDiagnostic(false); onSelectTech(track as Category); }}
           onClose={() => setShowDiagnostic(false)}
         />
+      )}
+
+      {/* Frontend progress uses the shared XP/streak engine and Frontend's own resume/review keys. */}
+      {isFrontend && frontendJourneyTopics.length > 0 && (
+        <>
+          <EngagementBar topics={frontendJourneyTopics} domainLabel="Frontend Engineering" />
+          <FrontendJourney topics={frontendJourneyTopics} onSelectTech={onSelectTech} />
+        </>
       )}
 
       {/* Backend engagement + personalized journey (reuses the DE engine) */}
